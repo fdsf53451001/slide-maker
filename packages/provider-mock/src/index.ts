@@ -1,4 +1,9 @@
-import type { GeneratedImage, ImageGenerationContext, ImageGenerationRequest, ImageProvider } from "@slide-maker/core";
+import type {
+  GeneratedImage,
+  ImageGenerationContext,
+  ImageGenerationRequest,
+  ImageProvider,
+} from "@slide-maker/core";
 
 function escapeXml(value: string): string {
   return value
@@ -33,13 +38,19 @@ export class MockImageProvider implements ImageProvider {
     reproducibleParameters: ["palette"],
   };
 
-  async generate(request: ImageGenerationRequest, context?: ImageGenerationContext): Promise<GeneratedImage> {
+  async generate(
+    request: ImageGenerationRequest,
+    context?: ImageGenerationContext,
+  ): Promise<GeneratedImage> {
     if (context?.signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
     const [background, foreground, accent] = ["#0b1020", "#f5f1e8", "#ff7a45"];
     const lines = wrap(request.slide.content);
-    const body = lines.map((line, index) =>
-      `<text x="150" y="${520 + index * 74}" font-family="system-ui, sans-serif" font-size="44" fill="${escapeXml(foreground)}" opacity="0.9">${escapeXml(line)}</text>`,
-    ).join("");
+    const body = lines
+      .map(
+        (line, index) =>
+          `<text x="150" y="${520 + index * 74}" font-family="system-ui, sans-serif" font-size="44" fill="${escapeXml(foreground)}" opacity="0.9">${escapeXml(line)}</text>`,
+      )
+      .join("");
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${request.width}" height="${request.height}" viewBox="0 0 ${request.width} ${request.height}">
       <defs><radialGradient id="g" cx="82%" cy="18%" r="80%"><stop offset="0" stop-color="${escapeXml(accent)}" stop-opacity=".52"/><stop offset="1" stop-color="${escapeXml(background)}" stop-opacity="0"/></radialGradient></defs>
       <rect width="100%" height="100%" fill="${escapeXml(background)}"/><rect width="100%" height="100%" fill="url(#g)"/>

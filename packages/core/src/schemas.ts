@@ -43,11 +43,15 @@ export const sourceAssetSchema = z.object({
   assetPath: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
   extractedText: z.string().default(""),
-  chunks: z.array(z.object({
-    id: z.string().min(1),
-    text: z.string(),
-    locator: z.string().optional(),
-  })).default([]),
+  chunks: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        text: z.string(),
+        locator: z.string().optional(),
+      }),
+    )
+    .default([]),
   metadata: z.record(z.string()).default({}),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime().optional(),
@@ -98,7 +102,10 @@ export const editableTextBoxSchema = z.object({
   fontFamily: z.string().min(1).default("Arial"),
   fontSize: z.number().positive(),
   fontWeight: z.number().int().min(100).max(900).default(400),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#ffffff"),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .default("#ffffff"),
   opacity: z.number().min(0).max(1).default(1),
   lineHeight: z.number().positive().default(1.2),
   letterSpacing: z.number().default(0),
@@ -158,18 +165,34 @@ export const generationJobSchema = z.object({
   providerId: z.string().min(1),
   status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   lifecycleVersion: z.literal(1).optional(),
-  phase: z.enum(["queued", "preparing", "launching", "waiting_for_codex", "validating_output", "persisting", "completed", "failed", "cancelled"]).optional(),
-  progress: z.object({ step: z.number().int().min(0), total: z.number().int().positive() }).optional(),
+  phase: z
+    .enum([
+      "queued",
+      "preparing",
+      "launching",
+      "waiting_for_codex",
+      "validating_output",
+      "persisting",
+      "completed",
+      "failed",
+      "cancelled",
+    ])
+    .optional(),
+  progress: z
+    .object({ step: z.number().int().min(0), total: z.number().int().positive() })
+    .optional(),
   providerEventCode: z.enum(["turn_started", "item_completed", "turn_completed"]).optional(),
-  childLifecycle: z.object({
-    spawnedAt: z.string().datetime().optional(),
-    lastAllowedEventAt: z.string().datetime().optional(),
-    cancelRequestedAt: z.string().datetime().optional(),
-    shutdownRequestedAt: z.string().datetime().optional(),
-    recoveredAt: z.string().datetime().optional(),
-    exitedAt: z.string().datetime().optional(),
-    exitClass: z.enum(["success", "nonzero", "timeout", "aborted", "server_shutdown"]).optional(),
-  }).optional(),
+  childLifecycle: z
+    .object({
+      spawnedAt: z.string().datetime().optional(),
+      lastAllowedEventAt: z.string().datetime().optional(),
+      cancelRequestedAt: z.string().datetime().optional(),
+      shutdownRequestedAt: z.string().datetime().optional(),
+      recoveredAt: z.string().datetime().optional(),
+      exitedAt: z.string().datetime().optional(),
+      exitClass: z.enum(["success", "nonzero", "timeout", "aborted", "server_shutdown"]).optional(),
+    })
+    .optional(),
   timeoutMs: z.number().int().positive().optional(),
   attempt: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
@@ -177,19 +200,24 @@ export const generationJobSchema = z.object({
   phaseUpdatedAt: z.string().datetime().optional(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
-  errorCode: z.string().regex(/^[A-Z0-9_]+$/).optional(),
+  errorCode: z
+    .string()
+    .regex(/^[A-Z0-9_]+$/)
+    .optional(),
   error: z.string().optional(),
   resultVersionId: z.string().optional(),
   operation: z.enum(["generate", "edit", "extract-text"]).default("generate"),
   editInstruction: z.string().optional(),
   baseVersionId: z.string().optional(),
   maskPath: z.string().optional(),
-  textExtraction: z.object({
-    originalVersionId: z.string().min(1),
-    replaceVersionId: z.string().min(1).optional(),
-    threshold: z.number().min(0.5).max(0.95),
-    boxes: z.array(editableTextBoxSchema).max(500),
-  }).optional(),
+  textExtraction: z
+    .object({
+      originalVersionId: z.string().min(1),
+      replaceVersionId: z.string().min(1).optional(),
+      threshold: z.number().min(0.5).max(0.95),
+      boxes: z.array(editableTextBoxSchema).max(500),
+    })
+    .optional(),
 });
 
 export const presentationProjectSchema = z.object({
@@ -218,22 +246,25 @@ export const createSourceInputSchema = z.object({
   allowModelAccess: z.boolean().default(true),
 });
 
-export const stylePresetInputSchema = stylePresetSchema.omit({
-  schemaVersion: true,
-  id: true,
-  version: true,
-  system: true,
-  createdAt: true,
-  updatedAt: true,
-}).partial({
-  description: true,
-  density: true,
-  imageDirection: true,
-  avoid: true,
-  promptTemplate: true,
-  referenceImages: true,
-  coverImageId: true,
-}).extend({ name: z.string().trim().min(1).max(120) });
+export const stylePresetInputSchema = stylePresetSchema
+  .omit({
+    schemaVersion: true,
+    id: true,
+    version: true,
+    system: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .partial({
+    description: true,
+    density: true,
+    imageDirection: true,
+    avoid: true,
+    promptTemplate: true,
+    referenceImages: true,
+    coverImageId: true,
+  })
+  .extend({ name: z.string().trim().min(1).max(120) });
 
 export type PresentationBrief = z.infer<typeof presentationBriefSchema>;
 export type StylePreset = z.infer<typeof stylePresetSchema>;

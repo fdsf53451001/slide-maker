@@ -6,19 +6,49 @@ import { createProject, type ImageGenerationRequest } from "@slide-maker/core";
 import { runAppServerArtifact } from "../src/app-server.js";
 import { CodexImageSpikeProvider } from "../src/index.js";
 
-type Mode = "inline" | "saved" | "rpc-error" | "malformed" | "oversize-line" | "oversize-base64"
-  | "bad-status" | "bad-magic" | "duplicate" | "reorder" | "wrong-id" | "no-image" | "exit" | "long"
-  | "spoof-image-line" | "too-many-lines" | "unsolicited" | "wrong-init-version" | "unsafe-thread"
-  | "failed-turn" | "response-order" | "delayed-close" | "incomplete-init" | "incomplete-thread"
-  | "incomplete-turn" | "unsafe-policy" | "unsafe-cwd" | "omitted-instruction-sources" | "global-instruction-source"
-  | "foreign-instruction-source" | "long-ignore-term" | "web-search"
-  | "read-command" | "code-mode-exec" | "other-dynamic-tool" | "scaled-image";
+type Mode =
+  | "inline"
+  | "saved"
+  | "rpc-error"
+  | "malformed"
+  | "oversize-line"
+  | "oversize-base64"
+  | "bad-status"
+  | "bad-magic"
+  | "duplicate"
+  | "reorder"
+  | "wrong-id"
+  | "no-image"
+  | "exit"
+  | "long"
+  | "spoof-image-line"
+  | "too-many-lines"
+  | "unsolicited"
+  | "wrong-init-version"
+  | "unsafe-thread"
+  | "failed-turn"
+  | "response-order"
+  | "delayed-close"
+  | "incomplete-init"
+  | "incomplete-thread"
+  | "incomplete-turn"
+  | "unsafe-policy"
+  | "unsafe-cwd"
+  | "omitted-instruction-sources"
+  | "global-instruction-source"
+  | "foreign-instruction-source"
+  | "long-ignore-term"
+  | "web-search"
+  | "read-command"
+  | "code-mode-exec"
+  | "other-dynamic-tool"
+  | "scaled-image";
 
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
     crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -26,15 +56,22 @@ function crc32(bytes: Uint8Array): number {
 function png(width = 1920, height = 1080): Buffer {
   const chunk = (type: string, data: Buffer) => {
     const name = Buffer.from(type, "ascii");
-    const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
-    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([name, data])));
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([name, data])));
     return Buffer.concat([length, name, data, crc]);
   };
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 6;
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
   return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", ihdr), chunk("IDAT", Buffer.from([1])), chunk("IEND", Buffer.alloc(0)),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", Buffer.from([1])),
+    chunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
@@ -42,7 +79,9 @@ async function fakeServer(mode: Mode, inline: string, savedPath?: string) {
   const root = await mkdtemp(join(tmpdir(), "slide-maker-qa-app-server-"));
   const executable = join(root, "codex");
   const audit = join(root, "requests.jsonl");
-  await writeFile(executable, `#!/usr/bin/env node
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
 import { appendFileSync, createReadStream, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
@@ -123,7 +162,9 @@ input.on("line", (line) => {
     }
   }
 });
-`, { mode: 0o700 });
+`,
+    { mode: 0o700 },
+  );
   await chmod(executable, 0o700);
   return { root, executable, audit };
 }
@@ -135,30 +176,40 @@ async function fixture(mode: Mode, setupSaved?: "inside" | "outside" | "symlink"
   await mkdir(generated);
   let savedPath: string | undefined;
   if (setupSaved === "inside") {
-    savedPath = join(generated, "slide.png"); await writeFile(savedPath, png());
+    savedPath = join(generated, "slide.png");
+    await writeFile(savedPath, png());
   } else if (setupSaved === "outside") {
-    savedPath = join(home, "outside.png"); await writeFile(savedPath, png());
+    savedPath = join(home, "outside.png");
+    await writeFile(savedPath, png());
   } else if (setupSaved === "symlink") {
-    const outside = join(home, "outside.png"); await writeFile(outside, png());
-    savedPath = join(generated, "slide.png"); await symlink(outside, savedPath);
+    const outside = join(home, "outside.png");
+    await writeFile(outside, png());
+    savedPath = join(generated, "slide.png");
+    await symlink(outside, savedPath);
   }
-  const inline = mode === "scaled-image" ? png(1672, 941).toString("base64") : png().toString("base64");
+  const inline =
+    mode === "scaled-image" ? png(1672, 941).toString("base64") : png().toString("base64");
   const fake = await fakeServer(mode, inline, savedPath);
   const controller = new AbortController();
-  const run = () => runAppServerArtifact({
-    executable: fake.executable,
-    workspace,
-    prompt: "PROMPT-CANARY",
-    timeoutMs: 6_000,
-    expectedVersion: "0.144.4",
-    signal: controller.signal,
-    environment: { HOME: home, CODEX_HOME: home, PATH: process.env.PATH },
-  });
+  const run = () =>
+    runAppServerArtifact({
+      executable: fake.executable,
+      workspace,
+      prompt: "PROMPT-CANARY",
+      timeoutMs: 6_000,
+      expectedVersion: "0.144.4",
+      signal: controller.signal,
+      environment: { HOME: home, CODEX_HOME: home, PATH: process.env.PATH },
+    });
   return { ...fake, workspace, home, controller, run };
 }
 
 async function requests(path: string): Promise<Array<Record<string, unknown>>> {
-  return (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  return (await readFile(path, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 function generationRequest(): ImageGenerationRequest {
@@ -190,7 +241,10 @@ describe("QA version-pinned app-server artifact protocol", () => {
     expect(result.eventCount).toBe(["read-command", "code-mode-exec"].includes(mode) ? 4 : 3);
     const inbound = await requests(fake.audit);
     expect(inbound.map((message) => [message.method, message.id])).toEqual([
-      ["initialize", 1], ["initialized", undefined], ["thread/start", 2], ["turn/start", 3],
+      ["initialize", 1],
+      ["initialized", undefined],
+      ["thread/start", 2],
+      ["turn/start", 3],
     ]);
     expect(inbound[0]).toEqual({
       method: "initialize",
@@ -207,13 +261,25 @@ describe("QA version-pinned app-server artifact protocol", () => {
     });
     expect(inbound[2]).toMatchObject({
       method: "thread/start",
-      params: { approvalPolicy: "never", sandbox: "read-only", ephemeral: true, environments: [], dynamicTools: [] },
+      params: {
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: true,
+        environments: [],
+        dynamicTools: [],
+      },
     });
     expect(inbound[3]).toMatchObject({
       method: "turn/start",
-      params: { approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: false }, environments: [] },
+      params: {
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+        environments: [],
+      },
     });
-    expect(JSON.stringify(result)).not.toMatch(/base64|REVISED-PROMPT-CANARY|PROMPT-CANARY|savedPath/i);
+    expect(JSON.stringify(result)).not.toMatch(
+      /base64|REVISED-PROMPT-CANARY|PROMPT-CANARY|savedPath/i,
+    );
   });
 
   it.each([
@@ -258,7 +324,9 @@ describe("QA version-pinned app-server artifact protocol", () => {
       try {
         const inbound = await requests(fake.audit);
         if (inbound.some((message) => message.method === "turn/start")) break;
-      } catch { /* audit is created after the first request */ }
+      } catch {
+        /* audit is created after the first request */
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     fake.controller.abort();
@@ -283,7 +351,9 @@ describe("QA version-pinned app-server artifact protocol", () => {
     while (Date.now() < deadline) {
       try {
         if ((await requests(fake.audit)).some((message) => message.method === "turn/start")) break;
-      } catch { /* audit is created after the first request */ }
+      } catch {
+        /* audit is created after the first request */
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const abortedAt = Date.now();
@@ -303,17 +373,29 @@ describe("QA version-pinned app-server artifact protocol", () => {
     });
     const result = await provider.generate(generationRequest());
     expect(Buffer.from(result.bytes)).toEqual(png());
-    expect(result.parameters).toEqual({ eventCount: 3, softSandbox: true, transport: "app-server-0.144.4" });
-    expect(JSON.stringify(result.parameters)).not.toMatch(/base64|REVISED-PROMPT-CANARY|PROMPT-CANARY|savedPath/i);
-    const turnRequest = (await requests(fake.audit)).find((message) => message.method === "turn/start");
+    expect(result.parameters).toEqual({
+      eventCount: 3,
+      softSandbox: true,
+      transport: "app-server-0.144.4",
+    });
+    expect(JSON.stringify(result.parameters)).not.toMatch(
+      /base64|REVISED-PROMPT-CANARY|PROMPT-CANARY|savedPath/i,
+    );
+    const turnRequest = (await requests(fake.audit)).find(
+      (message) => message.method === "turn/start",
+    );
     const serializedTurn = JSON.stringify(turnRequest);
     expect(serializedTurn).toContain("Information density requirement: HIGH");
     expect(serializedTurn).toContain("slide.content field is the authoritative visible copy");
     expect(serializedTurn).toContain("supporting imagery must not dominate");
     expect(serializedTurn).toContain("STYLE FIDELITY CONTRACT FOR NEW GENERATION");
-    expect(serializedTurn).toContain("style overrides slide.imagePrompt and generic model defaults");
+    expect(serializedTurn).toContain(
+      "style overrides slide.imagePrompt and generic model defaults",
+    );
     expect(serializedTurn).toContain("Resolve every slot from slide.purpose");
-    expect(serializedTurn).toContain("Every entry in style.avoid is a mandatory negative constraint");
+    expect(serializedTurn).toContain(
+      "Every entry in style.avoid is a mandatory negative constraint",
+    );
     expect(serializedTurn).toContain("do not fall back to generic presentation aesthetics");
   });
 
@@ -328,7 +410,9 @@ describe("QA version-pinned app-server artifact protocol", () => {
       ...generationRequest(),
       edit: { instruction: "只調整框選區域", baseImageIndex: 0 },
     });
-    const turnRequest = (await requests(fake.audit)).find((message) => message.method === "turn/start");
+    const turnRequest = (await requests(fake.audit)).find(
+      (message) => message.method === "turn/start",
+    );
     const serializedTurn = JSON.stringify(turnRequest);
     expect(serializedTurn).not.toContain("STYLE FIDELITY CONTRACT FOR NEW GENERATION");
     expect(serializedTurn).toContain("preserve the current image's established visual style");

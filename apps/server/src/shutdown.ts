@@ -15,12 +15,17 @@ export async function gracefulShutdown(
   readiness: ProviderReadinessService,
   graceMs = 3_000,
 ): Promise<void> {
-  if (!Number.isSafeInteger(graceMs) || graceMs < 100 || graceMs > 30_000) throw new Error("Shutdown graceMs is out of range");
+  if (!Number.isSafeInteger(graceMs) || graceMs < 100 || graceMs > 30_000)
+    throw new Error("Shutdown graceMs is out of range");
   readiness.beginShutdown();
-  const serverClosed = new Promise<void>((resolve, reject) => server.close((error?: Error) => error ? reject(error) : resolve()));
+  const serverClosed = new Promise<void>((resolve, reject) =>
+    server.close((error?: Error) => (error ? reject(error) : resolve())),
+  );
   const jobsStopped = jobs.shutdown(graceMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<"deadline">((resolve) => { timer = setTimeout(() => resolve("deadline"), graceMs); });
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), graceMs);
+  });
   let result: "closed" | "deadline";
   try {
     result = await Promise.race([
@@ -49,11 +54,15 @@ export function installShutdownHandlers(
     runtime.removeListener("SIGTERM", onSignal);
   };
   const trigger = () => {
-    shutdown ??= gracefulShutdown(server, jobs, readiness, graceMs).catch((error: unknown) => {
-      console.error("Graceful shutdown failed", { name: error instanceof Error ? error.name : "UnknownError" });
-      server.closeAllConnections?.();
-      throw error;
-    }).finally(dispose);
+    shutdown ??= gracefulShutdown(server, jobs, readiness, graceMs)
+      .catch((error: unknown) => {
+        console.error("Graceful shutdown failed", {
+          name: error instanceof Error ? error.name : "UnknownError",
+        });
+        server.closeAllConnections?.();
+        throw error;
+      })
+      .finally(dispose);
     return shutdown;
   };
   let signalCount = 0;

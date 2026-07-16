@@ -2,7 +2,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-export function runtimePathsFrom(moduleUrl: string): { dataRoot: string; editorDist: string; workspaceRoot: string; codexImageJobsRoot: string } {
+export function runtimePathsFrom(moduleUrl: string): {
+  dataRoot: string;
+  editorDist: string;
+  workspaceRoot: string;
+  codexImageJobsRoot: string;
+} {
   const moduleDirectory = dirname(fileURLToPath(moduleUrl));
   return {
     dataRoot: resolve(moduleDirectory, "../../../.slide-maker-data"),

@@ -19,8 +19,7 @@ export interface ImageProviderCapabilities {
 }
 
 export type ProviderAvailability =
-  | { status: "available"; warning?: string }
-  | { status: "unavailable"; reason: string };
+  { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
 
 export interface ImageGenerationRequest {
   projectId: string;
@@ -28,7 +27,12 @@ export interface ImageGenerationRequest {
   style: StylePreset;
   width: number;
   height: number;
-  references: ReadonlyArray<{ path: string; mediaType: string; role: "style" | "content"; name?: string }>;
+  references: ReadonlyArray<{
+    path: string;
+    mediaType: string;
+    role: "style" | "content";
+    name?: string;
+  }>;
   model: string;
   parameters: Record<string, unknown>;
   edit?: { instruction: string; baseImageIndex: number; maskImageIndex?: number };
@@ -52,10 +56,18 @@ export interface ImageGenerationProgress {
 export type ChildExitClass = "success" | "nonzero" | "timeout" | "aborted" | "server_shutdown";
 
 export type ImageGenerationLifecycleEvent =
-  | { type: "spawned" }
-  | { type: "exited"; exitClass: Exclude<ChildExitClass, "server_shutdown"> };
+  { type: "spawned" } | { type: "exited"; exitClass: Exclude<ChildExitClass, "server_shutdown"> };
 
-export type ProviderPreflightStatus = "ready" | "ready_experimental" | "disabled" | "cli_missing" | "incompatible" | "auth_required" | "timeout" | "artifact_unsupported" | "unknown";
+export type ProviderPreflightStatus =
+  | "ready"
+  | "ready_experimental"
+  | "disabled"
+  | "cli_missing"
+  | "incompatible"
+  | "auth_required"
+  | "timeout"
+  | "artifact_unsupported"
+  | "unknown";
 
 export interface ProviderPreflightResult {
   status: ProviderPreflightStatus;
@@ -68,7 +80,10 @@ export interface ImageGenerationContext {
 }
 
 export class SafeProviderError extends Error {
-  constructor(readonly code: string, readonly safeMessage: string) {
+  constructor(
+    readonly code: string,
+    readonly safeMessage: string,
+  ) {
     super(code);
     this.name = "SafeProviderError";
   }
@@ -86,13 +101,19 @@ export interface ImageProvider {
   readonly settingsSchema?: z.ZodType;
   /** A bounded, non-generating readiness check. It must never expose raw process output. */
   preflight?(): Promise<ProviderPreflightResult>;
-  generate(request: ImageGenerationRequest, context?: ImageGenerationContext): Promise<GeneratedImage>;
+  generate(
+    request: ImageGenerationRequest,
+    context?: ImageGenerationContext,
+  ): Promise<GeneratedImage>;
 }
 
 export interface LLMProvider {
   readonly id: string;
   createBrief(input: string): Promise<PresentationBrief>;
-  createOutline(brief: PresentationBrief, context: ReadonlyArray<SourceCitation>): Promise<SlideSpec[]>;
+  createOutline(
+    brief: PresentationBrief,
+    context: ReadonlyArray<SourceCitation>,
+  ): Promise<SlideSpec[]>;
 }
 
 export interface SourceProvider {

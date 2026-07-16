@@ -15,7 +15,9 @@ const READINESS_MESSAGES: Record<ProviderPreflightStatus, string> = {
   artifact_unsupported: "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
   unknown: "無法確認 provider readiness；若仍要繼續，必須明確接受風險。",
 };
-const READINESS_STATUSES = new Set<ProviderPreflightStatus>(Object.keys(READINESS_MESSAGES) as ProviderPreflightStatus[]);
+const READINESS_STATUSES = new Set<ProviderPreflightStatus>(
+  Object.keys(READINESS_MESSAGES) as ProviderPreflightStatus[],
+);
 
 export interface ProviderReadiness {
   providerId: string;
@@ -44,8 +46,10 @@ export class ProviderReadinessService {
     private readonly ttlMs = 30_000,
     private readonly checkTimeoutMs = 10_000,
   ) {
-    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 5 * 60_000) throw new Error("Readiness ttlMs is out of range");
-    if (!Number.isSafeInteger(checkTimeoutMs) || checkTimeoutMs < 1_000 || checkTimeoutMs > 30_000) throw new Error("Readiness checkTimeoutMs is out of range");
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 5 * 60_000)
+      throw new Error("Readiness ttlMs is out of range");
+    if (!Number.isSafeInteger(checkTimeoutMs) || checkTimeoutMs < 1_000 || checkTimeoutMs > 30_000)
+      throw new Error("Readiness checkTimeoutMs is out of range");
   }
 
   async check(providerId: string): Promise<ProviderReadiness> {
@@ -55,10 +59,12 @@ export class ProviderReadinessService {
     if (cached && cached.expiresAtMs > now) return cached.value;
     const existing = this.#inflight.get(providerId);
     if (existing) return existing;
-    const check = this.#perform(providerId).then((value) => {
-      this.#cache.set(providerId, { expiresAtMs: Date.parse(value.expiresAt), value });
-      return value;
-    }).finally(() => this.#inflight.delete(providerId));
+    const check = this.#perform(providerId)
+      .then((value) => {
+        this.#cache.set(providerId, { expiresAtMs: Date.parse(value.expiresAt), value });
+        return value;
+      })
+      .finally(() => this.#inflight.delete(providerId));
     this.#inflight.set(providerId, check);
     return check;
   }
@@ -68,9 +74,16 @@ export class ProviderReadinessService {
     this.#cache.clear();
   }
 
-  async assertCanGenerate(providerId: string, acceptUnknownReadiness: boolean): Promise<ProviderReadiness> {
+  async assertCanGenerate(
+    providerId: string,
+    acceptUnknownReadiness: boolean,
+  ): Promise<ProviderReadiness> {
     const readiness = await this.check(providerId);
-    if (["ready", "ready_experimental"].includes(readiness.status) || (readiness.status === "unknown" && acceptUnknownReadiness)) return readiness;
+    if (
+      ["ready", "ready_experimental"].includes(readiness.status) ||
+      (readiness.status === "unknown" && acceptUnknownReadiness)
+    )
+      return readiness;
     throw new ProviderReadinessGateError(readiness);
   }
 
@@ -83,7 +96,8 @@ export class ProviderReadinessService {
       status = provider.artifactContract === "unsupported" ? "artifact_unsupported" : "ready";
     } else {
       status = await this.#boundedStatus(provider);
-      if (status === "ready" && provider.artifactContract === "unsupported") status = "artifact_unsupported";
+      if (status === "ready" && provider.artifactContract === "unsupported")
+        status = "artifact_unsupported";
     }
     return this.#value(providerId, status);
   }
@@ -105,8 +119,12 @@ export class ProviderReadinessService {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        provider.preflight!().then((result) => READINESS_STATUSES.has(result.status) ? result.status : "unknown").catch(() => "unknown" as const),
-        new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), this.checkTimeoutMs); }),
+        provider.preflight!()
+          .then((result) => (READINESS_STATUSES.has(result.status) ? result.status : "unknown"))
+          .catch(() => "unknown" as const),
+        new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), this.checkTimeoutMs);
+        }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);

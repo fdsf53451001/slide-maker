@@ -19,4 +19,3 @@ describe("MockImageProvider", () => {
     expect(new TextDecoder().decode(image.bytes)).toContain("測試主題");
   });
 });
-

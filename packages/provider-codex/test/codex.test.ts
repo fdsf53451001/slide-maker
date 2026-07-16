@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createProject, type ImageGenerationRequest } from "@slide-maker/core";
-import { CodexImageSpikeProvider, informationDensityInstruction, spawnWithArgv } from "../src/index.js";
+import {
+  CodexImageSpikeProvider,
+  informationDensityInstruction,
+  spawnWithArgv,
+} from "../src/index.js";
 
 function request(parameters: Record<string, unknown> = {}): ImageGenerationRequest {
   const project = createProject({ topic: "Codex 軟隔離測試" });
@@ -21,7 +25,9 @@ function request(parameters: Record<string, unknown> = {}): ImageGenerationReque
 
 async function fakeCodex(root: string, mode = "success"): Promise<string> {
   const path = join(root, `fake-codex-${mode}.py`);
-  await writeFile(path, `#!/usr/bin/python3
+  await writeFile(
+    path,
+    `#!/usr/bin/python3
 import binascii, json, os, signal, struct, sys, time, zlib
 args = sys.argv[1:]
 try:
@@ -67,7 +73,9 @@ else:
         with open(output, "wb") as handle: handle.write(png_bytes(input_data["canvas"]["width"], input_data["canvas"]["height"]))
     if mode == "malformed-json": print("{not-json", flush=True)
     else: print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}), flush=True)
-`, { mode: 0o700 });
+`,
+    { mode: 0o700 },
+  );
   await chmod(path, 0o700);
   return path;
 }
@@ -90,7 +98,14 @@ describe("Codex image soft sandbox", () => {
       throw error;
     }
     expect(result.exitCode).toBe(0);
-    for (const flag of ["--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "--cd"]) {
+    for (const flag of [
+      "--json",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--sandbox",
+      "--cd",
+    ]) {
       expect(result.stdout).toContain(flag);
     }
   });
@@ -133,10 +148,20 @@ describe("Codex image soft sandbox", () => {
     expect(image.mediaType).toBe("image/png");
     expect(image.parameters).toEqual({ eventCount: 1, softSandbox: true });
     const [jobDirectory] = await readdir(workspaceRoot);
-    const argv = JSON.parse(await readFile(join(workspaceRoot, jobDirectory!, "argv.json"), "utf8")) as string[];
+    const argv = JSON.parse(
+      await readFile(join(workspaceRoot, jobDirectory!, "argv.json"), "utf8"),
+    ) as string[];
     expect(argv.slice(0, 11)).toEqual([
-      "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-      "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", join(workspaceRoot, jobDirectory!),
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--sandbox",
+      "workspace-write",
+      "--skip-git-repo-check",
+      "-C",
+      join(workspaceRoot, jobDirectory!),
       expect.stringContaining("$imagegen"),
     ]);
     expect(argv).not.toContain("--search");
@@ -200,7 +225,9 @@ describe("Codex image soft sandbox", () => {
   it("terminates timed-out and cancelled jobs", async () => {
     const root = await mkdtemp(join(tmpdir(), "slide-maker-fake-codex-timeout-"));
     const delayFixture = await fakeCodex(root, "delay");
-    const timed = await spawnWithArgv("/usr/bin/python3", ["-c", "import time; time.sleep(10)"], { timeoutMs: 100 });
+    const timed = await spawnWithArgv("/usr/bin/python3", ["-c", "import time; time.sleep(10)"], {
+      timeoutMs: 100,
+    });
     expect(timed.timedOut).toBe(true);
 
     const cancelledProvider = new CodexImageSpikeProvider({
@@ -219,12 +246,19 @@ describe("Codex image soft sandbox", () => {
   it("escalates timeout to SIGKILL when the child ignores SIGTERM", async () => {
     const root = await mkdtemp(join(tmpdir(), "slide-maker-fake-codex-kill-"));
     const startedAt = Date.now();
-    const result = await spawnWithArgv("/usr/bin/python3", ["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(10)"], { timeoutMs: 100 });
+    const result = await spawnWithArgv(
+      "/usr/bin/python3",
+      ["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(10)"],
+      { timeoutMs: 100 },
+    );
     expect(result.timedOut).toBe(true);
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
-  it.each([0, Number.POSITIVE_INFINITY, 29_999, 1_800_001])("rejects unsafe public timeout %s", (timeoutMs) => {
-    expect(() => new CodexImageSpikeProvider({ timeoutMs })).toThrow(/between 30000 and 1800000/);
-  });
+  it.each([0, Number.POSITIVE_INFINITY, 29_999, 1_800_001])(
+    "rejects unsafe public timeout %s",
+    (timeoutMs) => {
+      expect(() => new CodexImageSpikeProvider({ timeoutMs })).toThrow(/between 30000 and 1800000/);
+    },
+  );
 });

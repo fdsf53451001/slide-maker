@@ -14,7 +14,8 @@ const server = app.listen(port, host, () => {
   for (const message of formatStartupStatus({
     baseUrl: `http://${host}:${port}`,
     codexSoftSandboxEnabled,
-  })) console.log(message);
+  }))
+    console.log(message);
 });
 installShutdownHandlers(
   server,

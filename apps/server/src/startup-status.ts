@@ -14,7 +14,9 @@ export function formatStartupStatus(input: StartupStatusInput): string[] {
       "WARNING: read-only restricts writes but is not a read or tool security boundary; app-server still loads CODEX_HOME configuration and tool surfaces, so prompt injection and local data leakage remain possible.",
     );
   } else {
-    messages.push("Codex image provider is disabled. Set SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1 to opt in.");
+    messages.push(
+      "Codex image provider is disabled. Set SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1 to opt in.",
+    );
   }
   return messages;
 }

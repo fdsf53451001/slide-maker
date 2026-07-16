@@ -12,7 +12,9 @@ import {
 import { JobRunner } from "../src/jobs.js";
 import { FileProjectRepository } from "../src/repository.js";
 
-const QA_PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+const QA_PNG = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 class QaImageProvider implements ImageProvider {
   readonly id: string = "qa-image";
@@ -48,7 +50,11 @@ class QaFailingProvider extends QaImageProvider {
   }
 }
 
-async function waitForTerminalJob(repository: FileProjectRepository, projectId: string, jobId: string) {
+async function waitForTerminalJob(
+  repository: FileProjectRepository,
+  projectId: string,
+  jobId: string,
+) {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const project = await repository.loadProject(projectId);
@@ -73,13 +79,19 @@ describe("QA job persistence contract", () => {
     const { root, repository, project, runner } = await fixture(new QaImageProvider());
     const slide = project.slides[0]!;
     const queued = await runner.enqueue(project.id, slide.id, "qa-image");
-    const { project: completedProject, job } = await waitForTerminalJob(repository, project.id, queued.id);
+    const { project: completedProject, job } = await waitForTerminalJob(
+      repository,
+      project.id,
+      queued.id,
+    );
 
     expect(job.status).toBe("completed");
     expect(job.attempt).toBe(1);
     expect(job.resultVersionId).toBeTruthy();
     const completedSlide = completedProject?.slides.find((candidate) => candidate.id === slide.id);
-    const version = completedSlide?.versions.find((candidate) => candidate.id === job.resultVersionId);
+    const version = completedSlide?.versions.find(
+      (candidate) => candidate.id === job.resultVersionId,
+    );
     expect(completedSlide?.currentVersionId).toBe(version?.id);
     expect(version).toMatchObject({
       providerId: "qa-image",
@@ -96,8 +108,9 @@ describe("QA job persistence contract", () => {
       },
     });
     expect(completedSlide?.outlineDirty).toBe(false);
-    expect(new Uint8Array(await readFile(join(root, "projects", project.id, version!.imagePath))))
-      .toEqual(QA_PNG);
+    expect(
+      new Uint8Array(await readFile(join(root, "projects", project.id, version!.imagePath))),
+    ).toEqual(QA_PNG);
   });
 
   it("replaces provider errors with a fixed safe message before persisting", async () => {

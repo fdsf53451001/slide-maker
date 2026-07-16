@@ -8,12 +8,12 @@ disable-model-invocation: true
 
 可用的 smoke 目標（定義於根目錄 package.json）：
 
-| 目標 | 指令 | 用途 |
-|---|---|---|
-| `image:codex` | `pnpm smoke:image:codex` | Codex 圖片 provider 單張生成 |
-| `deck:grok` | `pnpm smoke:deck:grok` | Grok 完整簡報建置端對端 |
-| `style-reference` | `pnpm smoke:style-reference` | 風格參考端對端 |
-| `parallel` | `pnpm smoke:parallel` | Codex 並行生成端對端 |
+| 目標              | 指令                         | 用途                         |
+| ----------------- | ---------------------------- | ---------------------------- |
+| `image:codex`     | `pnpm smoke:image:codex`     | Codex 圖片 provider 單張生成 |
+| `deck:grok`       | `pnpm smoke:deck:grok`       | Grok 完整簡報建置端對端      |
+| `style-reference` | `pnpm smoke:style-reference` | 風格參考端對端               |
+| `parallel`        | `pnpm smoke:parallel`        | Codex 並行生成端對端         |
 
 流程：
 

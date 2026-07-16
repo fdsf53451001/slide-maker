@@ -24,7 +24,13 @@ const capabilities = {
   reproducibleParameters: [] as string[],
 };
 
-async function waitFor(repository: FileProjectRepository, projectId: string, predicate: (jobs: NonNullable<Awaited<ReturnType<FileProjectRepository["loadProject"]>>>["jobs"]) => boolean) {
+async function waitFor(
+  repository: FileProjectRepository,
+  projectId: string,
+  predicate: (
+    jobs: NonNullable<Awaited<ReturnType<FileProjectRepository["loadProject"]>>>["jobs"],
+  ) => boolean,
+) {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const project = await repository.loadProject(projectId);
@@ -51,8 +57,9 @@ describe("QA graceful JobRunner shutdown", () => {
         await context?.onProgress?.({ phase: "waiting_for_codex", eventCode: "turn_started" });
         return new Promise<never>((_resolve, reject) => {
           const abort = () => {
-            void Promise.resolve(context?.onLifecycle?.({ type: "exited", exitClass: "aborted" }))
-              .finally(() => reject(new DOMException("shutdown", "AbortError")));
+            void Promise.resolve(
+              context?.onLifecycle?.({ type: "exited", exitClass: "aborted" }),
+            ).finally(() => reject(new DOMException("shutdown", "AbortError")));
           };
           context?.signal?.addEventListener("abort", abort, { once: true });
           if (context?.signal?.aborted) abort();
@@ -70,16 +77,25 @@ describe("QA graceful JobRunner shutdown", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     const active = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    await waitFor(repository, project.id, (jobs) => jobs.some((job) => job.id === active.id && job.childLifecycle?.spawnedAt !== undefined));
+    await waitFor(repository, project.id, (jobs) =>
+      jobs.some((job) => job.id === active.id && job.childLifecycle?.spawnedAt !== undefined),
+    );
     const queued = await runner.enqueue(project.id, project.slides[1]!.id, provider.id);
-    await waitFor(repository, project.id, (jobs) => jobs.some((job) => job.id === queued.id && job.status === "queued"));
+    await waitFor(repository, project.id, (jobs) =>
+      jobs.some((job) => job.id === queued.id && job.status === "queued"),
+    );
 
     await runner.shutdown(500);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const stopped = await repository.loadProject(project.id);
     expect(stopped?.jobs).toHaveLength(2);
     for (const job of stopped!.jobs) {
-      expect(job).toMatchObject({ status: "failed", phase: "failed", errorCode: "SERVER_SHUTDOWN", finishedAt: expect.any(String) });
+      expect(job).toMatchObject({
+        status: "failed",
+        phase: "failed",
+        errorCode: "SERVER_SHUTDOWN",
+        finishedAt: expect.any(String),
+      });
     }
     const lifecycle = stopped?.jobs.find((job) => job.id === active.id)?.childLifecycle;
     expect(lifecycle).toMatchObject({
@@ -90,23 +106,35 @@ describe("QA graceful JobRunner shutdown", () => {
       exitClass: "server_shutdown",
     });
     expect(Object.keys(lifecycle!).sort()).toEqual([
-      "exitClass", "exitedAt", "lastAllowedEventAt", "shutdownRequestedAt", "spawnedAt",
+      "exitClass",
+      "exitedAt",
+      "lastAllowedEventAt",
+      "shutdownRequestedAt",
+      "spawnedAt",
     ]);
     expect(stopped?.jobs.find((job) => job.id === queued.id)?.attempt).toBe(0);
     expect(invocations).toBe(1);
-    await expect(runner.enqueue(project.id, project.slides[2]!.id, provider.id)).rejects.toThrow("SERVER_SHUTTING_DOWN");
+    await expect(runner.enqueue(project.id, project.slides[2]!.id, provider.id)).rejects.toThrow(
+      "SERVER_SHUTTING_DOWN",
+    );
 
     const restarted = new JobRunner(new FileProjectRepository(root), providers);
     await restarted.recoverInterruptedJobs();
     const reloaded = await new FileProjectRepository(root).loadProject(project.id);
-    expect(reloaded?.jobs.every((job) => job.status === "failed" && job.errorCode === "SERVER_SHUTDOWN")).toBe(true);
-    expect(reloaded?.jobs.some((job) => job.status === "running" || job.status === "queued")).toBe(false);
+    expect(
+      reloaded?.jobs.every((job) => job.status === "failed" && job.errorCode === "SERVER_SHUTDOWN"),
+    ).toBe(true);
+    expect(reloaded?.jobs.some((job) => job.status === "running" || job.status === "queued")).toBe(
+      false,
+    );
 
     const serialized = JSON.stringify(reloaded);
     expect(serialized).not.toMatch(/pid|RAW-STDERR|TOKEN-CANARY|base64|revised_prompt/i);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const logOutput = log.mock.calls.map(([line]) => String(line)).join("\n");
-    expect(logOutput).not.toMatch(/PROMPT-CANARY|STYLE-CANARY|SOURCE-CANARY|RAW-STDERR|TOKEN-CANARY|base64|revised_prompt/i);
+    expect(logOutput).not.toMatch(
+      /PROMPT-CANARY|STYLE-CANARY|SOURCE-CANARY|RAW-STDERR|TOKEN-CANARY|base64|revised_prompt/i,
+    );
   });
 
   it("is reentrant, returns at the hard deadline, and never fabricates child exit evidence", async () => {
@@ -125,9 +153,16 @@ describe("QA graceful JobRunner shutdown", () => {
     const repository = new FileProjectRepository(root);
     const project = createProject({ topic: "Shutdown hard deadline" });
     await repository.saveProject(project);
-    const runner = new JobRunner(repository, new ProviderRegistry<ImageProvider>().register(provider));
+    const runner = new JobRunner(
+      repository,
+      new ProviderRegistry<ImageProvider>().register(provider),
+    );
     const job = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    await waitFor(repository, project.id, (jobs) => jobs.some((candidate) => candidate.id === job.id && candidate.childLifecycle?.spawnedAt !== undefined));
+    await waitFor(repository, project.id, (jobs) =>
+      jobs.some(
+        (candidate) => candidate.id === job.id && candidate.childLifecycle?.spawnedAt !== undefined,
+      ),
+    );
 
     const startedAt = Date.now();
     const first = runner.shutdown(100);
@@ -169,13 +204,23 @@ describe("QA graceful JobRunner shutdown", () => {
     const repository = new FileProjectRepository(root);
     const project = createProject({ topic: "Cancel lifecycle evidence" });
     await repository.saveProject(project);
-    const runner = new JobRunner(repository, new ProviderRegistry<ImageProvider>().register(provider));
+    const runner = new JobRunner(
+      repository,
+      new ProviderRegistry<ImageProvider>().register(provider),
+    );
     const job = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    await waitFor(repository, project.id, (jobs) => jobs.some((candidate) => candidate.id === job.id && candidate.childLifecycle?.spawnedAt !== undefined));
+    await waitFor(repository, project.id, (jobs) =>
+      jobs.some(
+        (candidate) => candidate.id === job.id && candidate.childLifecycle?.spawnedAt !== undefined,
+      ),
+    );
 
     const cancelled = await runner.cancel(project.id, job.id);
     expect(cancelled).toMatchObject({ status: "cancelled", errorCode: "CANCELLED" });
-    expect(cancelled.childLifecycle).toMatchObject({ spawnedAt: expect.any(String), cancelRequestedAt: expect.any(String) });
+    expect(cancelled.childLifecycle).toMatchObject({
+      spawnedAt: expect.any(String),
+      cancelRequestedAt: expect.any(String),
+    });
     expect(cancelled.childLifecycle).not.toHaveProperty("exitedAt");
     expect(cancelled.childLifecycle).not.toHaveProperty("exitClass");
   });
@@ -187,7 +232,11 @@ describe("QA graceful JobRunner shutdown", () => {
     const jobs = { shutdown } as unknown as JobRunner;
     const beginShutdown = vi.fn();
     const readiness = { beginShutdown } as unknown as ProviderReadinessService;
-    const runtime = { on: vi.fn().mockReturnThis(), removeListener: vi.fn().mockReturnThis(), exit: vi.fn() } as unknown as Pick<NodeJS.Process, "on" | "removeListener" | "exit">;
+    const runtime = {
+      on: vi.fn().mockReturnThis(),
+      removeListener: vi.fn().mockReturnThis(),
+      exit: vi.fn(),
+    } as unknown as Pick<NodeJS.Process, "on" | "removeListener" | "exit">;
     const trigger = installShutdownHandlers(server, jobs, readiness, 100, runtime);
     const first = trigger();
     const second = trigger();
@@ -246,7 +295,9 @@ describe("QA graceful JobRunner shutdown", () => {
       close: vi.fn((callback: () => void) => setTimeout(callback, 50)),
       closeAllConnections,
     } as unknown as Server;
-    const jobs = { shutdown: vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 50))) } as unknown as JobRunner;
+    const jobs = {
+      shutdown: vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
+    } as unknown as JobRunner;
     const readiness = { beginShutdown: vi.fn() } as unknown as ProviderReadinessService;
     installShutdownHandlers(server, jobs, readiness, 100, runtime);
 
@@ -263,10 +314,14 @@ describe("QA graceful JobRunner shutdown", () => {
       close: vi.fn((_callback: () => void) => undefined),
       closeAllConnections,
     } as unknown as Server;
-    const jobs = { shutdown: vi.fn(() => new Promise<void>(() => undefined)) } as unknown as JobRunner;
+    const jobs = {
+      shutdown: vi.fn(() => new Promise<void>(() => undefined)),
+    } as unknown as JobRunner;
     const readiness = { beginShutdown: vi.fn() } as unknown as ProviderReadinessService;
     const startedAt = Date.now();
-    await expect(gracefulShutdown(server, jobs, readiness, 100)).rejects.toThrow("SERVER_SHUTDOWN_DEADLINE_EXCEEDED");
+    await expect(gracefulShutdown(server, jobs, readiness, 100)).rejects.toThrow(
+      "SERVER_SHUTDOWN_DEADLINE_EXCEEDED",
+    );
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(90);
     expect(Date.now() - startedAt).toBeLessThan(750);
     expect(closeAllConnections).toHaveBeenCalledTimes(1);

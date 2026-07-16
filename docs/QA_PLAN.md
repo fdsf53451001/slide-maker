@@ -60,53 +60,53 @@ MVP 發布前額外閘門：
 
 優先級：P0 為 MVP 阻斷；P1 為發布前必要；P2 為強化項目。
 
-| ID | 優先級 | 規格領域 | 驗證情境 | 主要層級 | 通過標準 |
-|---|---|---|---|---|---|
-| QA-ARCH-001 | P0 | Monorepo/library | 各公開 package 可獨立 build，乾淨 consumer 可依 exports 匯入 | build | 無 source-path 偶合或未宣告依賴 |
-| QA-ARCH-002 | P0 | 擴充架構 | 靜態註冊各類 provider，重複 ID、未知 ID、契約不符時可預期失敗 | unit/contract | 七類擴充點均有穩定介面與明確錯誤 |
-| QA-SCHEMA-001 | P0 | Schema-first | Brief、outline、SlideSpec、citation、generation plan 合法/非法輸入 | unit | Zod schema 版本化且拒絕未驗證資料 |
-| QA-SCHEMA-002 | P1 | 遷移 | 舊版 project manifest 遷移；未知未來版本拒絕 | integration | 遷移不遺失已知資料，錯誤可行動 |
-| QA-PROJ-001 | P0 | 專案格式 | 建立、保存、關閉、重開 `project.json` + `assets/` | integration | round-trip 等價且資產引用有效 |
-| QA-PROJ-002 | P0 | 專案包 | `.slide-project` export/import | integration | 可重開；不得包含 secret 或衍生索引 |
-| QA-PROJ-003 | P1 | 安全 | ZIP slip、symlink、絕對路徑與越界 asset reference | security | 無法寫出專案 workspace |
-| QA-SRC-001 | P0 | 來源 provider | PDF/PPTX/DOCX/MD/TXT/PNG/JPG 正常與損壞輸入 | contract | 狀態、metadata、抽取內容及錯誤一致 |
-| QA-SRC-002 | P0 | 來源用途 | 文件預設 content、圖片預設 visual-reference；五種用途可切換 | unit/UI | 預設與持久化符合規格 |
-| QA-SRC-003 | P0 | 傳送權限 | exclude-from-generation 或未允許內容不進模型請求 | integration | fake provider 捕獲的 payload 不含被排除資料 |
-| QA-SRC-004 | P1 | 來源管理 | 上傳、改名、分類、搜尋、預覽、刪除警告、錯誤顯示 | E2E | UI 與重啟後狀態一致 |
-| QA-SRC-005 | P0 | 追蹤 | 刪除原來源後，既有 slide version 仍保留來源快照 | integration | attribution 可檢視，無懸空不可讀引用 |
-| QA-SRC-006 | P1 | 容量 | 第 100 個來源成功；第 101 個與超過約 1 GB 有明確政策 | integration | 不崩潰、不產生半寫入狀態 |
-| QA-RET-001 | P0 | SQLite FTS | 切塊、穩定 source ID、繁中/英文檢索、刪除與重建索引 | integration | 重建前後同查詢結果語意等價 |
-| QA-RET-002 | P1 | Retriever 契約 | 替換 fake/FTS retriever，不改核心流程 | contract | 介面可靜態註冊，結果含可追蹤 chunk ID |
-| QA-WEB-001 | P0 | Web Search | creative 預設 cached，可選 live/disabled | unit/UI | 設定正確送入 provider 並持久化 |
-| QA-WEB-002 | P0 | 不可信網頁 | 搜尋結果含指令注入字串 | integration | 內容僅作資料，不改變工具、路徑或安全設定 |
-| QA-STYLE-001 | P0 | StylePreset | 建立、讀取、更新、刪除、版本、資產與可選 style board | integration/UI | server-side repository round-trip 正確 |
-| QA-STYLE-002 | P0 | 快照 | 全域 style 更新不改既有 project snapshot | integration | 舊專案 hash/版本不變 |
-| QA-STYLE-003 | P1 | 繼承 | 全域、專案、單頁覆寫解析 | unit | precedence 明確、結果 deterministic |
-| QA-IMG-001 | P0 | ImageProvider | capability 宣告、必備 full-slide、支援尺寸/參考圖/seed | contract | UI/核心只呼叫已宣告能力 |
-| QA-IMG-002 | P0 | 標準畫布 | 非 16:9 provider 結果裁切或補邊為 1920x1080 | integration | 像素尺寸正確且無非預期變形 |
-| QA-IMG-003 | P1 | Provider UI | 進階設定依 provider schema 顯示與驗證 | UI | 無隱藏簡化 preset；非法參數不能提交 |
-| QA-FLOW-001 | P0 | 建立流程 | 僅輸入一句需求，取得可修改 Brief，再產生 outline/SlideSpec | E2E | 每階段可停、修改、保存後繼續 |
-| QA-FLOW-002 | P0 | 自由頁型 | SlideSpec 不要求固定 slide type enum | schema/E2E | 自由 purpose/content/layoutHint 可保存與生成 |
-| QA-FLOW-003 | P0 | 逐頁編輯 | 排序、複製、刪除、修改 spec、重生單頁 | E2E | 只影響目標頁，順序與引用正確 |
-| QA-VERS-001 | P0 | 不可變版本 | 生成/重生/修改建立版本；命名、比較、回復 | integration/UI | 回復新增狀態，不刪除後續歷史 |
-| QA-VERS-002 | P0 | 版本 metadata | 圖片、prompt、model、參數、style、來源、時間齊全 | unit | schema 與磁碟皆完整 |
-| QA-JOB-001 | P0 | Job 狀態 | queued/running/completed/failed/cancelled 合法轉移 | unit | 非法轉移拒絕且錯誤明確 |
-| QA-JOB-002 | P0 | 持久與恢復 | 執行中強制終止 server 後重開 | integration | 工作可判定、重試；完成結果不重複 |
-| QA-JOB-003 | P0 | 局部成果 | 多頁生成中一頁失敗 | integration | 成功頁立即保存；失敗頁可獨立重試 |
-| QA-JOB-004 | P1 | 並行/取消 | provider concurrency limit 與 queued cancel | integration | 最大同時執行數不超限；取消不呼叫 provider |
-| QA-EXP-001 | P0 | PPTX | 全版圖、順序、16:9、可選 notes/來源 | integration | OPC 結構有效；每頁單一全版圖片且 notes 正確 |
-| QA-EXP-002 | P0 | PDF | 頁數、順序、尺寸與可開啟性 | integration | parser 可讀且頁面為 16:9 |
-| QA-EXP-003 | P0 | PNG ZIP | 每頁 PNG、命名、順序與 1920x1080 | integration | ZIP 可解壓且所有圖片有效 |
-| QA-EXP-004 | P0 | Project export | 完整專案重新匯入 | integration | 見 QA-PROJ-002 |
-| QA-SEC-001 | P0 | Secret | project、project bundle、job/error log 不含 canary API key | security | 對所有產物全文搜尋無 canary |
-| QA-SEC-002 | P0 | Sandbox | Codex 僅可寫 project workspace；allowlist module 唯讀 | integration | 越界寫入被拒絕並留安全錯誤 |
-| QA-SEC-003 | P0 | 資料揭露 | 送往 provider 的資料範圍可在 UI 查知 | UI/integration | 顯示內容與實際 fake payload 一致 |
-| QA-SEC-004 | P1 | 無隱性網路 | 離線核心流程不發出未宣告網路請求 | integration | 封鎖網路時 deterministic 流程通過 |
-| QA-UI-001 | P0 | 編輯器布局 | 縮圖區、預覽、頁面設定/來源/生成操作、版本歷史 | E2E | 核心功能鍵盤可達且主要狀態可辨識 |
-| QA-UI-002 | P0 | Capability gating | 不支援 edit/inpaint 時 UI 不顯示或停用 | E2E | 不會向 provider 發送不支援操作 |
-| QA-UI-003 | P1 | 錯誤復原 | parser/provider/exporter 失敗訊息與重試 | E2E | 不丟失已完成工作，錯誤可行動 |
-| QA-M0-001 | P0 | Codex spike | 單頁生成、style/content refs、圖片與紀錄 | manual/integration | 保存命令、環境、輸入、輸出與時間 |
-| QA-M0-002 | P0 | Codex spike | 中斷判定、連續多頁、額度限制 | manual/integration | 有可重現結論與 fallback 決策 |
+| ID            | 優先級 | 規格領域          | 驗證情境                                                           | 主要層級           | 通過標準                                     |
+| ------------- | ------ | ----------------- | ------------------------------------------------------------------ | ------------------ | -------------------------------------------- |
+| QA-ARCH-001   | P0     | Monorepo/library  | 各公開 package 可獨立 build，乾淨 consumer 可依 exports 匯入       | build              | 無 source-path 偶合或未宣告依賴              |
+| QA-ARCH-002   | P0     | 擴充架構          | 靜態註冊各類 provider，重複 ID、未知 ID、契約不符時可預期失敗      | unit/contract      | 七類擴充點均有穩定介面與明確錯誤             |
+| QA-SCHEMA-001 | P0     | Schema-first      | Brief、outline、SlideSpec、citation、generation plan 合法/非法輸入 | unit               | Zod schema 版本化且拒絕未驗證資料            |
+| QA-SCHEMA-002 | P1     | 遷移              | 舊版 project manifest 遷移；未知未來版本拒絕                       | integration        | 遷移不遺失已知資料，錯誤可行動               |
+| QA-PROJ-001   | P0     | 專案格式          | 建立、保存、關閉、重開 `project.json` + `assets/`                  | integration        | round-trip 等價且資產引用有效                |
+| QA-PROJ-002   | P0     | 專案包            | `.slide-project` export/import                                     | integration        | 可重開；不得包含 secret 或衍生索引           |
+| QA-PROJ-003   | P1     | 安全              | ZIP slip、symlink、絕對路徑與越界 asset reference                  | security           | 無法寫出專案 workspace                       |
+| QA-SRC-001    | P0     | 來源 provider     | PDF/PPTX/DOCX/MD/TXT/PNG/JPG 正常與損壞輸入                        | contract           | 狀態、metadata、抽取內容及錯誤一致           |
+| QA-SRC-002    | P0     | 來源用途          | 文件預設 content、圖片預設 visual-reference；五種用途可切換        | unit/UI            | 預設與持久化符合規格                         |
+| QA-SRC-003    | P0     | 傳送權限          | exclude-from-generation 或未允許內容不進模型請求                   | integration        | fake provider 捕獲的 payload 不含被排除資料  |
+| QA-SRC-004    | P1     | 來源管理          | 上傳、改名、分類、搜尋、預覽、刪除警告、錯誤顯示                   | E2E                | UI 與重啟後狀態一致                          |
+| QA-SRC-005    | P0     | 追蹤              | 刪除原來源後，既有 slide version 仍保留來源快照                    | integration        | attribution 可檢視，無懸空不可讀引用         |
+| QA-SRC-006    | P1     | 容量              | 第 100 個來源成功；第 101 個與超過約 1 GB 有明確政策               | integration        | 不崩潰、不產生半寫入狀態                     |
+| QA-RET-001    | P0     | SQLite FTS        | 切塊、穩定 source ID、繁中/英文檢索、刪除與重建索引                | integration        | 重建前後同查詢結果語意等價                   |
+| QA-RET-002    | P1     | Retriever 契約    | 替換 fake/FTS retriever，不改核心流程                              | contract           | 介面可靜態註冊，結果含可追蹤 chunk ID        |
+| QA-WEB-001    | P0     | Web Search        | creative 預設 cached，可選 live/disabled                           | unit/UI            | 設定正確送入 provider 並持久化               |
+| QA-WEB-002    | P0     | 不可信網頁        | 搜尋結果含指令注入字串                                             | integration        | 內容僅作資料，不改變工具、路徑或安全設定     |
+| QA-STYLE-001  | P0     | StylePreset       | 建立、讀取、更新、刪除、版本、資產與可選 style board               | integration/UI     | server-side repository round-trip 正確       |
+| QA-STYLE-002  | P0     | 快照              | 全域 style 更新不改既有 project snapshot                           | integration        | 舊專案 hash/版本不變                         |
+| QA-STYLE-003  | P1     | 繼承              | 全域、專案、單頁覆寫解析                                           | unit               | precedence 明確、結果 deterministic          |
+| QA-IMG-001    | P0     | ImageProvider     | capability 宣告、必備 full-slide、支援尺寸/參考圖/seed             | contract           | UI/核心只呼叫已宣告能力                      |
+| QA-IMG-002    | P0     | 標準畫布          | 非 16:9 provider 結果裁切或補邊為 1920x1080                        | integration        | 像素尺寸正確且無非預期變形                   |
+| QA-IMG-003    | P1     | Provider UI       | 進階設定依 provider schema 顯示與驗證                              | UI                 | 無隱藏簡化 preset；非法參數不能提交          |
+| QA-FLOW-001   | P0     | 建立流程          | 僅輸入一句需求，取得可修改 Brief，再產生 outline/SlideSpec         | E2E                | 每階段可停、修改、保存後繼續                 |
+| QA-FLOW-002   | P0     | 自由頁型          | SlideSpec 不要求固定 slide type enum                               | schema/E2E         | 自由 purpose/content/layoutHint 可保存與生成 |
+| QA-FLOW-003   | P0     | 逐頁編輯          | 排序、複製、刪除、修改 spec、重生單頁                              | E2E                | 只影響目標頁，順序與引用正確                 |
+| QA-VERS-001   | P0     | 不可變版本        | 生成/重生/修改建立版本；命名、比較、回復                           | integration/UI     | 回復新增狀態，不刪除後續歷史                 |
+| QA-VERS-002   | P0     | 版本 metadata     | 圖片、prompt、model、參數、style、來源、時間齊全                   | unit               | schema 與磁碟皆完整                          |
+| QA-JOB-001    | P0     | Job 狀態          | queued/running/completed/failed/cancelled 合法轉移                 | unit               | 非法轉移拒絕且錯誤明確                       |
+| QA-JOB-002    | P0     | 持久與恢復        | 執行中強制終止 server 後重開                                       | integration        | 工作可判定、重試；完成結果不重複             |
+| QA-JOB-003    | P0     | 局部成果          | 多頁生成中一頁失敗                                                 | integration        | 成功頁立即保存；失敗頁可獨立重試             |
+| QA-JOB-004    | P1     | 並行/取消         | provider concurrency limit 與 queued cancel                        | integration        | 最大同時執行數不超限；取消不呼叫 provider    |
+| QA-EXP-001    | P0     | PPTX              | 全版圖、順序、16:9、可選 notes/來源                                | integration        | OPC 結構有效；每頁單一全版圖片且 notes 正確  |
+| QA-EXP-002    | P0     | PDF               | 頁數、順序、尺寸與可開啟性                                         | integration        | parser 可讀且頁面為 16:9                     |
+| QA-EXP-003    | P0     | PNG ZIP           | 每頁 PNG、命名、順序與 1920x1080                                   | integration        | ZIP 可解壓且所有圖片有效                     |
+| QA-EXP-004    | P0     | Project export    | 完整專案重新匯入                                                   | integration        | 見 QA-PROJ-002                               |
+| QA-SEC-001    | P0     | Secret            | project、project bundle、job/error log 不含 canary API key         | security           | 對所有產物全文搜尋無 canary                  |
+| QA-SEC-002    | P0     | Sandbox           | Codex 僅可寫 project workspace；allowlist module 唯讀              | integration        | 越界寫入被拒絕並留安全錯誤                   |
+| QA-SEC-003    | P0     | 資料揭露          | 送往 provider 的資料範圍可在 UI 查知                               | UI/integration     | 顯示內容與實際 fake payload 一致             |
+| QA-SEC-004    | P1     | 無隱性網路        | 離線核心流程不發出未宣告網路請求                                   | integration        | 封鎖網路時 deterministic 流程通過            |
+| QA-UI-001     | P0     | 編輯器布局        | 縮圖區、預覽、頁面設定/來源/生成操作、版本歷史                     | E2E                | 核心功能鍵盤可達且主要狀態可辨識             |
+| QA-UI-002     | P0     | Capability gating | 不支援 edit/inpaint 時 UI 不顯示或停用                             | E2E                | 不會向 provider 發送不支援操作               |
+| QA-UI-003     | P1     | 錯誤復原          | parser/provider/exporter 失敗訊息與重試                            | E2E                | 不丟失已完成工作，錯誤可行動                 |
+| QA-M0-001     | P0     | Codex spike       | 單頁生成、style/content refs、圖片與紀錄                           | manual/integration | 保存命令、環境、輸入、輸出與時間             |
+| QA-M0-002     | P0     | Codex spike       | 中斷判定、連續多頁、額度限制                                       | manual/integration | 有可重現結論與 fallback 決策                 |
 
 ## 6. 非功能與邊界測試
 
@@ -161,40 +161,40 @@ pnpm exec playwright test
 
 ## 9. 執行紀錄
 
-| 日期 | Revision | 命令 | 結果 | 備註/缺陷 |
-|---|---|---|---|---|
-| 2026-07-14 | initial core/providers scaffold | `corepack pnpm install --frozen-lockfile` | BLOCKED | 執行環境沒有 `corepack`/`pnpm`；改以 packageManager 鎖定的 `npx pnpm@10.13.1` |
-| 2026-07-14 | initial core/providers scaffold | `npx --yes pnpm@10.13.1 install --frozen-lockfile` | FAIL | 初次執行時尚無 `pnpm-lock.yaml`（`ERR_PNPM_NO_LOCKFILE`）；以 `--no-frozen-lockfile` 安裝後產生 lockfile |
-| 2026-07-14 | core + mock + Codex provider | `pnpm typecheck` | PASS | 3 個實作 package 通過 |
-| 2026-07-14 | core + mock + Codex provider | `pnpm test` | PASS | 6/6；Codex child-process 測試須在 managed sandbox 外執行，sandbox 會清空 child stdout |
-| 2026-07-14 | core + mock + Codex provider | `pnpm build` | PASS | 3 個實作 package 通過 |
-| 2026-07-14 | server batch 1 | `pnpm --filter @slide-maker/server test` | PASS | 原有 2/2；加入 QA job persistence/redaction/recovery 後 5/5 |
-| 2026-07-14 | server batch 1 | `pnpm --filter @slide-maker/server typecheck` | FAIL | `app.ts:45` 違反 `exactOptionalPropertyTypes`，`name` 可為 undefined |
-| 2026-07-14 | server batch 1 | `pnpm --filter @slide-maker/server build` | FAIL | 同上；另 `app.ts:20` TS2742，`createApp` inferred return type 不可攜 |
-| 2026-07-14 | editor batch 1 | `pnpm --filter @slide-maker/editor test` | PASS (empty) | 以 `--passWithNoTests` 結束；實際沒有 editor 測試 |
-| 2026-07-14 | editor batch 1 | `pnpm --filter @slide-maker/editor typecheck` | FAIL | `Editor.tsx:141` 使用目前 TS lib 不支援的 `toReversed`，並衍生 callback implicit any |
-| 2026-07-14 | editor batch 1 | `pnpm --filter @slide-maker/editor build` | FAIL | 同 typecheck；Vite build 未執行 |
-| 2026-07-14 | final clean verification | `/tmp` 乾淨副本：`pnpm install --frozen-lockfile` | PASS | lockfile 最新；6 個 workspace projects 可重現安裝 |
-| 2026-07-14 | final clean verification | `/tmp` 乾淨副本：`pnpm check` | PASS | typecheck 全過；13/13 tests；app + embeddable editor library + server/packages build 全過 |
-| 2026-07-14 | final workspace verification | workspace：`pnpm check` | PASS | 與乾淨副本一致；server HTTP vertical tests 2/2 通過 |
-| 2026-07-14 | production smoke | production server + local HTTP | PASS | health、create、patch、mock generate、poll completed、serve SVG、immutable restore、惡意 Origin 403 均符合預期 |
-| 2026-07-14 | package dry run（初次） | core/mock/Codex/editor：`npm pack --dry-run --json` | PASS/WARN | exports、runtime 與 type artifacts 皆入包；當時缺 Apache-2.0 LICENSE，後續批次已修復 |
-| 2026-07-14 | final security/concurrency batch | workspace：`pnpm check` | PASS | typecheck 全過；16/16 tests（含 HTTP、concurrency、invalid provider output）；app/library/server build 全過 |
-| 2026-07-14 | final package/license | 4 public packages：`npm pack --dry-run --json` + `sha256sum` | PASS | 全部 tarball 明確包含 `LICENSE`；root 與四份 package LICENSE SHA256 皆為 `7505b489…3df1ab` |
-| 2026-07-14 | `Cannot GET /` regression | repository root：`npx --yes pnpm@10.13.1 dev` | PASS | `GET /` 200 `text/html`；首頁引用 JS asset 200 `text/javascript`；`GET /api/health` 200 JSON |
-| 2026-07-14 | runtime cwd regression | `/tmp`：`node /absolute/path/apps/server/dist/index.js` | PASS | 從 repository 外 cwd 啟動仍正確解析 editor dist；首頁、同一靜態 asset與 health 均 200 |
-| 2026-07-14 | runtime path final check | workspace：`pnpm check` | PASS | typecheck/build 全過；19/19 tests，含 runtime path 2、HTTP editor root 1 與既有 integration/security tests |
-| 2026-07-14 | Codex soft-isolation provider | fake executables：`pnpm --filter @slide-maker/provider-codex test` | PASS | 19/19；opt-in、argv/cwd/flags、untrusted input、JSONL、timeout/cancel/SIGKILL、symlink/outside、PNG size/chunks/CRC/dimensions與 secret-safe process error |
-| 2026-07-14 | Codex server job flow | fake `codex` on PATH：`qa-codex-flow.test.ts` | PASS | opt-in off unavailable/拒絕 enqueue；on available+warning；success completed/version；failure只保存 `CODEX_PROCESS_FAILED_9`，不含 Bearer secret |
-| 2026-07-14 | Codex soft-isolation final check | workspace：`pnpm check` | PASS | typecheck/build 全過；36/36 tests（provider 19、server 14、core 2、mock 1）；editor test script仍為 0 tests |
-| 2026-07-14 | dev startup status | root `pnpm dev`（opt-in off）+ server dev（opt-in on） | PASS | off 顯示 mock 與 Codex disabled；on 顯示 enabled、quota 與 soft-isolation 非安全邊界警告；兩者 `/api/providers` 均與 console 狀態一致且 watch process 持續服務 |
-| 2026-07-14 | job observability | `pnpm --filter @slide-maker/server test`（managed sandbox 外） | PASS | 9 files、35/35；phase/event 順序與持久化、reload、elapsed/remaining、delayed JSONL API、cancel/跨專案 cancel、timeout 無重試、安全錯誤分類、結構化 log 去敏、舊 schema migration、mock lifecycle |
-| 2026-07-14 | timeout/process regression | `pnpm --filter @slide-maker/provider-codex test`（managed sandbox 外） | PASS | 2 files、32/32；10 分鐘 default、30 秒至 30 分鐘 bounds/invalid、slow fake、usage/auth classification、cancel、timeout、SIGKILL 與 grandchild process-group heartbeat 終止 |
-| 2026-07-14 | observability final gate | workspace：`pnpm check`（managed sandbox 外） | PASS | exit 0；typecheck/build 全過；71/71 tests（core 3、mock 1、Codex 32、server 35；editor 0 tests） |
-| 2026-07-14 | Codex 0.144.4 schema provenance | `codex app-server generate-json-schema --out /tmp/slide-maker-codex-schema --experimental` + `sha256sum` | PASS | 未啟動 model turn；版本、產生指令、bundle 與關鍵 schema hashes 記錄於 `CODEX_APP_SERVER_SCHEMA_PROVENANCE.md` |
-| 2026-07-14 | app-server/readiness gate | provider/server targeted Vitest suites（managed sandbox 外） | PASS | app-server 33/33；provider readiness 9/9；readiness service 12/12；server app-server API flow 2/2。涵蓋完整 schema、effective policy、correlation、limits、savedPath、secret redaction、Web Search fail-closed 與 SIGKILL |
-| 2026-07-14 | graceful shutdown gate | `pnpm --filter @slide-maker/server exec vitest run test/qa-shutdown.test.ts` | PASS | 7/7；active/queued 持久化為 `SERVER_SHUTDOWN`、hard deadline、重入、第一/第二 signal exit 0/1、restart recovery、cancel 不偽造 child exit |
-| 2026-07-14 | app-server/readiness/shutdown final gate | workspace：`pnpm check`（managed sandbox 外） | PASS | exit 0；typecheck/build 全過；132/132 tests（core 3、mock 1、Codex 74、server 54；editor 0 tests） |
+| 日期       | Revision                                 | 命令                                                                                                     | 結果         | 備註/缺陷                                                                                                                                                                                                                 |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-14 | initial core/providers scaffold          | `corepack pnpm install --frozen-lockfile`                                                                | BLOCKED      | 執行環境沒有 `corepack`/`pnpm`；改以 packageManager 鎖定的 `npx pnpm@10.13.1`                                                                                                                                             |
+| 2026-07-14 | initial core/providers scaffold          | `npx --yes pnpm@10.13.1 install --frozen-lockfile`                                                       | FAIL         | 初次執行時尚無 `pnpm-lock.yaml`（`ERR_PNPM_NO_LOCKFILE`）；以 `--no-frozen-lockfile` 安裝後產生 lockfile                                                                                                                  |
+| 2026-07-14 | core + mock + Codex provider             | `pnpm typecheck`                                                                                         | PASS         | 3 個實作 package 通過                                                                                                                                                                                                     |
+| 2026-07-14 | core + mock + Codex provider             | `pnpm test`                                                                                              | PASS         | 6/6；Codex child-process 測試須在 managed sandbox 外執行，sandbox 會清空 child stdout                                                                                                                                     |
+| 2026-07-14 | core + mock + Codex provider             | `pnpm build`                                                                                             | PASS         | 3 個實作 package 通過                                                                                                                                                                                                     |
+| 2026-07-14 | server batch 1                           | `pnpm --filter @slide-maker/server test`                                                                 | PASS         | 原有 2/2；加入 QA job persistence/redaction/recovery 後 5/5                                                                                                                                                               |
+| 2026-07-14 | server batch 1                           | `pnpm --filter @slide-maker/server typecheck`                                                            | FAIL         | `app.ts:45` 違反 `exactOptionalPropertyTypes`，`name` 可為 undefined                                                                                                                                                      |
+| 2026-07-14 | server batch 1                           | `pnpm --filter @slide-maker/server build`                                                                | FAIL         | 同上；另 `app.ts:20` TS2742，`createApp` inferred return type 不可攜                                                                                                                                                      |
+| 2026-07-14 | editor batch 1                           | `pnpm --filter @slide-maker/editor test`                                                                 | PASS (empty) | 以 `--passWithNoTests` 結束；實際沒有 editor 測試                                                                                                                                                                         |
+| 2026-07-14 | editor batch 1                           | `pnpm --filter @slide-maker/editor typecheck`                                                            | FAIL         | `Editor.tsx:141` 使用目前 TS lib 不支援的 `toReversed`，並衍生 callback implicit any                                                                                                                                      |
+| 2026-07-14 | editor batch 1                           | `pnpm --filter @slide-maker/editor build`                                                                | FAIL         | 同 typecheck；Vite build 未執行                                                                                                                                                                                           |
+| 2026-07-14 | final clean verification                 | `/tmp` 乾淨副本：`pnpm install --frozen-lockfile`                                                        | PASS         | lockfile 最新；6 個 workspace projects 可重現安裝                                                                                                                                                                         |
+| 2026-07-14 | final clean verification                 | `/tmp` 乾淨副本：`pnpm check`                                                                            | PASS         | typecheck 全過；13/13 tests；app + embeddable editor library + server/packages build 全過                                                                                                                                 |
+| 2026-07-14 | final workspace verification             | workspace：`pnpm check`                                                                                  | PASS         | 與乾淨副本一致；server HTTP vertical tests 2/2 通過                                                                                                                                                                       |
+| 2026-07-14 | production smoke                         | production server + local HTTP                                                                           | PASS         | health、create、patch、mock generate、poll completed、serve SVG、immutable restore、惡意 Origin 403 均符合預期                                                                                                            |
+| 2026-07-14 | package dry run（初次）                  | core/mock/Codex/editor：`npm pack --dry-run --json`                                                      | PASS/WARN    | exports、runtime 與 type artifacts 皆入包；當時缺 Apache-2.0 LICENSE，後續批次已修復                                                                                                                                      |
+| 2026-07-14 | final security/concurrency batch         | workspace：`pnpm check`                                                                                  | PASS         | typecheck 全過；16/16 tests（含 HTTP、concurrency、invalid provider output）；app/library/server build 全過                                                                                                               |
+| 2026-07-14 | final package/license                    | 4 public packages：`npm pack --dry-run --json` + `sha256sum`                                             | PASS         | 全部 tarball 明確包含 `LICENSE`；root 與四份 package LICENSE SHA256 皆為 `7505b489…3df1ab`                                                                                                                                |
+| 2026-07-14 | `Cannot GET /` regression                | repository root：`npx --yes pnpm@10.13.1 dev`                                                            | PASS         | `GET /` 200 `text/html`；首頁引用 JS asset 200 `text/javascript`；`GET /api/health` 200 JSON                                                                                                                              |
+| 2026-07-14 | runtime cwd regression                   | `/tmp`：`node /absolute/path/apps/server/dist/index.js`                                                  | PASS         | 從 repository 外 cwd 啟動仍正確解析 editor dist；首頁、同一靜態 asset與 health 均 200                                                                                                                                     |
+| 2026-07-14 | runtime path final check                 | workspace：`pnpm check`                                                                                  | PASS         | typecheck/build 全過；19/19 tests，含 runtime path 2、HTTP editor root 1 與既有 integration/security tests                                                                                                                |
+| 2026-07-14 | Codex soft-isolation provider            | fake executables：`pnpm --filter @slide-maker/provider-codex test`                                       | PASS         | 19/19；opt-in、argv/cwd/flags、untrusted input、JSONL、timeout/cancel/SIGKILL、symlink/outside、PNG size/chunks/CRC/dimensions與 secret-safe process error                                                                |
+| 2026-07-14 | Codex server job flow                    | fake `codex` on PATH：`qa-codex-flow.test.ts`                                                            | PASS         | opt-in off unavailable/拒絕 enqueue；on available+warning；success completed/version；failure只保存 `CODEX_PROCESS_FAILED_9`，不含 Bearer secret                                                                          |
+| 2026-07-14 | Codex soft-isolation final check         | workspace：`pnpm check`                                                                                  | PASS         | typecheck/build 全過；36/36 tests（provider 19、server 14、core 2、mock 1）；editor test script仍為 0 tests                                                                                                               |
+| 2026-07-14 | dev startup status                       | root `pnpm dev`（opt-in off）+ server dev（opt-in on）                                                   | PASS         | off 顯示 mock 與 Codex disabled；on 顯示 enabled、quota 與 soft-isolation 非安全邊界警告；兩者 `/api/providers` 均與 console 狀態一致且 watch process 持續服務                                                            |
+| 2026-07-14 | job observability                        | `pnpm --filter @slide-maker/server test`（managed sandbox 外）                                           | PASS         | 9 files、35/35；phase/event 順序與持久化、reload、elapsed/remaining、delayed JSONL API、cancel/跨專案 cancel、timeout 無重試、安全錯誤分類、結構化 log 去敏、舊 schema migration、mock lifecycle                          |
+| 2026-07-14 | timeout/process regression               | `pnpm --filter @slide-maker/provider-codex test`（managed sandbox 外）                                   | PASS         | 2 files、32/32；10 分鐘 default、30 秒至 30 分鐘 bounds/invalid、slow fake、usage/auth classification、cancel、timeout、SIGKILL 與 grandchild process-group heartbeat 終止                                                |
+| 2026-07-14 | observability final gate                 | workspace：`pnpm check`（managed sandbox 外）                                                            | PASS         | exit 0；typecheck/build 全過；71/71 tests（core 3、mock 1、Codex 32、server 35；editor 0 tests）                                                                                                                          |
+| 2026-07-14 | Codex 0.144.4 schema provenance          | `codex app-server generate-json-schema --out /tmp/slide-maker-codex-schema --experimental` + `sha256sum` | PASS         | 未啟動 model turn；版本、產生指令、bundle 與關鍵 schema hashes 記錄於 `CODEX_APP_SERVER_SCHEMA_PROVENANCE.md`                                                                                                             |
+| 2026-07-14 | app-server/readiness gate                | provider/server targeted Vitest suites（managed sandbox 外）                                             | PASS         | app-server 33/33；provider readiness 9/9；readiness service 12/12；server app-server API flow 2/2。涵蓋完整 schema、effective policy、correlation、limits、savedPath、secret redaction、Web Search fail-closed 與 SIGKILL |
+| 2026-07-14 | graceful shutdown gate                   | `pnpm --filter @slide-maker/server exec vitest run test/qa-shutdown.test.ts`                             | PASS         | 7/7；active/queued 持久化為 `SERVER_SHUTDOWN`、hard deadline、重入、第一/第二 signal exit 0/1、restart recovery、cancel 不偽造 child exit                                                                                 |
+| 2026-07-14 | app-server/readiness/shutdown final gate | workspace：`pnpm check`（managed sandbox 外）                                                            | PASS         | exit 0；typecheck/build 全過；132/132 tests（core 3、mock 1、Codex 74、server 54；editor 0 tests）                                                                                                                        |
 
 ### 本輪結論
 

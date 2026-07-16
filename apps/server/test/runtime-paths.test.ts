@@ -10,7 +10,9 @@ describe("server runtime paths", () => {
     expect(runtimePaths.dataRoot).toBe(resolve(import.meta.dirname, "../../../.slide-maker-data"));
     expect(runtimePaths.workspaceRoot).toBe(resolve(import.meta.dirname, "../../../"));
     expect(runtimePaths.codexImageJobsRoot).toBe(resolve(tmpdir(), "slide-maker-codex-image-jobs"));
-    expect(runtimePaths.codexImageJobsRoot.startsWith(`${runtimePaths.workspaceRoot}/`)).toBe(false);
+    expect(runtimePaths.codexImageJobsRoot.startsWith(`${runtimePaths.workspaceRoot}/`)).toBe(
+      false,
+    );
   });
 
   it("provides an actionable missing-editor response", () => {

@@ -15,54 +15,113 @@ import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite } from "./text-layers.js";
 
-const PHASE_STEP = { queued: 1, preparing: 2, launching: 3, waiting_for_codex: 4, validating_output: 5, persisting: 6, completed: 6, failed: 6, cancelled: 6 } as const;
+const PHASE_STEP = {
+  queued: 1,
+  preparing: 2,
+  launching: 3,
+  waiting_for_codex: 4,
+  validating_output: 5,
+  persisting: 6,
+  completed: 6,
+  failed: 6,
+  cancelled: 6,
+} as const;
 const PROVIDER_ERROR_MESSAGES: Record<string, string> = {
-  CODEX_TIMEOUT: "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。",
+  CODEX_TIMEOUT:
+    "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。",
   CODEX_USAGE_LIMIT: "Codex 額度已達上限，請在額度恢復後重試。",
   CODEX_AUTH_REQUIRED: "Codex 尚未登入或授權已失效，請先在 CLI 完成登入。",
   CODEX_PROCESS_FAILED: "Codex 執行失敗，請檢查 CLI 狀態後重試。",
-  CODEX_IMAGE_ARTIFACT_UNSUPPORTED: "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
+  CODEX_IMAGE_ARTIFACT_UNSUPPORTED:
+    "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
 };
 
 function outlineSnapshot(slide: SlideSpec): SlideOutlineSnapshot {
   return {
-    purpose: slide.purpose, content: slide.content, narrative: slide.narrative, layoutHint: slide.layoutHint,
-    imagePrompt: slide.imagePrompt, sourceIds: [...slide.sourceIds],
+    purpose: slide.purpose,
+    content: slide.content,
+    narrative: slide.narrative,
+    layoutHint: slide.layoutHint,
+    imagePrompt: slide.imagePrompt,
+    sourceIds: [...slide.sourceIds],
   };
 }
 
 function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean {
-  return slide.purpose === snapshot.purpose && slide.content === snapshot.content && slide.narrative === snapshot.narrative
-    && slide.layoutHint === snapshot.layoutHint && slide.imagePrompt === snapshot.imagePrompt
-    && JSON.stringify(slide.sourceIds) === JSON.stringify(snapshot.sourceIds);
+  return (
+    slide.purpose === snapshot.purpose &&
+    slide.content === snapshot.content &&
+    slide.narrative === snapshot.narrative &&
+    slide.layoutHint === snapshot.layoutHint &&
+    slide.imagePrompt === snapshot.imagePrompt &&
+    JSON.stringify(slide.sourceIds) === JSON.stringify(snapshot.sourceIds)
+  );
 }
 
-function safeFailure(error: unknown, aborted: boolean): { code: string; message: string; phase: "failed" | "cancelled" } {
-  if (aborted || (error instanceof DOMException && error.name === "AbortError")) return { code: "CANCELLED", message: "生成工作已取消。", phase: "cancelled" };
+function safeFailure(
+  error: unknown,
+  aborted: boolean,
+): { code: string; message: string; phase: "failed" | "cancelled" } {
+  if (aborted || (error instanceof DOMException && error.name === "AbortError"))
+    return { code: "CANCELLED", message: "生成工作已取消。", phase: "cancelled" };
   if (error instanceof SafeProviderError && Object.hasOwn(PROVIDER_ERROR_MESSAGES, error.code)) {
     return { code: error.code, message: PROVIDER_ERROR_MESSAGES[error.code]!, phase: "failed" };
   }
   const message = error instanceof Error ? error.message : "";
-  if (/timed out|timeout/i.test(message)) return { code: "PROVIDER_TIMEOUT", message: "圖片生成逾時，請稍後重試。", phase: "failed" };
-  if (/PNG|output|image size|image format|dimensions|symlink|workspace|regular file/i.test(message)) return { code: "OUTPUT_VALIDATION_FAILED", message: "生成圖片未通過安全或格式驗證。", phase: "failed" };
-  return { code: "PROVIDER_FAILED", message: "圖片生成失敗，請檢查 provider 狀態後重試。", phase: "failed" };
+  if (/timed out|timeout/i.test(message))
+    return { code: "PROVIDER_TIMEOUT", message: "圖片生成逾時，請稍後重試。", phase: "failed" };
+  if (/PNG|output|image size|image format|dimensions|symlink|workspace|regular file/i.test(message))
+    return {
+      code: "OUTPUT_VALIDATION_FAILED",
+      message: "生成圖片未通過安全或格式驗證。",
+      phase: "failed",
+    };
+  return {
+    code: "PROVIDER_FAILED",
+    message: "圖片生成失敗，請檢查 provider 狀態後重試。",
+    phase: "failed",
+  };
 }
 
-function validatedOutput(result: Awaited<ReturnType<ImageProvider["generate"]>>, providerId: string): {
+function validatedOutput(
+  result: Awaited<ReturnType<ImageProvider["generate"]>>,
+  providerId: string,
+): {
   bytes: Uint8Array;
   extension: "png" | "jpg" | "svg";
   parameters: Record<string, unknown>;
 } {
-  if (result.bytes.byteLength === 0 || result.bytes.byteLength > 25 * 1024 * 1024) throw new Error("Provider returned an invalid image size");
+  if (result.bytes.byteLength === 0 || result.bytes.byteLength > 25 * 1024 * 1024)
+    throw new Error("Provider returned an invalid image size");
   let extension: "png" | "jpg" | "svg";
   const bytes = result.bytes;
-  if (result.mediaType === "image/png" && result.extension === "png" && bytes.length >= 24 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)) {
+  if (
+    result.mediaType === "image/png" &&
+    result.extension === "png" &&
+    bytes.length >= 24 &&
+    [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
+  ) {
     extension = "png";
-  } else if (result.mediaType === "image/jpeg" && ["jpg", "jpeg"].includes(result.extension) && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+  } else if (
+    result.mediaType === "image/jpeg" &&
+    ["jpg", "jpeg"].includes(result.extension) &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
     extension = "jpg";
-  } else if (providerId === "mock-image" && result.mediaType === "image/svg+xml" && result.extension === "svg") {
+  } else if (
+    providerId === "mock-image" &&
+    result.mediaType === "image/svg+xml" &&
+    result.extension === "svg"
+  ) {
     const svg = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if (!/^<svg\s/i.test(svg.trim()) || /<(?:script|foreignObject|iframe|object|embed)\b|\son[a-z]+\s*=|(?:href|src)\s*=\s*["']\s*(?:https?:|data:|\/\/)/i.test(svg)) {
+    if (
+      !/^<svg\s/i.test(svg.trim()) ||
+      /<(?:script|foreignObject|iframe|object|embed)\b|\son[a-z]+\s*=|(?:href|src)\s*=\s*["']\s*(?:https?:|data:|\/\/)/i.test(
+        svg,
+      )
+    ) {
       throw new Error("Mock provider returned unsafe SVG");
     }
     extension = "svg";
@@ -77,14 +136,36 @@ function validatedOutput(result: Awaited<ReturnType<ImageProvider["generate"]>>,
   } catch {
     throw new Error("Provider parameters must be JSON-safe");
   }
-  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw new Error("Provider parameters must be an object");
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters))
+    throw new Error("Provider parameters must be an object");
   return { bytes, extension, parameters: parameters as Record<string, unknown> };
 }
 
-export async function compositeMaskedEdit(base: Uint8Array, edited: Uint8Array, mask: Uint8Array, width: number, height: number): Promise<Uint8Array> {
-  const normalizedMask = await sharp(mask).resize(width, height, { fit: "fill" }).ensureAlpha().png().toBuffer();
-  const overlay = await sharp(edited).resize(width, height, { fit: "fill" }).ensureAlpha().composite([{ input: normalizedMask, blend: "dest-in" }]).png().toBuffer();
-  return new Uint8Array(await sharp(base).resize(width, height, { fit: "fill" }).composite([{ input: overlay, blend: "over" }]).png().toBuffer());
+export async function compositeMaskedEdit(
+  base: Uint8Array,
+  edited: Uint8Array,
+  mask: Uint8Array,
+  width: number,
+  height: number,
+): Promise<Uint8Array> {
+  const normalizedMask = await sharp(mask)
+    .resize(width, height, { fit: "fill" })
+    .ensureAlpha()
+    .png()
+    .toBuffer();
+  const overlay = await sharp(edited)
+    .resize(width, height, { fit: "fill" })
+    .ensureAlpha()
+    .composite([{ input: normalizedMask, blend: "dest-in" }])
+    .png()
+    .toBuffer();
+  return new Uint8Array(
+    await sharp(base)
+      .resize(width, height, { fit: "fill" })
+      .composite([{ input: overlay, blend: "over" }])
+      .png()
+      .toBuffer(),
+  );
 }
 
 export class JobRunner {
@@ -103,12 +184,26 @@ export class JobRunner {
     private readonly styles?: FileStyleRepository,
   ) {}
 
-  private controllerKey(projectId: string, jobId: string): string { return `${projectId}:${jobId}`; }
+  private controllerKey(projectId: string, jobId: string): string {
+    return `${projectId}:${jobId}`;
+  }
 
-  async enqueue(projectId: string, slideId: string, providerId: string, edit?: {
-    instruction: string; baseVersionId: string; maskPath?: string;
-    textExtraction?: { originalVersionId: string; replaceVersionId?: string; threshold: number; boxes: EditableTextBox[] };
-  }): Promise<GenerationJob> {
+  async enqueue(
+    projectId: string,
+    slideId: string,
+    providerId: string,
+    edit?: {
+      instruction: string;
+      baseVersionId: string;
+      maskPath?: string;
+      textExtraction?: {
+        originalVersionId: string;
+        replaceVersionId?: string;
+        threshold: number;
+        boxes: EditableTextBox[];
+      };
+    },
+  ): Promise<GenerationJob> {
     if (!this.#accepting) throw new Error("SERVER_SHUTTING_DOWN");
     const provider = this.providers.get(providerId);
     if (provider.availability.status !== "available") throw new Error("Provider is unavailable");
@@ -128,24 +223,33 @@ export class JobRunner {
       updatedAt: now,
       phaseUpdatedAt: now,
       operation: edit?.textExtraction ? "extract-text" : edit ? "edit" : "generate",
-      ...(edit ? {
-        editInstruction: edit.instruction, baseVersionId: edit.baseVersionId,
-        ...(edit.maskPath ? { maskPath: edit.maskPath } : {}),
-        ...(edit.textExtraction ? { textExtraction: edit.textExtraction } : {}),
-      } : {}),
+      ...(edit
+        ? {
+            editInstruction: edit.instruction,
+            baseVersionId: edit.baseVersionId,
+            ...(edit.maskPath ? { maskPath: edit.maskPath } : {}),
+            ...(edit.textExtraction ? { textExtraction: edit.textExtraction } : {}),
+          }
+        : {}),
       ...(provider.timeoutMs ? { timeoutMs: provider.timeoutMs } : {}),
     };
     await this.repository.updateProject(projectId, (project) => {
       if (!this.#accepting) throw new Error("SERVER_SHUTTING_DOWN");
       if (!project.slides.some((slide) => slide.id === slideId)) throw new Error("Slide not found");
-      if (!provider.capabilities.supportedSizes.some((size) => size.width === project.canvas.width && size.height === project.canvas.height)) {
+      if (
+        !provider.capabilities.supportedSizes.some(
+          (size) => size.width === project.canvas.width && size.height === project.canvas.height,
+        )
+      ) {
         throw new Error("Provider does not support this canvas size");
       }
       project.jobs.push(job);
       project.updatedAt = now;
     });
     this.logPhase(job);
-    setTimeout(() => { this.schedule(projectId, job.id, providerId); }, 0);
+    setTimeout(() => {
+      this.schedule(projectId, job.id, providerId);
+    }, 0);
     return job;
   }
 
@@ -200,7 +304,10 @@ export class JobRunner {
       });
       for (const jobId of queued) {
         const job = project.jobs.find((candidate) => candidate.id === jobId);
-        if (job) setTimeout(() => { this.schedule(project.id, jobId, job.providerId); }, 0);
+        if (job)
+          setTimeout(() => {
+            this.schedule(project.id, jobId, job.providerId);
+          }, 0);
       }
     }
   }
@@ -213,25 +320,38 @@ export class JobRunner {
       provider = this.providers.get(providerId);
       limit = this.providerLimit(provider);
     } catch {
-      void this.failUnsettledJob(projectId, jobId, "Configured provider is unavailable or has invalid concurrency settings");
+      void this.failUnsettledJob(
+        projectId,
+        jobId,
+        "Configured provider is unavailable or has invalid concurrency settings",
+      );
       return;
     }
     const active = this.#activeByProvider.get(providerId) ?? 0;
     if (active >= limit) {
-      this.#pendingByProvider.set(providerId, [...(this.#pendingByProvider.get(providerId) ?? []), { projectId, jobId }]);
+      this.#pendingByProvider.set(providerId, [
+        ...(this.#pendingByProvider.get(providerId) ?? []),
+        { projectId, jobId },
+      ]);
       return;
     }
     this.#activeByProvider.set(providerId, active + 1);
     const key = this.controllerKey(projectId, jobId);
-    const task = this.run(projectId, jobId).then(
-      () => undefined,
-      async () => {
-        await this.failUnsettledJob(projectId, jobId, "Job runner failed before generation could complete");
-      },
-    ).finally(() => {
-      this.#activeTasks.delete(key);
-      this.releaseProviderSlot(providerId);
-    });
+    const task = this.run(projectId, jobId)
+      .then(
+        () => undefined,
+        async () => {
+          await this.failUnsettledJob(
+            projectId,
+            jobId,
+            "Job runner failed before generation could complete",
+          );
+        },
+      )
+      .finally(() => {
+        this.#activeTasks.delete(key);
+        this.releaseProviderSlot(providerId);
+      });
     this.#activeTasks.set(key, task);
   }
 
@@ -252,11 +372,19 @@ export class JobRunner {
     return limit;
   }
 
-  private async updateProviderProgress(projectId: string, jobId: string, progress: ImageGenerationProgress): Promise<void> {
+  private async updateProviderProgress(
+    projectId: string,
+    jobId: string,
+    progress: ImageGenerationProgress,
+  ): Promise<void> {
     const allowedPhases = ["launching", "waiting_for_codex", "validating_output"] as const;
     if (!allowedPhases.includes(progress.phase as (typeof allowedPhases)[number])) return;
     const phase = progress.phase as (typeof allowedPhases)[number];
-    const eventCode = ["turn_started", "item_completed", "turn_completed"].includes(String(progress.eventCode)) ? progress.eventCode : undefined;
+    const eventCode = ["turn_started", "item_completed", "turn_completed"].includes(
+      String(progress.eventCode),
+    )
+      ? progress.eventCode
+      : undefined;
     await this.repository.updateProject(projectId, (project) => {
       const job = project.jobs.find((candidate) => candidate.id === jobId);
       if (!job || job.status !== "running") return;
@@ -292,15 +420,22 @@ export class JobRunner {
   private async updateChildLifecycle(
     projectId: string,
     jobId: string,
-    event: { type: "spawned" } | { type: "exited"; exitClass: "success" | "nonzero" | "timeout" | "aborted" },
+    event:
+      | { type: "spawned" }
+      | { type: "exited"; exitClass: "success" | "nonzero" | "timeout" | "aborted" },
   ): Promise<void> {
-    if (event.type === "exited" && !["success", "nonzero", "timeout", "aborted"].includes(event.exitClass)) return;
+    if (
+      event.type === "exited" &&
+      !["success", "nonzero", "timeout", "aborted"].includes(event.exitClass)
+    )
+      return;
     const key = this.controllerKey(projectId, jobId);
     try {
       await this.repository.updateProject(projectId, (project) => {
         const job = project.jobs.find((candidate) => candidate.id === jobId);
         const shutdownExit = event.type === "exited" && this.#shutdownKeys.has(key);
-        const cancelExit = event.type === "exited" && job?.status === "cancelled" && job.errorCode === "CANCELLED";
+        const cancelExit =
+          event.type === "exited" && job?.status === "cancelled" && job.errorCode === "CANCELLED";
         if (!job || (job.status !== "running" && !shutdownExit && !cancelExit)) return;
         const now = new Date().toISOString();
         job.childLifecycle ??= {};
@@ -323,7 +458,9 @@ export class JobRunner {
   private observeChildLifecycle(
     projectId: string,
     jobId: string,
-    event: { type: "spawned" } | { type: "exited"; exitClass: "success" | "nonzero" | "timeout" | "aborted" },
+    event:
+      | { type: "spawned" }
+      | { type: "exited"; exitClass: "success" | "nonzero" | "timeout" | "aborted" },
   ): Promise<void> {
     const write = this.updateChildLifecycle(projectId, jobId, event);
     this.#pendingLifecycleWrites.add(write);
@@ -332,7 +469,8 @@ export class JobRunner {
   }
 
   shutdown(graceMs = 3_000): Promise<void> {
-    if (!Number.isSafeInteger(graceMs) || graceMs < 100 || graceMs > 30_000) throw new Error("Shutdown graceMs is out of range");
+    if (!Number.isSafeInteger(graceMs) || graceMs < 100 || graceMs > 30_000)
+      throw new Error("Shutdown graceMs is out of range");
     this.#accepting = false;
     const requestedAt = new Date().toISOString();
     for (const [key, controller] of this.#controllers) {
@@ -379,7 +517,9 @@ export class JobRunner {
       try {
         await Promise.race([
           Promise.allSettled(promises).then(() => undefined),
-          new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); }),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, remaining);
+          }),
         ]);
       } finally {
         if (timer) clearTimeout(timer);
@@ -395,18 +535,20 @@ export class JobRunner {
 
   private logPhase(job: GenerationJob): void {
     const started = Date.parse(job.startedAt ?? job.createdAt);
-    console.log(JSON.stringify({
-      event: "slide_job_phase",
-      jobId: job.id,
-      projectId: job.projectId,
-      slideId: job.slideId,
-      providerId: job.providerId,
-      phase: job.phase ?? job.status,
-      step: job.progress?.step,
-      total: job.progress?.total,
-      elapsedMs: Number.isFinite(started) ? Math.max(0, Date.now() - started) : undefined,
-      errorCode: job.errorCode,
-    }));
+    console.log(
+      JSON.stringify({
+        event: "slide_job_phase",
+        jobId: job.id,
+        projectId: job.projectId,
+        slideId: job.slideId,
+        providerId: job.providerId,
+        phase: job.phase ?? job.status,
+        step: job.progress?.step,
+        total: job.progress?.total,
+        elapsedMs: Number.isFinite(started) ? Math.max(0, Date.now() - started) : undefined,
+        errorCode: job.errorCode,
+      }),
+    );
   }
 
   private async failUnsettledJob(projectId: string, jobId: string, _error: string): Promise<void> {
@@ -448,68 +590,123 @@ export class JobRunner {
       delete job.error;
       delete job.errorCode;
       queueMicrotask(() => this.logPhase(structuredClone(job)));
-      return { job: structuredClone(job), slide: structuredClone(slide), project: structuredClone(project) };
+      return {
+        job: structuredClone(job),
+        slide: structuredClone(slide),
+        project: structuredClone(project),
+      };
     });
-    if (!context) { this.#controllers.delete(this.controllerKey(projectId, jobId)); return; }
+    if (!context) {
+      this.#controllers.delete(this.controllerKey(projectId, jobId));
+      return;
+    }
     try {
       const { project, slide, job } = context;
       const provider = this.providers.get(job.providerId);
-      const selectedSources = project.sources.filter((source) => slide.sourceIds.includes(source.id)
-        && source.allowModelAccess && source.usage !== "exclude-from-generation");
-      const styleReferences = this.styles ? project.styleSnapshot.referenceImages.map((reference) => ({
-        path: this.styles!.referenceAssetPath(reference.assetPath), mediaType: reference.mediaType,
-        role: "style" as const, name: reference.name,
-      })) : [];
-      const contentReferences = selectedSources.filter((source) => ["visual-reference", "style-reference", "direct-asset"].includes(source.usage))
+      const selectedSources = project.sources.filter(
+        (source) =>
+          slide.sourceIds.includes(source.id) &&
+          source.allowModelAccess &&
+          source.usage !== "exclude-from-generation",
+      );
+      const styleReferences = this.styles
+        ? project.styleSnapshot.referenceImages.map((reference) => ({
+            path: this.styles!.referenceAssetPath(reference.assetPath),
+            mediaType: reference.mediaType,
+            role: "style" as const,
+            name: reference.name,
+          }))
+        : [];
+      const contentReferences = selectedSources
+        .filter((source) =>
+          ["visual-reference", "style-reference", "direct-asset"].includes(source.usage),
+        )
         .map((source) => ({
-          path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")), mediaType: source.mediaType,
-          role: (source.usage === "style-reference" ? "style" : "content") as "style" | "content", name: source.name,
+          path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
+          mediaType: source.mediaType,
+          role: (source.usage === "style-reference" ? "style" : "content") as "style" | "content",
+          name: source.name,
         }));
       const references = [...styleReferences, ...contentReferences];
       let edit;
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
         if (!baseVersion || !job.editInstruction) throw new Error("EDIT_BASE_VERSION_MISSING");
-        const basePath = job.operation === "edit" && baseVersion.textLayer ? baseVersion.textLayer.backgroundPath : baseVersion.imagePath;
+        const basePath =
+          job.operation === "edit" && baseVersion.textLayer
+            ? baseVersion.textLayer.backgroundPath
+            : baseVersion.imagePath;
         const baseRelative = basePath.replace(/^assets\//, "");
         const baseMediaType = /\.jpe?g$/i.test(baseRelative) ? "image/jpeg" : "image/png";
-        references.unshift({ path: this.repository.assetPath(projectId, baseRelative), mediaType: baseMediaType, role: "content", name: "Current slide image" });
+        references.unshift({
+          path: this.repository.assetPath(projectId, baseRelative),
+          mediaType: baseMediaType,
+          role: "content",
+          name: "Current slide image",
+        });
         const baseImageIndex = 0;
         let maskImageIndex: number | undefined;
         if (job.maskPath) {
-          references.splice(1, 0, { path: this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, "")), mediaType: "image/png", role: "content", name: "Edit mask" });
+          references.splice(1, 0, {
+            path: this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, "")),
+            mediaType: "image/png",
+            role: "content",
+            name: "Edit mask",
+          });
           maskImageIndex = 1;
         }
-        edit = { instruction: job.editInstruction, baseImageIndex, ...(maskImageIndex === undefined ? {} : { maskImageIndex }) };
+        edit = {
+          instruction: job.editInstruction,
+          baseImageIndex,
+          ...(maskImageIndex === undefined ? {} : { maskImageIndex }),
+        };
       }
-      if (references.length && !provider.capabilities.referenceImages) throw new Error("STYLE_REFERENCES_UNSUPPORTED");
-      if (references.length > 1 && !provider.capabilities.multipleReferenceImages) throw new Error("MULTIPLE_REFERENCES_UNSUPPORTED");
-      const result = await provider.generate({
-        projectId,
-        slide,
-        style: project.styleSnapshot,
-        width: project.canvas.width,
-        height: project.canvas.height,
-        references,
-        model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
-        parameters: {},
-        ...(edit ? { edit } : {}),
-      }, {
-        signal: controller.signal,
-        onProgress: async (progress) => this.updateProviderProgress(projectId, jobId, progress),
-        onLifecycle: async (event) => this.observeChildLifecycle(projectId, jobId, event),
-      });
+      if (references.length && !provider.capabilities.referenceImages)
+        throw new Error("STYLE_REFERENCES_UNSUPPORTED");
+      if (references.length > 1 && !provider.capabilities.multipleReferenceImages)
+        throw new Error("MULTIPLE_REFERENCES_UNSUPPORTED");
+      const result = await provider.generate(
+        {
+          projectId,
+          slide,
+          style: project.styleSnapshot,
+          width: project.canvas.width,
+          height: project.canvas.height,
+          references,
+          model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
+          parameters: {},
+          ...(edit ? { edit } : {}),
+        },
+        {
+          signal: controller.signal,
+          onProgress: async (progress) => this.updateProviderProgress(projectId, jobId, progress),
+          onLifecycle: async (event) => this.observeChildLifecycle(projectId, jobId, event),
+        },
+      );
       if (controller.signal.aborted) throw new DOMException("Generation cancelled", "AbortError");
       let safe = validatedOutput(result, provider.id);
-      if ((job.operation === "edit" || job.operation === "extract-text") && job.maskPath && job.baseVersionId) {
+      if (
+        (job.operation === "edit" || job.operation === "extract-text") &&
+        job.maskPath &&
+        job.baseVersionId
+      ) {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId)!;
-        const basePath = job.operation === "edit" && baseVersion.textLayer ? baseVersion.textLayer.backgroundPath : baseVersion.imagePath;
+        const basePath =
+          job.operation === "edit" && baseVersion.textLayer
+            ? baseVersion.textLayer.backgroundPath
+            : baseVersion.imagePath;
         const [baseBytes, maskBytes] = await Promise.all([
           readFile(this.repository.assetPath(projectId, basePath.replace(/^assets\//, ""))),
           readFile(this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, ""))),
         ]);
         safe = {
-          bytes: await compositeMaskedEdit(new Uint8Array(baseBytes), safe.bytes, new Uint8Array(maskBytes), project.canvas.width, project.canvas.height),
+          bytes: await compositeMaskedEdit(
+            new Uint8Array(baseBytes),
+            safe.bytes,
+            new Uint8Array(maskBytes),
+            project.canvas.width,
+            project.canvas.height,
+          ),
           extension: "png",
           parameters: { ...safe.parameters, maskedEdit: true },
         };
@@ -520,61 +717,88 @@ export class JobRunner {
       const backgroundPath = await this.repository.saveAsset(projectId, filename, safe.bytes);
       const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
       let imagePath = backgroundPath;
-      let textLayer = job.operation === "extract-text" && job.textExtraction ? {
-        originalVersionId: job.textExtraction.originalVersionId,
-        backgroundPath,
-        compositePath: backgroundPath,
-        threshold: job.textExtraction.threshold,
-        renderRevision: 0,
-        boxes: structuredClone(job.textExtraction.boxes),
-        extractedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      } : job.operation === "edit" && baseVersion?.textLayer ? {
-        ...structuredClone(baseVersion.textLayer),
-        backgroundPath,
-        compositePath: backgroundPath,
-        renderRevision: baseVersion.textLayer.renderRevision + 1,
-        updatedAt: new Date().toISOString(),
-      } : undefined;
+      let textLayer =
+        job.operation === "extract-text" && job.textExtraction
+          ? {
+              originalVersionId: job.textExtraction.originalVersionId,
+              backgroundPath,
+              compositePath: backgroundPath,
+              threshold: job.textExtraction.threshold,
+              renderRevision: 0,
+              boxes: structuredClone(job.textExtraction.boxes),
+              extractedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }
+          : job.operation === "edit" && baseVersion?.textLayer
+            ? {
+                ...structuredClone(baseVersion.textLayer),
+                backgroundPath,
+                compositePath: backgroundPath,
+                renderRevision: baseVersion.textLayer.renderRevision + 1,
+                updatedAt: new Date().toISOString(),
+              }
+            : undefined;
       if (textLayer) {
-        textLayer.compositePath = job.operation === "extract-text"
-          ? slide.versions.find((version) => version.id === job.textExtraction!.originalVersionId)!.imagePath
-          : await renderComposite(this.repository, project, textLayer);
+        textLayer.compositePath =
+          job.operation === "extract-text"
+            ? slide.versions.find(
+                (version) => version.id === job.textExtraction!.originalVersionId,
+              )!.imagePath
+            : await renderComposite(this.repository, project, textLayer);
         imagePath = textLayer.compositePath;
       }
-      const baseOutline = job.operation !== "generate"
-        ? slide.versions.find((version) => version.id === job.baseVersionId)?.outlineSnapshot
-        : undefined;
+      const baseOutline =
+        job.operation !== "generate"
+          ? slide.versions.find((version) => version.id === job.baseVersionId)?.outlineSnapshot
+          : undefined;
       const generatedOutline = structuredClone(baseOutline ?? outlineSnapshot(slide));
       await this.repository.updateProject(projectId, (current) => {
         const currentJob = current.jobs.find((candidate) => candidate.id === jobId);
         const currentSlide = current.slides.find((candidate) => candidate.id === slide.id);
-        if (!currentJob || !currentSlide) throw new Error("Project changed while generation was running");
+        if (!currentJob || !currentSlide)
+          throw new Error("Project changed while generation was running");
         if (currentJob.status !== "running") return;
         const nextVersion = {
-          id: versionId, imagePath, prompt: job.operation !== "generate" ? job.editInstruction! : currentSlide.imagePrompt, providerId: provider.id,
-          model: result.model, parameters: safe.parameters, styleVersion: current.styleSnapshot.version,
+          id: versionId,
+          imagePath,
+          prompt: job.operation !== "generate" ? job.editInstruction! : currentSlide.imagePrompt,
+          providerId: provider.id,
+          model: result.model,
+          parameters: safe.parameters,
+          styleVersion: current.styleSnapshot.version,
           outlineSnapshot: generatedOutline,
           sources: selectedSources.map((source) => ({
-            sourceId: source.id, title: source.name,
+            sourceId: source.id,
+            title: source.name,
             ...(source.chunks[0]?.locator ? { locator: source.chunks[0].locator } : {}),
             ...(source.chunks[0]?.text ? { excerpt: source.chunks[0].text.slice(0, 500) } : {}),
             ...(source.metadata.url ? { url: source.metadata.url } : {}),
             capturedAt: new Date().toISOString(),
-          })), createdAt: new Date().toISOString(),
+          })),
+          createdAt: new Date().toISOString(),
           ...(textLayer ? { textLayer } : {}),
-          ...(job.operation === "edit" ? { label: `Edited: ${job.editInstruction!.slice(0, 80)}` } : {}),
+          ...(job.operation === "edit"
+            ? { label: `Edited: ${job.editInstruction!.slice(0, 80)}` }
+            : {}),
           ...(job.operation === "extract-text" ? { label: "文字抽離" } : {}),
         };
-        const replaceIndex = job.operation === "extract-text" && job.textExtraction?.replaceVersionId
-          ? currentSlide.versions.findIndex((version) => version.id === job.textExtraction!.replaceVersionId)
-          : -1;
-        if (replaceIndex >= 0) currentSlide.versions[replaceIndex] = { ...nextVersion, createdAt: currentSlide.versions[replaceIndex]!.createdAt };
+        const replaceIndex =
+          job.operation === "extract-text" && job.textExtraction?.replaceVersionId
+            ? currentSlide.versions.findIndex(
+                (version) => version.id === job.textExtraction!.replaceVersionId,
+              )
+            : -1;
+        if (replaceIndex >= 0)
+          currentSlide.versions[replaceIndex] = {
+            ...nextVersion,
+            createdAt: currentSlide.versions[replaceIndex]!.createdAt,
+          };
         else currentSlide.versions.push(nextVersion);
         currentSlide.currentVersionId = versionId;
-        currentSlide.outlineDirty = job.operation !== "generate"
-          ? currentSlide.outlineDirty || !sameOutline(currentSlide, generatedOutline)
-          : !sameOutline(currentSlide, generatedOutline);
+        currentSlide.outlineDirty =
+          job.operation !== "generate"
+            ? currentSlide.outlineDirty || !sameOutline(currentSlide, generatedOutline)
+            : !sameOutline(currentSlide, generatedOutline);
         currentJob.status = "completed";
         currentJob.phase = "completed";
         currentJob.progress = { step: 6, total: 6 };
@@ -588,7 +812,11 @@ export class JobRunner {
     } catch (error) {
       const shutdownRequested = this.#shutdownKeys.has(this.controllerKey(projectId, jobId));
       const failure = shutdownRequested
-        ? { code: "SERVER_SHUTDOWN", message: "Server 正在關閉，生成工作已停止。", phase: "failed" as const }
+        ? {
+            code: "SERVER_SHUTDOWN",
+            message: "Server 正在關閉，生成工作已停止。",
+            phase: "failed" as const,
+          }
         : safeFailure(error, controller.signal.aborted);
       await this.repository.updateProject(projectId, (project) => {
         const job = project.jobs.find((candidate) => candidate.id === jobId);
@@ -612,5 +840,4 @@ export class JobRunner {
       this.#controllers.delete(this.controllerKey(projectId, jobId));
     }
   }
-
 }

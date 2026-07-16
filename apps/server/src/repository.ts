@@ -38,15 +38,20 @@ export class FileProjectRepository implements StorageAdapter {
   async listProjects(): Promise<PresentationProject[]> {
     await this.initialize();
     const entries = await readdir(join(this.root, "projects"), { withFileTypes: true });
-    const projects = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => this.loadProject(entry.name)));
-    return projects.filter((project): project is PresentationProject => project !== undefined)
+    const projects = await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map((entry) => this.loadProject(entry.name)),
+    );
+    return projects
+      .filter((project): project is PresentationProject => project !== undefined)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   async loadProject(id: string): Promise<PresentationProject | undefined> {
     assertSafeSegment(id);
     try {
-      const value: unknown = JSON.parse(await readFile(join(this.projectRoot(id), "project.json"), "utf8"));
+      const value: unknown = JSON.parse(
+        await readFile(join(this.projectRoot(id), "project.json"), "utf8"),
+      );
       return parseProject(value);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -58,7 +63,10 @@ export class FileProjectRepository implements StorageAdapter {
     await this.withProjectLock(project.id, async () => this.writeProject(project));
   }
 
-  async updateProject<T>(id: string, update: (project: PresentationProject) => T | Promise<T>): Promise<T> {
+  async updateProject<T>(
+    id: string,
+    update: (project: PresentationProject) => T | Promise<T>,
+  ): Promise<T> {
     return this.withProjectLock(id, async () => {
       const project = await this.loadProject(id);
       if (!project) throw new Error("Project not found");
@@ -73,14 +81,19 @@ export class FileProjectRepository implements StorageAdapter {
     const path = join(this.projectRoot(project.id), "project.json");
     await mkdir(dirname(path), { recursive: true });
     const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     await rename(temporaryPath, path);
   }
 
   private async withProjectLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.#locks.get(id) ?? Promise.resolve();
     let release!: () => void;
-    const current = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+    const current = new Promise<void>((resolvePromise) => {
+      release = resolvePromise;
+    });
     const tail = previous.then(() => current);
     this.#locks.set(id, tail);
     await previous;

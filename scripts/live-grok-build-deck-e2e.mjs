@@ -4,9 +4,12 @@ import { resolve } from "node:path";
 import { createApp } from "../apps/server/dist/app.js";
 
 if (process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX !== "1") {
-  throw new Error("Set SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1 to run this quota-consuming E2E test");
+  throw new Error(
+    "Set SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1 to run this quota-consuming E2E test",
+  );
 }
-if (!process.env.CODEX_HOME) throw new Error("Set CODEX_HOME to an isolated, authenticated Codex home");
+if (!process.env.CODEX_HOME)
+  throw new Error("Set CODEX_HOME to an isolated, authenticated Codex home");
 
 const dataRoot = process.env.SLIDE_MAKER_DATA_ROOT;
 if (!dataRoot) throw new Error("Set SLIDE_MAKER_DATA_ROOT to a dedicated E2E directory");
@@ -65,7 +68,8 @@ Constraints: 所有文字逐字正確且只出現一次；繁體中文；可讀�
   {
     purpose: "說明 Plan mode 帶來的控制力",
     content: "先規劃，再動手\n探索程式庫｜檢查相依與風險｜核准後執行",
-    narrative: "Plan mode 先探索 repository、辨識相依與風險；團隊可逐步評論、修改或核准計畫，再讓 agent 執行。",
+    narrative:
+      "Plan mode 先探索 repository、辨識相依與風險；團隊可逐步評論、修改或核准計畫，再讓 agent 執行。",
     layoutHint: "16:9 三階段水平流程圖；視覺從探索、審查到核准執行；清楚箭頭與高對比標題。",
     dataBasis: ["https://x.ai/news/grok-build-cli", "https://x.ai/grok/use-cases/code-planning"],
     imagePrompt: `Use case: productivity-visual
@@ -82,8 +86,10 @@ Constraints: 所有文字逐字正確且只出現一次；繁體中文；清楚�
   {
     purpose: "展示 Grok Build 的整合彈性",
     content: "一個 Agent，多種入口\n互動式 TUI｜Headless｜ACP",
-    narrative: "同一套 agent 能力可用互動式 TUI 操作，也能放進 headless scripts、bots，或透過 ACP 串接其他工具。",
-    layoutHint: "16:9 hub-and-spoke 架構圖；中央 Grok Build agent，連接 TUI、Headless、ACP 三個入口。",
+    narrative:
+      "同一套 agent 能力可用互動式 TUI 操作，也能放進 headless scripts、bots，或透過 ACP 串接其他工具。",
+    layoutHint:
+      "16:9 hub-and-spoke 架構圖；中央 Grok Build agent，連接 TUI、Headless、ACP 三個入口。",
     dataBasis: ["https://docs.x.ai/build/overview"],
     imagePrompt: `Use case: productivity-visual
 Asset type: 16:9 presentation slide
@@ -99,7 +105,8 @@ Constraints: 所有文字逐字正確且只出現一次；繁體中文；無 log
   {
     purpose: "總結 Subagents 的平行交付優勢",
     content: "平行協作，放大交付速度\n研究｜實作｜測試｜審查",
-    narrative: "Subagents 可平行處理研究、實作、測試與審查。Grok Build 的優勢來自可控制、可整合、可平行的工程工作流。",
+    narrative:
+      "Subagents 可平行處理研究、實作、測試與審查。Grok Build 的優勢來自可控制、可整合、可平行的工程工作流。",
     layoutHint: "16:9 收束頁；中央主代理向四條平行工作流展開，再匯聚為交付成果；強烈但簡潔。",
     dataBasis: ["https://x.ai/news/grok-build-cli", "https://x.ai/grok/use-cases/code-planning"],
     imagePrompt: `Use case: productivity-visual
@@ -127,7 +134,8 @@ async function api(path, options = {}) {
     ...options,
     headers: { "content-type": "application/json", ...(options.headers ?? {}) },
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status} ${path}: ${(await response.text()).slice(0, 800)}`);
+  if (!response.ok)
+    throw new Error(`HTTP ${response.status} ${path}: ${(await response.text()).slice(0, 800)}`);
   return response;
 }
 
@@ -139,60 +147,76 @@ function validatePng(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const width = view.getUint32(16);
   const height = view.getUint32(20);
-  if (width !== 1920 || height !== 1080) throw new Error(`Unexpected PNG dimensions: ${width}x${height}`);
+  if (width !== 1920 || height !== 1080)
+    throw new Error(`Unexpected PNG dimensions: ${width}x${height}`);
   return { width, height };
 }
 
 try {
   const readiness = await (await api("/api/providers/codex-image-spike/readiness")).json();
-  if (readiness.status !== "ready_experimental") throw new Error(`Codex readiness is ${readiness.status}`);
+  if (readiness.status !== "ready_experimental")
+    throw new Error(`Codex readiness is ${readiness.status}`);
 
   let project;
   if (resumeProjectId) {
     project = await (await api(`/api/projects/${resumeProjectId}`)).json();
   } else {
-    project = await (await api("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        topic: "Grok Build 的優勢",
-        name: `Grok Build 的優勢｜${slideCount} 頁 Web Search E2E`,
-        brief: {
-          audience: "軟體開發團隊與技術主管",
-          purpose: "說明 Grok Build 在規劃、整合與平行協作上的工作流優勢",
-          language: "zh-TW",
-          desiredSlideCount: slideCount,
-          tone: "專業、現代、技術導向",
-          contentMode: "grounded",
-          webSearchMode: "live",
-        },
-      }),
-    })).json();
-    if (project.workflowStage !== "requirements") throw new Error(`Unexpected initial workflow stage: ${project.workflowStage}`);
+    project = await (
+      await api("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          topic: "Grok Build 的優勢",
+          name: `Grok Build 的優勢｜${slideCount} 頁 Web Search E2E`,
+          brief: {
+            audience: "軟體開發團隊與技術主管",
+            purpose: "說明 Grok Build 在規劃、整合與平行協作上的工作流優勢",
+            language: "zh-TW",
+            desiredSlideCount: slideCount,
+            tone: "專業、現代、技術導向",
+            contentMode: "grounded",
+            webSearchMode: "live",
+          },
+        }),
+      })
+    ).json();
+    if (project.workflowStage !== "requirements")
+      throw new Error(`Unexpected initial workflow stage: ${project.workflowStage}`);
     if (project.brief.desiredSlideCount !== slideCount || project.brief.webSearchMode !== "live") {
       throw new Error(`The ${slideCount}-slide live Web Search brief was not persisted`);
     }
-    project = await (await api(`/api/projects/${project.id}/outline`, {
-      method: "POST",
-      body: JSON.stringify({ replace: true }),
-    })).json();
+    project = await (
+      await api(`/api/projects/${project.id}/outline`, {
+        method: "POST",
+        body: JSON.stringify({ replace: true }),
+      })
+    ).json();
   }
   if (project.workflowStage !== "settings" || project.slides.length !== slideCount) {
-    throw new Error(`Outline did not create the ${slideCount}-slide settings step: ${project.workflowStage}/${project.slides.length}`);
+    throw new Error(
+      `Outline did not create the ${slideCount}-slide settings step: ${project.workflowStage}/${project.slides.length}`,
+    );
   }
 
   const source = project.sources.find((item) => item.metadata?.url);
-  if (!source || source.status !== "indexed" || !source.metadata.url) throw new Error("Live Web Search source was not persisted");
+  if (!source || source.status !== "indexed" || !source.metadata.url)
+    throw new Error("Live Web Search source was not persisted");
   if (!project.outlineRationale) throw new Error("AI outline rationale was not persisted");
 
   const searchQuery = source.metadata.title ?? source.name;
-  const searchResults = await (await api(`/api/projects/${project.id}/search?q=${encodeURIComponent(searchQuery)}`)).json();
-  if (!searchResults.some((result) => result.sourceId === source.id)) throw new Error("Indexed Web Search source is not retrievable");
+  const searchResults = await (
+    await api(`/api/projects/${project.id}/search?q=${encodeURIComponent(searchQuery)}`)
+  ).json();
+  if (!searchResults.some((result) => result.sourceId === source.id))
+    throw new Error("Indexed Web Search source is not retrievable");
 
-  const queuedJobs = await (await api(`/api/projects/${project.id}/generate`, {
-    method: "POST",
-    body: JSON.stringify({ providerId: "codex-image-spike", acceptUnknownReadiness: false }),
-  })).json();
-  if (queuedJobs.length !== slideCount) throw new Error(`Expected ${slideCount} queued jobs, received ${queuedJobs.length}`);
+  const queuedJobs = await (
+    await api(`/api/projects/${project.id}/generate`, {
+      method: "POST",
+      body: JSON.stringify({ providerId: "codex-image-spike", acceptUnknownReadiness: false }),
+    })
+  ).json();
+  if (queuedJobs.length !== slideCount)
+    throw new Error(`Expected ${slideCount} queued jobs, received ${queuedJobs.length}`);
 
   const jobIds = new Set(queuedJobs.map((job) => job.id));
   const deadline = Date.now() + 35 * 60_000;
@@ -206,7 +230,9 @@ try {
       previousStatus = status;
     }
     if (jobs.some((job) => ["failed", "cancelled"].includes(job.status))) {
-      const failures = jobs.filter((job) => job.status !== "completed").map((job) => `${job.id}:${job.errorCode ?? job.status}`);
+      const failures = jobs
+        .filter((job) => job.status !== "completed")
+        .map((job) => `${job.id}:${job.errorCode ?? job.status}`);
       throw new Error(`Generation failed: ${failures.join(", ")}`);
     }
     if (jobs.length === slideCount && jobs.every((job) => job.status === "completed")) break;
@@ -215,8 +241,14 @@ try {
 
   project = await (await api(`/api/projects/${project.id}`)).json();
   const jobs = project.jobs.filter((job) => jobIds.has(job.id));
-  if (project.workflowStage !== "editing" || jobs.length !== slideCount || !jobs.every((job) => job.status === "completed")) {
-    throw new Error(`E2E did not reach editing with ${slideCount} completed jobs: ${project.workflowStage}/${jobs.map((job) => job.status).join(",")}`);
+  if (
+    project.workflowStage !== "editing" ||
+    jobs.length !== slideCount ||
+    !jobs.every((job) => job.status === "completed")
+  ) {
+    throw new Error(
+      `E2E did not reach editing with ${slideCount} completed jobs: ${project.workflowStage}/${jobs.map((job) => job.status).join(",")}`,
+    );
   }
 
   await mkdir(outputRoot, { recursive: true });
@@ -224,57 +256,85 @@ try {
   for (let index = 0; index < project.slides.length; index += 1) {
     const slide = project.slides[index];
     const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
-    if (!version?.imagePath) throw new Error(`Slide ${index + 1} does not have a current generated asset`);
-    if (!version.sources.length || !version.sources.every((citation) => citation.url)) throw new Error(`Slide ${index + 1} lost its Web Search citations`);
-    const assetResponse = await api(`/api/projects/${project.id}/assets/${version.imagePath.replace(/^assets\//, "")}`);
+    if (!version?.imagePath)
+      throw new Error(`Slide ${index + 1} does not have a current generated asset`);
+    if (!version.sources.length || !version.sources.every((citation) => citation.url))
+      throw new Error(`Slide ${index + 1} lost its Web Search citations`);
+    const assetResponse = await api(
+      `/api/projects/${project.id}/assets/${version.imagePath.replace(/^assets\//, "")}`,
+    );
     const bytes = new Uint8Array(await assetResponse.arrayBuffer());
     const dimensions = validatePng(bytes);
     const outputPath = resolve(outputRoot, `slide-${String(index + 1).padStart(2, "0")}.png`);
     await writeFile(outputPath, bytes);
-    assets.push({ slide: index + 1, versionId: version.id, outputPath, bytes: bytes.length, ...dimensions });
+    assets.push({
+      slide: index + 1,
+      versionId: version.id,
+      outputPath,
+      bytes: bytes.length,
+      ...dimensions,
+    });
   }
 
-  const pptxBytes = new Uint8Array(await (await api(`/api/projects/${project.id}/export/pptx`)).arrayBuffer());
-  if (pptxBytes[0] !== 0x50 || pptxBytes[1] !== 0x4b) throw new Error("PPTX export is not a ZIP-based Office document");
+  const pptxBytes = new Uint8Array(
+    await (await api(`/api/projects/${project.id}/export/pptx`)).arrayBuffer(),
+  );
+  if (pptxBytes[0] !== 0x50 || pptxBytes[1] !== 0x4b)
+    throw new Error("PPTX export is not a ZIP-based Office document");
   const pptxPath = resolve(outputRoot, "grok-build-advantages.pptx");
   await writeFile(pptxPath, pptxBytes);
 
-  const pdfBytes = new Uint8Array(await (await api(`/api/projects/${project.id}/export/pdf`)).arrayBuffer());
-  if (new TextDecoder().decode(pdfBytes.subarray(0, 5)) !== "%PDF-") throw new Error("PDF export has an invalid signature");
+  const pdfBytes = new Uint8Array(
+    await (await api(`/api/projects/${project.id}/export/pdf`)).arrayBuffer(),
+  );
+  if (new TextDecoder().decode(pdfBytes.subarray(0, 5)) !== "%PDF-")
+    throw new Error("PDF export has an invalid signature");
   const pdfPath = resolve(outputRoot, "grok-build-advantages.pdf");
   await writeFile(pdfPath, pdfBytes);
 
-  const pngZipBytes = new Uint8Array(await (await api(`/api/projects/${project.id}/export/png.zip`)).arrayBuffer());
-  if (pngZipBytes[0] !== 0x50 || pngZipBytes[1] !== 0x4b) throw new Error("PNG ZIP export is not a ZIP document");
+  const pngZipBytes = new Uint8Array(
+    await (await api(`/api/projects/${project.id}/export/png.zip`)).arrayBuffer(),
+  );
+  if (pngZipBytes[0] !== 0x50 || pngZipBytes[1] !== 0x4b)
+    throw new Error("PNG ZIP export is not a ZIP document");
   const pngZipPath = resolve(outputRoot, "grok-build-advantages-png.zip");
   await writeFile(pngZipPath, pngZipBytes);
 
-  const projectBytes = new Uint8Array(await (await api(`/api/projects/${project.id}/export/slide-project`)).arrayBuffer());
-  if (projectBytes[0] !== 0x50 || projectBytes[1] !== 0x4b) throw new Error("Project export is not a ZIP bundle");
+  const projectBytes = new Uint8Array(
+    await (await api(`/api/projects/${project.id}/export/slide-project`)).arrayBuffer(),
+  );
+  if (projectBytes[0] !== 0x50 || projectBytes[1] !== 0x4b)
+    throw new Error("Project export is not a ZIP bundle");
   const projectPath = resolve(outputRoot, "grok-build-advantages.slide-project");
   await writeFile(projectPath, projectBytes);
 
-  console.log(JSON.stringify({
-    ok: true,
-    readiness: readiness.status,
-    projectId: project.id,
-    workflowStage: project.workflowStage,
-    requestedSlides: project.brief.desiredSlideCount,
-    generatedSlides: assets.length,
-    webSearchMode: project.brief.webSearchMode,
-    sourceId: source.id,
-    sourceChunks: source.chunks.length,
-    jobs: jobs.map((job) => ({ id: job.id, status: job.status, attempt: job.attempt })),
-    assets,
-    pptxPath,
-    pptxBytes: pptxBytes.length,
-    pdfPath,
-    pdfBytes: pdfBytes.length,
-    pngZipPath,
-    pngZipBytes: pngZipBytes.length,
-    projectPath,
-    projectBytes: projectBytes.length,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        readiness: readiness.status,
+        projectId: project.id,
+        workflowStage: project.workflowStage,
+        requestedSlides: project.brief.desiredSlideCount,
+        generatedSlides: assets.length,
+        webSearchMode: project.brief.webSearchMode,
+        sourceId: source.id,
+        sourceChunks: source.chunks.length,
+        jobs: jobs.map((job) => ({ id: job.id, status: job.status, attempt: job.attempt })),
+        assets,
+        pptxPath,
+        pptxBytes: pptxBytes.length,
+        pdfPath,
+        pdfBytes: pdfBytes.length,
+        pngZipPath,
+        pngZipBytes: pngZipBytes.length,
+        projectPath,
+        projectBytes: projectBytes.length,
+      },
+      null,
+      2,
+    ),
+  );
 } finally {
   await new Promise((resolve) => server.close(resolve));
 }

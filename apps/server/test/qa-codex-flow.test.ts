@@ -9,12 +9,18 @@ import { createApp } from "../src/app.js";
 
 type ProviderSummary = {
   id: string;
-  availability: { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
+  availability:
+    { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
 };
 
-async function fakeCodex(bin: string, mode: "success" | "secret-failure" | "delayed"): Promise<void> {
+async function fakeCodex(
+  bin: string,
+  mode: "success" | "secret-failure" | "delayed",
+): Promise<void> {
   const path = join(bin, "codex");
-  await writeFile(path, `#!/usr/bin/env node
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
 import { createReadStream, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2);
@@ -58,13 +64,19 @@ createInterface({ input: createReadStream("", { fd: 0 }) }).on("line", (line) =>
     if (mode === "delayed") setTimeout(finish, 500); else finish();
   }
 });
-`, { mode: 0o700 });
+`,
+    { mode: 0o700 },
+  );
   await chmod(path, 0o700);
 }
 
-async function listen(app: Awaited<ReturnType<typeof createApp>>): Promise<{ server: Server; baseUrl: string }> {
+async function listen(
+  app: Awaited<ReturnType<typeof createApp>>,
+): Promise<{ server: Server; baseUrl: string }> {
   const server = await new Promise<Server>((resolve, reject) => {
-    const candidate = app.listen(0, "127.0.0.1", (error?: Error) => error ? reject(error) : resolve(candidate));
+    const candidate = app.listen(0, "127.0.0.1", (error?: Error) =>
+      error ? reject(error) : resolve(candidate),
+    );
   });
   const address = server.address() as AddressInfo;
   return { server, baseUrl: `http://127.0.0.1:${address.port}` };
@@ -72,12 +84,18 @@ async function listen(app: Awaited<ReturnType<typeof createApp>>): Promise<{ ser
 
 async function close(server: Server): Promise<void> {
   if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
 }
 
-async function json<T>(baseUrl: string, path: string, init?: RequestInit): Promise<{ response: Response; body: T }> {
+async function json<T>(
+  baseUrl: string,
+  path: string,
+  init?: RequestInit,
+): Promise<{ response: Response; body: T }> {
   const response = await fetch(`${baseUrl}${path}`, init);
-  return { response, body: await response.json() as T };
+  return { response, body: (await response.json()) as T };
 }
 
 async function createProject(baseUrl: string): Promise<PresentationProject> {
@@ -90,7 +108,10 @@ async function createProject(baseUrl: string): Promise<PresentationProject> {
   return result.body;
 }
 
-async function generate(baseUrl: string, project: PresentationProject): Promise<{ response: Response; body: GenerationJob | { error: string } }> {
+async function generate(
+  baseUrl: string,
+  project: PresentationProject,
+): Promise<{ response: Response; body: GenerationJob | { error: string } }> {
   return json(baseUrl, `/api/projects/${project.id}/slides/${project.slides[0]!.id}/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -98,11 +119,20 @@ async function generate(baseUrl: string, project: PresentationProject): Promise<
   });
 }
 
-async function terminalProject(baseUrl: string, projectId: string, jobId: string): Promise<PresentationProject> {
+async function terminalProject(
+  baseUrl: string,
+  projectId: string,
+  jobId: string,
+): Promise<PresentationProject> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     const loaded = await json<PresentationProject>(baseUrl, `/api/projects/${projectId}`);
-    if (loaded.body.jobs.some((job) => job.id === jobId && ["completed", "failed", "cancelled"].includes(job.status))) return loaded.body;
+    if (
+      loaded.body.jobs.some(
+        (job) => job.id === jobId && ["completed", "failed", "cancelled"].includes(job.status),
+      )
+    )
+      return loaded.body;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Codex job ${jobId} did not settle`);
@@ -117,44 +147,72 @@ describe("QA server Codex soft-isolation flow", () => {
       delete process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX;
       let off;
       try {
-        off = await listen(await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-off-"))));
+        off = await listen(
+          await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-off-"))),
+        );
       } catch (error) {
-        if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return context.skip();
+        if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? ""))
+          return context.skip();
         throw error;
       }
       servers.push(off.server);
       const offProviders = await json<ProviderSummary[]>(off.baseUrl, "/api/providers");
-      expect(offProviders.body.find((provider) => provider.id === "codex-image-spike")?.availability).toMatchObject({ status: "unavailable" });
+      expect(
+        offProviders.body.find((provider) => provider.id === "codex-image-spike")?.availability,
+      ).toMatchObject({ status: "unavailable" });
       const offProject = await createProject(off.baseUrl);
       const rejected = await generate(off.baseUrl, offProject);
       expect(rejected.response.status).toBe(409);
-      expect(rejected.body).toMatchObject({ error: "PROVIDER_PREFLIGHT_BLOCKED", readiness: { status: "disabled" } });
+      expect(rejected.body).toMatchObject({
+        error: "PROVIDER_PREFLIGHT_BLOCKED",
+        readiness: { status: "disabled" },
+      });
       await close(off.server);
 
       const bin = await mkdtemp(join(tmpdir(), "slide-maker-fake-codex-bin-"));
       process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
       process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX = "1";
       await fakeCodex(bin, "success");
-      const on = await listen(await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-on-"))));
+      const on = await listen(
+        await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-on-"))),
+      );
       servers.push(on.server);
       const onProviders = await json<ProviderSummary[]>(on.baseUrl, "/api/providers");
-      const enabled = onProviders.body.find((provider) => provider.id === "codex-image-spike")?.availability;
-      expect(enabled).toMatchObject({ status: "available", warning: expect.stringMatching(/軟隔離|資料外洩|額度/) });
+      const enabled = onProviders.body.find(
+        (provider) => provider.id === "codex-image-spike",
+      )?.availability;
+      expect(enabled).toMatchObject({
+        status: "available",
+        warning: expect.stringMatching(/軟隔離|資料外洩|額度/),
+      });
       const onProject = await createProject(on.baseUrl);
       const queued = await generate(on.baseUrl, onProject);
       expect(queued.response.status).toBe(202);
-      const completed = await terminalProject(on.baseUrl, onProject.id, (queued.body as GenerationJob).id);
+      const completed = await terminalProject(
+        on.baseUrl,
+        onProject.id,
+        (queued.body as GenerationJob).id,
+      );
       const completedJob = completed.jobs.at(-1);
       expect(completedJob?.status, completedJob?.error).toBe("completed");
-      expect(completed.slides[0]?.versions.at(-1)).toMatchObject({ providerId: "codex-image-spike", model: "codex-imagegen" });
+      expect(completed.slides[0]?.versions.at(-1)).toMatchObject({
+        providerId: "codex-image-spike",
+        model: "codex-imagegen",
+      });
       await close(on.server);
 
       await fakeCodex(bin, "secret-failure");
-      const failedApp = await listen(await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-failed-"))));
+      const failedApp = await listen(
+        await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-failed-"))),
+      );
       servers.push(failedApp.server);
       const failedProject = await createProject(failedApp.baseUrl);
       const failedQueued = await generate(failedApp.baseUrl, failedProject);
-      const failed = await terminalProject(failedApp.baseUrl, failedProject.id, (failedQueued.body as GenerationJob).id);
+      const failed = await terminalProject(
+        failedApp.baseUrl,
+        failedProject.id,
+        (failedQueued.body as GenerationJob).id,
+      );
       expect(failed.jobs.at(-1)).toMatchObject({
         status: "failed",
         errorCode: "CODEX_PROCESS_FAILED",
@@ -181,9 +239,12 @@ describe("QA server Codex soft-isolation flow", () => {
       process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX = "1";
       let running;
       try {
-        running = await listen(await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-delayed-"))));
+        running = await listen(
+          await createApp(await mkdtemp(join(tmpdir(), "slide-maker-codex-delayed-"))),
+        );
       } catch (error) {
-        if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return context.skip();
+        if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? ""))
+          return context.skip();
         throw error;
       }
       server = running.server;
@@ -194,8 +255,16 @@ describe("QA server Codex soft-isolation flow", () => {
       const deadline = Date.now() + 2_000;
       let waiting: GenerationJob | undefined;
       while (Date.now() < deadline) {
-        const loaded = await json<PresentationProject>(running.baseUrl, `/api/projects/${project.id}`);
-        waiting = loaded.body.jobs.find((job) => job.id === jobId && job.phase === "waiting_for_codex" && job.providerEventCode === "turn_started");
+        const loaded = await json<PresentationProject>(
+          running.baseUrl,
+          `/api/projects/${project.id}`,
+        );
+        waiting = loaded.body.jobs.find(
+          (job) =>
+            job.id === jobId &&
+            job.phase === "waiting_for_codex" &&
+            job.providerEventCode === "turn_started",
+        );
         if (waiting) break;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
@@ -209,15 +278,27 @@ describe("QA server Codex soft-isolation flow", () => {
       const started = Date.parse(waiting!.startedAt!);
       const elapsed1 = Date.now() - started;
       await new Promise((resolve) => setTimeout(resolve, 30));
-      const reloaded = await json<PresentationProject>(running.baseUrl, `/api/projects/${project.id}`);
+      const reloaded = await json<PresentationProject>(
+        running.baseUrl,
+        `/api/projects/${project.id}`,
+      );
       const apiJob = reloaded.body.jobs.find((job) => job.id === jobId)!;
       const elapsed2 = Date.now() - Date.parse(apiJob.startedAt!);
       expect(elapsed2).toBeGreaterThan(elapsed1);
       expect(apiJob.timeoutMs! - elapsed2).toBeGreaterThan(0);
 
-      const cancelled = await json<GenerationJob>(running.baseUrl, `/api/projects/${project.id}/jobs/${jobId}/cancel`, { method: "POST" });
+      const cancelled = await json<GenerationJob>(
+        running.baseUrl,
+        `/api/projects/${project.id}/jobs/${jobId}/cancel`,
+        { method: "POST" },
+      );
       expect(cancelled.response.status).toBe(200);
-      expect(cancelled.body).toMatchObject({ status: "cancelled", phase: "cancelled", errorCode: "CANCELLED", attempt: 1 });
+      expect(cancelled.body).toMatchObject({
+        status: "cancelled",
+        phase: "cancelled",
+        errorCode: "CANCELLED",
+        attempt: 1,
+      });
       const terminal = await terminalProject(running.baseUrl, project.id, jobId);
       expect(terminal.jobs.find((job) => job.id === jobId)?.status).toBe("cancelled");
     } finally {

@@ -16,7 +16,9 @@ import { MockImageProvider } from "@slide-maker/provider-mock";
 import { JobRunner } from "../src/jobs.js";
 import { FileProjectRepository } from "../src/repository.js";
 
-const QA_PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+const QA_PNG = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 const capabilities = {
   fullSlideGeneration: true as const,
@@ -30,7 +32,9 @@ const capabilities = {
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -38,7 +42,9 @@ async function waitForJob(
   repository: FileProjectRepository,
   projectId: string,
   jobId: string,
-  predicate: (job: NonNullable<Awaited<ReturnType<FileProjectRepository["loadProject"]>>>["jobs"][number]) => boolean,
+  predicate: (
+    job: NonNullable<Awaited<ReturnType<FileProjectRepository["loadProject"]>>>["jobs"][number],
+  ) => boolean,
 ) {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
@@ -55,7 +61,10 @@ async function fixture(provider: ImageProvider, Repository = FileProjectReposito
   const repository = new Repository(root);
   const project = createProject({ topic: "QA observability canary" });
   await repository.saveProject(project);
-  const runner = new JobRunner(repository, new ProviderRegistry<ImageProvider>().register(provider));
+  const runner = new JobRunner(
+    repository,
+    new ProviderRegistry<ImageProvider>().register(provider),
+  );
   return { root, repository, project, runner };
 }
 
@@ -63,7 +72,11 @@ class PersistBarrierRepository extends FileProjectRepository {
   readonly enteredPersist = deferred();
   readonly releasePersist = deferred();
 
-  override async saveAsset(projectId: string, relativePath: string, bytes: Uint8Array): Promise<string> {
+  override async saveAsset(
+    projectId: string,
+    relativePath: string,
+    bytes: Uint8Array,
+  ): Promise<string> {
     this.enteredPersist.resolve();
     await this.releasePersist.promise;
     return super.saveAsset(projectId, relativePath, bytes);
@@ -86,7 +99,10 @@ describe("QA generation job observability", () => {
       availability: { status: "available" },
       timeoutMs: 600_000,
       capabilities,
-      async generate(_request: ImageGenerationRequest, context?: ImageGenerationContext): Promise<GeneratedImage> {
+      async generate(
+        _request: ImageGenerationRequest,
+        context?: ImageGenerationContext,
+      ): Promise<GeneratedImage> {
         await beforeLaunch.promise;
         await context?.onProgress?.({ phase: "launching" });
         await afterLaunch.promise;
@@ -98,25 +114,52 @@ describe("QA generation job observability", () => {
         await afterCompleted.promise;
         await context?.onProgress?.({ phase: "validating_output" });
         await afterValidation.promise;
-        return { bytes: QA_PNG, mediaType: "image/png", extension: "png", model: "qa", parameters: {} };
+        return {
+          bytes: QA_PNG,
+          mediaType: "image/png",
+          extension: "png",
+          model: "qa",
+          parameters: {},
+        };
       },
     };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { root, repository, project, runner } = await fixture(provider, PersistBarrierRepository);
     const persistedRepository = repository as PersistBarrierRepository;
     const queued = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    expect(queued).toMatchObject({ phase: "queued", progress: { step: 1, total: 6 }, timeoutMs: 600_000 });
+    expect(queued).toMatchObject({
+      phase: "queued",
+      progress: { step: 1, total: 6 },
+      timeoutMs: 600_000,
+    });
 
-    const preparing = await waitForJob(repository, project.id, queued.id, (job) => job.phase === "preparing");
+    const preparing = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.phase === "preparing",
+    );
     expect(preparing.startedAt).toBeTruthy();
     beforeLaunch.resolve();
     await waitForJob(repository, project.id, queued.id, (job) => job.phase === "launching");
     afterLaunch.resolve();
 
-    const waiting = await waitForJob(repository, project.id, queued.id, (job) => job.providerEventCode === "turn_started");
-    expect(waiting).toMatchObject({ status: "running", phase: "waiting_for_codex", progress: { step: 4, total: 6 } });
+    const waiting = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.providerEventCode === "turn_started",
+    );
+    expect(waiting).toMatchObject({
+      status: "running",
+      phase: "waiting_for_codex",
+      progress: { step: 4, total: 6 },
+    });
     const reloaded = await new FileProjectRepository(root).loadProject(project.id);
-    expect(reloaded?.jobs.find((job) => job.id === queued.id)).toMatchObject({ phase: "waiting_for_codex", providerEventCode: "turn_started" });
+    expect(reloaded?.jobs.find((job) => job.id === queued.id)).toMatchObject({
+      phase: "waiting_for_codex",
+      providerEventCode: "turn_started",
+    });
     const startedAt = Date.parse(waiting.startedAt!);
     const elapsed1 = Date.now() - startedAt;
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -124,25 +167,55 @@ describe("QA generation job observability", () => {
     expect(elapsed2).toBeGreaterThan(elapsed1);
 
     afterStarted.resolve();
-    await waitForJob(repository, project.id, queued.id, (job) => job.providerEventCode === "item_completed");
+    await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.providerEventCode === "item_completed",
+    );
     afterItem.resolve();
-    await waitForJob(repository, project.id, queued.id, (job) => job.providerEventCode === "turn_completed");
+    await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.providerEventCode === "turn_completed",
+    );
     afterCompleted.resolve();
     await waitForJob(repository, project.id, queued.id, (job) => job.phase === "validating_output");
     afterValidation.resolve();
     await persistedRepository.enteredPersist.promise;
     await waitForJob(repository, project.id, queued.id, (job) => job.phase === "persisting");
     persistedRepository.releasePersist.resolve();
-    const completed = await waitForJob(repository, project.id, queued.id, (job) => job.status === "completed");
-    expect(completed).toMatchObject({ phase: "completed", progress: { step: 6, total: 6 }, attempt: 1 });
+    const completed = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.status === "completed",
+    );
+    expect(completed).toMatchObject({
+      phase: "completed",
+      progress: { step: 6, total: 6 },
+      attempt: 1,
+    });
     expect(completed.finishedAt).toBeTruthy();
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const records = log.mock.calls.map(([line]) => JSON.parse(String(line)) as { phase: string; jobId: string });
-    const phases = records.filter((record) => record.jobId === queued.id).map((record) => record.phase);
+    const records = log.mock.calls.map(
+      ([line]) => JSON.parse(String(line)) as { phase: string; jobId: string },
+    );
+    const phases = records
+      .filter((record) => record.jobId === queued.id)
+      .map((record) => record.phase);
     expect(phases).toEqual([
-      "queued", "preparing", "launching", "waiting_for_codex", "waiting_for_codex",
-      "waiting_for_codex", "validating_output", "persisting", "completed",
+      "queued",
+      "preparing",
+      "launching",
+      "waiting_for_codex",
+      "waiting_for_codex",
+      "waiting_for_codex",
+      "validating_output",
+      "persisting",
+      "completed",
     ]);
   });
 
@@ -172,9 +245,16 @@ describe("QA generation job observability", () => {
     await waiting.promise;
     await waitForJob(repository, project.id, queued.id, (job) => job.phase === "waiting_for_codex");
     const cancelled = await runner.cancel(project.id, queued.id);
-    expect(cancelled).toMatchObject({ status: "cancelled", phase: "cancelled", errorCode: "CANCELLED" });
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      phase: "cancelled",
+      errorCode: "CANCELLED",
+    });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect((await repository.loadProject(project.id))?.jobs[0]).toMatchObject({ status: "cancelled", finishedAt: expect.any(String) });
+    expect((await repository.loadProject(project.id))?.jobs[0]).toMatchObject({
+      status: "cancelled",
+      finishedAt: expect.any(String),
+    });
     expect(invocations).toBe(1);
   });
 
@@ -196,12 +276,27 @@ describe("QA generation job observability", () => {
     };
     const { repository, project, runner } = await fixture(provider);
     const queued = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    const waiting = await waitForJob(repository, project.id, queued.id, (job) => job.phase === "waiting_for_codex");
+    const waiting = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.phase === "waiting_for_codex",
+    );
     const elapsed = Date.now() - Date.parse(waiting.startedAt!);
     expect(waiting.timeoutMs).toBe(120);
     expect(waiting.timeoutMs! - elapsed).toBeGreaterThan(0);
-    const failed = await waitForJob(repository, project.id, queued.id, (job) => job.status === "failed");
-    expect(failed).toMatchObject({ status: "failed", phase: "failed", errorCode: "CODEX_TIMEOUT", attempt: 1 });
+    const failed = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.status === "failed",
+    );
+    expect(failed).toMatchObject({
+      status: "failed",
+      phase: "failed",
+      errorCode: "CODEX_TIMEOUT",
+      attempt: 1,
+    });
     expect(failed.error).toContain("SLIDE_MAKER_CODEX_TIMEOUT_MS");
     expect(JSON.stringify(failed)).not.toContain("RAW-STDERR-CANARY");
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -209,7 +304,10 @@ describe("QA generation job observability", () => {
   });
 
   it.each([
-    ["CODEX_TIMEOUT", "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。"],
+    [
+      "CODEX_TIMEOUT",
+      "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。",
+    ],
     ["CODEX_USAGE_LIMIT", "Codex 額度已達上限，請在額度恢復後重試。"],
     ["CODEX_AUTH_REQUIRED", "Codex 尚未登入或授權已失效，請先在 CLI 完成登入。"],
   ])("persists a safe, actionable %s classification", async (code, safeMessage) => {
@@ -218,23 +316,43 @@ describe("QA generation job observability", () => {
       name: "QA safe error provider",
       availability: { status: "available" },
       capabilities,
-      async generate() { throw new SafeProviderError(code, safeMessage); },
+      async generate() {
+        throw new SafeProviderError(code, safeMessage);
+      },
     };
     const { repository, project, runner } = await fixture(provider);
     const queued = await runner.enqueue(project.id, project.slides[0]!.id, provider.id);
-    const failed = await waitForJob(repository, project.id, queued.id, (job) => job.status === "failed");
-    expect(failed).toMatchObject({ phase: "failed", errorCode: code, error: safeMessage, attempt: 1 });
+    const failed = await waitForJob(
+      repository,
+      project.id,
+      queued.id,
+      (job) => job.status === "failed",
+    );
+    expect(failed).toMatchObject({
+      phase: "failed",
+      errorCode: code,
+      error: safeMessage,
+      attempt: 1,
+    });
     expect(JSON.stringify(failed)).not.toMatch(/stderr|Bearer|token|raw prompt/i);
   });
 
   it("writes structured phase logs with identifiers but without prompt, style, source, stderr, or token data", async () => {
-    const canaries = ["PROMPT-CANARY", "STYLE-CANARY", "SOURCE-CANARY", "RAW-STDERR-CANARY", "TOKEN-CANARY"];
+    const canaries = [
+      "PROMPT-CANARY",
+      "STYLE-CANARY",
+      "SOURCE-CANARY",
+      "RAW-STDERR-CANARY",
+      "TOKEN-CANARY",
+    ];
     const provider: ImageProvider = {
       id: "qa-log-safe",
       name: "QA log safe provider",
       availability: { status: "available" },
       capabilities,
-      async generate() { throw new Error(`${canaries[3]} ${canaries[4]}`); },
+      async generate() {
+        throw new Error(`${canaries[3]} ${canaries[4]}`);
+      },
     };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { repository, project, runner } = await fixture(provider);
@@ -247,9 +365,18 @@ describe("QA generation job observability", () => {
     await waitForJob(repository, project.id, queued.id, (job) => job.status === "failed");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const output = log.mock.calls.map(([line]) => String(line)).join("\n");
-    const records = log.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    const records = log.mock.calls.map(
+      ([line]) => JSON.parse(String(line)) as Record<string, unknown>,
+    );
     expect(records.length).toBeGreaterThanOrEqual(3);
-    expect(records.every((record) => record.event === "slide_job_phase" && record.jobId === queued.id && record.projectId === project.id)).toBe(true);
+    expect(
+      records.every(
+        (record) =>
+          record.event === "slide_job_phase" &&
+          record.jobId === queued.id &&
+          record.projectId === project.id,
+      ),
+    ).toBe(true);
     for (const canary of canaries) expect(output).not.toContain(canary);
   });
 

@@ -3,4 +3,3 @@
   "compilerOptions": { "noEmit": true },
   "include": ["src", "test"]
 }
-

@@ -9,7 +9,11 @@ const rawBoxSchema = z.object({
   confidence: z.number().min(0).max(1),
   polygon: z.array(pointSchema).min(4),
 });
-const outputSchema = z.object({ width: z.number().positive(), height: z.number().positive(), boxes: z.array(rawBoxSchema) });
+const outputSchema = z.object({
+  width: z.number().positive(),
+  height: z.number().positive(),
+  boxes: z.array(rawBoxSchema),
+});
 
 export type RawOcrResult = z.infer<typeof outputSchema>;
 
@@ -31,7 +35,11 @@ export class PaddleOcrAdapter implements OcrAdapter {
 
   async status(): Promise<{ available: boolean; message: string }> {
     try {
-      await Promise.all([access(this.#python), access(this.#script), access(join(this.#root, ".venv-ocr", ".ready"))]);
+      await Promise.all([
+        access(this.#python),
+        access(this.#script),
+        access(join(this.#root, ".venv-ocr", ".ready")),
+      ]);
       return { available: true, message: "PaddleOCR CPU 已就緒" };
     } catch {
       return { available: false, message: "尚未安裝 OCR，請在專案根目錄執行 pnpm setup:ocr" };
@@ -40,7 +48,8 @@ export class PaddleOcrAdapter implements OcrAdapter {
 
   async recognize(imagePath: string): Promise<RawOcrResult> {
     const result = await this.run([this.#script, imagePath], 5 * 60_000);
-    if (result.code !== 0) throw new Error(`OCR_FAILED:${result.stderr.trim().slice(0, 500) || "unknown error"}`);
+    if (result.code !== 0)
+      throw new Error(`OCR_FAILED:${result.stderr.trim().slice(0, 500) || "unknown error"}`);
     try {
       return outputSchema.parse(JSON.parse(result.stdout));
     } catch {
@@ -48,16 +57,43 @@ export class PaddleOcrAdapter implements OcrAdapter {
     }
   }
 
-  private run(argv: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  private run(
+    argv: string[],
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(this.#python, argv, { cwd: this.#root, stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = ""; let stderr = ""; let settled = false;
-      const timer = setTimeout(() => { child.kill("SIGTERM"); }, timeoutMs);
-      child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-      child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-      child.once("error", (error) => { if (!settled) { settled = true; clearTimeout(timer); reject(error); } });
-      child.once("close", (code) => { if (!settled) { settled = true; clearTimeout(timer); resolvePromise({ code, stdout, stderr }); } });
+      const child = spawn(this.#python, argv, {
+        cwd: this.#root,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      child.once("error", (error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+      });
+      child.once("close", (code) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolvePromise({ code, stdout, stderr });
+        }
+      });
     });
   }
 }

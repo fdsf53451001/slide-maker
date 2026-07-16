@@ -10,7 +10,9 @@ async function fakeCodex(mode: Mode) {
   const root = await mkdtemp(join(tmpdir(), "slide-maker-qa-readiness-"));
   const executable = join(root, "codex");
   const audit = join(root, "argv.jsonl");
-  await writeFile(executable, `#!/usr/bin/env node
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
 import { appendFileSync, writeSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(audit)}, JSON.stringify(args) + "\\n");
@@ -30,25 +32,37 @@ else if (args[0] === "app-server" && args[1] === "--help") {
   writeSync(2, "UNEXPECTED MODEL TURN OR PROMPT");
   process.exit(97);
 }
-`, { mode: 0o700 });
+`,
+    { mode: 0o700 },
+  );
   await chmod(executable, 0o700);
   return { root, executable, audit };
 }
 
 async function argv(audit: string): Promise<string[][]> {
-  return (await readFile(audit, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
+  return (await readFile(audit, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
 }
 
 describe("QA Codex non-generating readiness", () => {
   it("returns disabled without executing the configured CLI", async () => {
     const fake = await fakeCodex("ready");
-    const provider = new CodexImageSpikeProvider({ allowExecution: false, executable: fake.executable });
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: false,
+      executable: fake.executable,
+    });
     await expect(provider.preflight()).resolves.toEqual({ status: "disabled" });
     await expect(readFile(fake.audit, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("classifies a missing executable", async () => {
-    const provider = new CodexImageSpikeProvider({ allowExecution: true, executable: join(tmpdir(), `missing-codex-${Date.now()}`) });
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: true,
+      executable: join(tmpdir(), `missing-codex-${Date.now()}`),
+    });
     await expect(provider.preflight()).resolves.toEqual({ status: "cli_missing" });
   });
 
@@ -57,24 +71,36 @@ describe("QA Codex non-generating readiness", () => {
     ["auth_required", "auth_required"],
     ["unknown", "unknown"],
     ["ready", "ready_experimental"],
-  ] as const)("classifies fake CLI mode %s as %s without exposing process output", async (mode, status) => {
-    const fake = await fakeCodex(mode);
-    const provider = new CodexImageSpikeProvider({ allowExecution: true, executable: fake.executable });
-    const result = await provider.preflight();
-    expect(result).toEqual({ status });
-    expect(Object.keys(result)).toEqual(["status"]);
-    expect(JSON.stringify(result)).not.toMatch(/stderr|Bearer|SECRET|TOKEN|path|prompt/i);
-  });
+  ] as const)(
+    "classifies fake CLI mode %s as %s without exposing process output",
+    async (mode, status) => {
+      const fake = await fakeCodex(mode);
+      const provider = new CodexImageSpikeProvider({
+        allowExecution: true,
+        executable: fake.executable,
+      });
+      const result = await provider.preflight();
+      expect(result).toEqual({ status });
+      expect(Object.keys(result)).toEqual(["status"]);
+      expect(JSON.stringify(result)).not.toMatch(/stderr|Bearer|SECRET|TOKEN|path|prompt/i);
+    },
+  );
 
   it("classifies a bounded preflight timeout distinctly", { timeout: 8_000 }, async () => {
     const fake = await fakeCodex("timeout");
-    const provider = new CodexImageSpikeProvider({ allowExecution: true, executable: fake.executable });
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: true,
+      executable: fake.executable,
+    });
     await expect(provider.preflight()).resolves.toEqual({ status: "timeout" });
   });
 
   it("uses help/status only and never starts a Codex model turn or image generation", async () => {
     const fake = await fakeCodex("ready");
-    const provider = new CodexImageSpikeProvider({ allowExecution: true, executable: fake.executable });
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: true,
+      executable: fake.executable,
+    });
     await expect(provider.preflight()).resolves.toEqual({ status: "ready_experimental" });
     const invocations = await argv(fake.audit);
     expect(invocations).toEqual([
@@ -91,7 +117,10 @@ describe("QA Codex non-generating readiness", () => {
 
   it("fails an unknown CLI version before starting app-server, exec, or any model turn", async () => {
     const fake = await fakeCodex("unknown-version");
-    const provider = new CodexImageSpikeProvider({ allowExecution: true, executable: fake.executable });
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: true,
+      executable: fake.executable,
+    });
     await expect(provider.preflight()).resolves.toEqual({ status: "artifact_unsupported" });
     expect(await argv(fake.audit)).toEqual([["--version"]]);
   });
