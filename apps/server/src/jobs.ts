@@ -739,12 +739,7 @@ export class JobRunner {
               }
             : undefined;
       if (textLayer) {
-        textLayer.compositePath =
-          job.operation === "extract-text"
-            ? slide.versions.find(
-                (version) => version.id === job.textExtraction!.originalVersionId,
-              )!.imagePath
-            : await renderComposite(this.repository, project, textLayer);
+        textLayer.compositePath = await renderComposite(this.repository, project, textLayer);
         imagePath = textLayer.compositePath;
       }
       const baseOutline =

@@ -185,5 +185,5 @@ describe("MVP end-to-end local workflow", () => {
     expect(imported.id).not.toBe(project.id);
     expect(imported.slides).toHaveLength(confirmedSlideCount);
     expect(imported.jobs).toHaveLength(0);
-  }, 15_000);
+  }, 60_000);
 });

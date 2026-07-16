@@ -28,7 +28,12 @@ import { MockImageProvider } from "@slide-maker/provider-mock";
 import { JobRunner } from "./jobs.js";
 import { FileProjectRepository } from "./repository.js";
 import { runtimePaths } from "./runtime-paths.js";
-import { parseCodexMaxConcurrency, parseCodexTimeoutMs } from "./config.js";
+import {
+  parseCodexMaxConcurrency,
+  parseCodexTimeoutMs,
+  parseOcrDetSideLen,
+  parseOcrModelTier,
+} from "./config.js";
 import { ProviderReadinessGateError, ProviderReadinessService } from "./readiness.js";
 import { FileStyleRepository } from "./styles.js";
 import { ingestSource, safeFilename, searchSources } from "./sources.js";
@@ -342,7 +347,12 @@ export async function createApp(
     );
   const jobs = new JobRunner(repository, providers, styles);
   const readiness = new ProviderReadinessService(providers);
-  const ocr = dependencies.ocr ?? new PaddleOcrAdapter(runtimePaths.workspaceRoot);
+  const ocr =
+    dependencies.ocr ??
+    new PaddleOcrAdapter(runtimePaths.workspaceRoot, {
+      modelTier: parseOcrModelTier(process.env.SLIDE_MAKER_OCR_MODEL_TIER),
+      detSideLen: parseOcrDetSideLen(process.env.SLIDE_MAKER_OCR_DET_SIDE_LEN),
+    });
   const searchWeb =
     dependencies.webSearch ??
     (async (query: string, limit: number, project: PresentationProject) => {

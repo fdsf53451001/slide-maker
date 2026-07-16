@@ -22,15 +22,25 @@ export interface OcrAdapter {
   recognize(imagePath: string): Promise<RawOcrResult>;
 }
 
+export interface PaddleOcrOptions {
+  modelTier?: string;
+  detSideLen?: number;
+}
+
 export class PaddleOcrAdapter implements OcrAdapter {
   readonly #root: string;
   readonly #python: string;
   readonly #script: string;
+  readonly #env: Record<string, string>;
 
-  constructor(root = resolve(process.cwd())) {
+  constructor(root = resolve(process.cwd()), options: PaddleOcrOptions = {}) {
     this.#root = root;
     this.#python = process.env.SLIDE_MAKER_OCR_PYTHON ?? join(root, ".venv-ocr", "bin", "python");
     this.#script = process.env.SLIDE_MAKER_OCR_SCRIPT ?? join(root, "scripts", "paddle_ocr.py");
+    this.#env = {
+      ...(options.modelTier ? { SLIDE_MAKER_OCR_MODEL_TIER: options.modelTier } : {}),
+      ...(options.detSideLen ? { SLIDE_MAKER_OCR_DET_SIDE_LEN: String(options.detSideLen) } : {}),
+    };
   }
 
   async status(): Promise<{ available: boolean; message: string }> {
@@ -49,7 +59,9 @@ export class PaddleOcrAdapter implements OcrAdapter {
   async recognize(imagePath: string): Promise<RawOcrResult> {
     const result = await this.run([this.#script, imagePath], 5 * 60_000);
     if (result.code !== 0)
-      throw new Error(`OCR_FAILED:${result.stderr.trim().slice(0, 500) || "unknown error"}`);
+      throw new Error(
+        `OCR_FAILED:${result.stderr.trim().slice(0, 500) || "unknown error"}（若為模型載入或下載失敗，請重新執行 pnpm setup:ocr）`,
+      );
     try {
       return outputSchema.parse(JSON.parse(result.stdout));
     } catch {
@@ -65,6 +77,7 @@ export class PaddleOcrAdapter implements OcrAdapter {
       const child = spawn(this.#python, argv, {
         cwd: this.#root,
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ...this.#env },
       });
       let stdout = "";
       let stderr = "";
