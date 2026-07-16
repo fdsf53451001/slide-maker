@@ -1,0 +1,28 @@
+{
+  "name": "@slide-maker/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@slide-maker/core": "workspace:*",
+    "@slide-maker/provider-codex": "workspace:*",
+    "@slide-maker/provider-mock": "workspace:*",
+    "express": "^5.1.0",
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1",
+    "pptxgenjs": "^4.0.1",
+    "sharp": "0.35.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3"
+  }
+}

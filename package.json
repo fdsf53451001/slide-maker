@@ -1,0 +1,29 @@
+{
+  "name": "slide-maker",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.13.1",
+  "scripts": {
+    "dev": "pnpm --filter @slide-maker/core build && pnpm --filter @slide-maker/provider-mock build && pnpm --filter @slide-maker/provider-codex build && pnpm --filter @slide-maker/editor build && NODE_OPTIONS=--conditions=development pnpm --filter @slide-maker/server dev",
+    "dev:web": "pnpm --filter @slide-maker/editor dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "smoke:image:codex": "node scripts/live-codex-image-smoke.mjs",
+    "smoke:deck:grok": "node scripts/live-grok-build-deck-e2e.mjs",
+    "smoke:style-reference": "node scripts/live-style-reference-e2e.mjs",
+    "smoke:parallel": "node scripts/live-codex-parallel-e2e.mjs",
+    "setup:ocr": "sh scripts/setup-ocr.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.14",
+    "prettier": "^3.9.5",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

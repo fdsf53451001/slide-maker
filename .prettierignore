@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-types/
+dist-lib/
+coverage/
+pnpm-lock.yaml
+.data/
+.slide-maker-data/
+artifacts/
+.venv-ocr/
+playwright-report/
+test-results/

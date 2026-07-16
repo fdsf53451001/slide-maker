@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-types/
+dist-lib/
+.data/
+.slide-maker-data/
+.venv-ocr/
+artifacts/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
