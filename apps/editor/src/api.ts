@@ -1,6 +1,11 @@
 import type {
   EditableTextBox,
   GenerationJob,
+  ModelCombination,
+  ModelConnection,
+  ModelEntry,
+  ModelLibrary,
+  ModelLibrarySystem,
   PresentationBrief,
   PresentationProject,
   SlideSpec,
@@ -14,7 +19,13 @@ export interface ProviderSummary {
   name: string;
   availability:
     { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
-  capabilities: { fullSlideGeneration: boolean; imageEditing?: boolean; maskedEditing?: boolean };
+  capabilities: {
+    fullSlideGeneration: boolean;
+    imageEditing?: boolean;
+    maskedEditing?: boolean;
+    referenceImages?: boolean;
+    multipleReferenceImages?: boolean;
+  };
   timeoutMs?: number;
 }
 
@@ -41,6 +52,14 @@ export interface WebSearchResult {
   url: string;
   title: string;
   summary: string;
+}
+
+export interface TextProviderSummary {
+  id: string;
+  name: string;
+  availability:
+    { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
+  isDefault: boolean;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -72,10 +91,18 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
-  regenerateOutline: (projectId: string, replace = false) =>
+  updateProjectName: (projectId: string, name: string) =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/name`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteProject: (projectId: string) =>
+    request<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
+  textProviders: () => request<TextProviderSummary[]>("/api/text-providers"),
+  regenerateOutline: (projectId: string, replace = false, textEngine?: string) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/outline`, {
       method: "POST",
-      body: JSON.stringify({ replace }),
+      body: JSON.stringify({ replace, ...(textEngine ? { textEngine } : {}) }),
     }),
   styles: () => request<StylePreset[]>("/api/styles"),
   getStyle: (styleId: string) => request<StylePreset>(`/api/styles/${encodeURIComponent(styleId)}`),
@@ -119,20 +146,34 @@ export const api = {
         body: JSON.stringify(patch),
       },
     ),
+  // providerId 省略時，server 依專案組合（或預設組合）解析影像模型。
   generate: (
     projectId: string,
     slideId: string,
-    providerId: string,
+    providerId: string | undefined,
     acceptUnknownReadiness = false,
   ) =>
     request<GenerationJob>(
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/generate`,
-      { method: "POST", body: JSON.stringify({ providerId, acceptUnknownReadiness }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...(providerId ? { providerId } : {}),
+          acceptUnknownReadiness,
+        }),
+      },
     ),
-  generateAll: (projectId: string, providerId: string, acceptUnknownReadiness = false) =>
+  generateAll: (
+    projectId: string,
+    providerId: string | undefined,
+    acceptUnknownReadiness = false,
+  ) =>
     request<GenerationJob[]>(`/api/projects/${encodeURIComponent(projectId)}/generate`, {
       method: "POST",
-      body: JSON.stringify({ providerId, acceptUnknownReadiness }),
+      body: JSON.stringify({
+        ...(providerId ? { providerId } : {}),
+        acceptUnknownReadiness,
+      }),
     }),
   editSlideImage: (
     projectId: string,
@@ -180,20 +221,28 @@ export const api = {
         body: JSON.stringify({ boxes, ...(threshold === undefined ? {} : { threshold }) }),
       },
     ),
-  addSlide: (projectId: string) =>
+  addSlide: (
+    projectId: string,
+    input?: Partial<
+      Pick<
+        SlideSpec,
+        "purpose" | "content" | "narrative" | "layoutHint" | "imagePrompt" | "sourceIds"
+      >
+    > & { afterSlideId?: string },
+  ) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/slides`, {
       method: "POST",
-      body: "{}",
+      body: JSON.stringify(input ?? {}),
     }),
-  addAiSlide: (projectId: string, purpose: string, afterSlideId?: string) =>
+  addAiSlide: (projectId: string, purpose: string, afterSlideId?: string, textEngine?: string) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/slides/ai`, {
       method: "POST",
-      body: JSON.stringify({ purpose, afterSlideId }),
+      body: JSON.stringify({ purpose, afterSlideId, ...(textEngine ? { textEngine } : {}) }),
     }),
-  regenerateSlideOutline: (projectId: string, slideId: string) =>
+  regenerateSlideOutline: (projectId: string, slideId: string, textEngine?: string) =>
     request<PresentationProject>(
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/outline`,
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify(textEngine ? { textEngine } : {}) },
     ),
   duplicateSlide: (projectId: string, slideId: string) =>
     request<PresentationProject>(
@@ -243,10 +292,10 @@ export const api = {
       throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
     return body as PresentationProject;
   },
-  searchWebSources: (projectId: string, query: string, limit = 8) =>
+  searchWebSources: (projectId: string, query: string, limit = 8, textEngine?: string) =>
     request<WebSearchResult[]>(`/api/projects/${encodeURIComponent(projectId)}/web-search`, {
       method: "POST",
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, limit, ...(textEngine ? { textEngine } : {}) }),
     }),
   addWebSources: (projectId: string, sources: WebSearchResult[]) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/web-sources`, {
@@ -266,15 +315,32 @@ export const api = {
       throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
     return body as StyleReferenceImage;
   },
+  renderPdfPages: async (
+    file: File,
+  ): Promise<{ pages: string[]; totalPages: number; truncated: boolean }> => {
+    const response = await fetch("/api/pdf-pages", {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: file,
+    });
+    const body = (await response.json()) as
+      { pages: string[]; totalPages: number; truncated: boolean } | { error?: string };
+    if (!response.ok)
+      throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
+    return body as { pages: string[]; totalPages: number; truncated: boolean };
+  },
   versionToStyleReference: (projectId: string, slideId: string, versionId: string) =>
     request<StyleReferenceImage>(
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/style-reference`,
       { method: "POST" },
     ),
-  analyzeStyle: (referenceIds: string[]) =>
+  analyzeStyle: (referenceIds: string[], textEngine?: string) =>
     request<{ imageDirection: string; promptTemplate: string; avoid: string[] }>(
       "/api/style-analysis",
-      { method: "POST", body: JSON.stringify({ referenceIds }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ referenceIds, ...(textEngine ? { textEngine } : {}) }),
+      },
     ),
   cancel: (projectId: string, jobId: string) =>
     request<GenerationJob>(
@@ -291,6 +357,69 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/activate`,
       { method: "POST" },
     ),
+  setProjectCombination: (projectId: string, combinationId: string) =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/combination`, {
+      method: "PATCH",
+      body: JSON.stringify({ combinationId }),
+    }),
+  // ── 模型庫 ──────────────────────────────────────────────────────────────
+  modelLibrary: () => request<ModelLibrary>("/api/model-library"),
+  connectionModels: (connectionId: string) =>
+    request<{ models: string[] }>(
+      `/api/model-library/connections/${encodeURIComponent(connectionId)}/models`,
+    ),
+  createConnection: (input: Omit<ModelConnection, "id">) =>
+    request<ModelLibrary>("/api/model-library/connections", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateConnection: (id: string, patch: Partial<Omit<ModelConnection, "id">>) =>
+    request<ModelLibrary>(`/api/model-library/connections/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteConnection: (id: string) =>
+    request<ModelLibrary>(`/api/model-library/connections/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  createModel: (input: Omit<ModelEntry, "id">) =>
+    request<ModelLibrary>("/api/model-library/models", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateModel: (id: string, patch: Partial<Omit<ModelEntry, "id">>) =>
+    request<ModelLibrary>(`/api/model-library/models/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteModel: (id: string) =>
+    request<ModelLibrary>(`/api/model-library/models/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  createCombination: (input: Omit<ModelCombination, "id">) =>
+    request<ModelLibrary>("/api/model-library/combinations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateCombination: (id: string, patch: Partial<Omit<ModelCombination, "id">>) =>
+    request<ModelLibrary>(`/api/model-library/combinations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteCombination: (id: string) =>
+    request<ModelLibrary>(`/api/model-library/combinations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  setDefaultCombination: (combinationId: string) =>
+    request<ModelLibrary>("/api/model-library/default-combination", {
+      method: "PUT",
+      body: JSON.stringify({ combinationId }),
+    }),
+  updateModelLibrarySystem: (patch: Partial<ModelLibrarySystem>) =>
+    request<ModelLibrary>("/api/model-library/system", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 };
 
 export const styleAssetUrl = (id: string) => `/api/style-assets/${encodeURIComponent(id)}`;

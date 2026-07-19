@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createProject, createDefaultStyle, createSlidesFromBrief } from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
 
@@ -71,6 +71,8 @@ describe("Editor MVP navigation", () => {
     );
     const textarea = screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement;
     expect(textarea.readOnly).toBe(true);
+    // 非編輯狀態顯示區放大，模擬 SVG 匯出不裁字的行為
+    expect(textarea.style.width).toBe("400%");
 
     const boxElement = textarea.closest(".editable-text-box") as HTMLElement;
     fireEvent.pointerDown(boxElement);
@@ -79,9 +81,38 @@ describe("Editor MVP navigation", () => {
 
     fireEvent.doubleClick(boxElement);
     expect(textarea.readOnly).toBe(false);
+    // 編輯中恢復框尺寸，避免放大的透明區攔截畫布點擊
+    expect(textarea.style.width).toBe("");
 
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(textarea.readOnly).toBe(true);
+  });
+
+  it("still selects a text box when pointer capture is unavailable", () => {
+    const onSelect = vi.fn();
+    render(
+      <TextLayerCanvas
+        background="/clean.png"
+        boxes={[makeBox()]}
+        canvasWidth={1920}
+        canvasHeight={1080}
+        selectedId={undefined}
+        onSelect={onSelect}
+        onChange={vi.fn()}
+      />,
+    );
+    const boxElement = screen
+      .getByLabelText("可編輯簡報文字")
+      .closest(".editable-text-box") as HTMLElement;
+    Object.defineProperty(boxElement, "setPointerCapture", {
+      configurable: true,
+      value: () => {
+        throw new DOMException("No active pointer", "NotFoundError");
+      },
+    });
+
+    expect(() => fireEvent.pointerDown(boxElement)).not.toThrow();
+    expect(onSelect).toHaveBeenCalledWith("text-1");
   });
 
   it("commits a drag as a single onChange when the pointer is released", () => {
@@ -257,7 +288,7 @@ describe("Editor MVP navigation", () => {
 
     render(<Editor />);
     fireEvent.click(await screen.findByText("AI 新增頁面"));
-    fireEvent.click(await screen.findByText("＋ 新增頁面"));
+    fireEvent.click(await screen.findByRole("button", { name: "新增頁面" }));
     expect(await screen.findByRole("dialog", { name: "新增 AI 頁面" })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("新增頁面目的"), {
       target: { value: "比較導入前後成效，包含交付時間與失敗率" },
@@ -283,6 +314,75 @@ describe("Editor MVP navigation", () => {
     fireEvent.click(screen.getByText("AI 新增頁面"));
     fireEvent.click(screen.getByText("比較導入前後成效"));
     expect(await screen.findByDisplayValue("比較導入前後成效")).toBeTruthy();
+  });
+
+  it("skips the outline and creates a blank page for manual setup", async () => {
+    let project = createProject({ topic: "空白頁插入", brief: { desiredSlideCount: 2 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    let addSlideBody: Record<string, unknown> | undefined;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      if (path.endsWith("/slides") && init?.method === "POST") {
+        addSlideBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const created = {
+          ...structuredClone(project.slides[0]!),
+          id: "blank-slide",
+          order: 1,
+          purpose: "",
+          content: "",
+          narrative: "",
+          layoutHint: "",
+          imagePrompt: "",
+          versions: [],
+        };
+        project = {
+          ...project,
+          slides: [project.slides[0]!, created, { ...project.slides[1]!, order: 2 }],
+        };
+        return Response.json(project, { status: 201 });
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("空白頁插入"));
+    fireEvent.click(await screen.findByRole("button", { name: "新增頁面" }));
+    const dialog = await screen.findByRole("dialog", { name: "新增 AI 頁面" });
+    fireEvent.click(within(dialog).getByText("跳過大綱，建立空白頁"));
+
+    await waitFor(() => expect(addSlideBody).toEqual({ afterSlideId: project.slides[0]!.id }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("頁面目的") as HTMLTextAreaElement).value).toBe(""),
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/slides/ai"))).toBe(false);
   });
 
   it("shows a named style picker instead of asking for an internal style id", async () => {
@@ -1009,6 +1109,89 @@ describe("Editor MVP navigation", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
   });
 
+  it("shows the previewed historical version in presentation mode for the selected slide", async () => {
+    const project = createProject({ topic: "歷史版本簡報", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    project.slides[0]!.versions = [
+      {
+        id: "old-version",
+        imagePath: "assets/generated/old-version.png",
+        prompt: "old",
+        providerId: "codex-image-spike",
+        model: "codex-imagegen",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: now,
+      },
+      {
+        id: "new-version",
+        imagePath: "assets/generated/new-version.png",
+        prompt: "new",
+        providerId: "codex-image-spike",
+        model: "codex-imagegen",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: now,
+      },
+    ];
+    project.slides[0]!.currentVersionId = "new-version";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.pathname
+              : new URL(input.url).pathname;
+        if (path === "/api/projects") return Response.json([project]);
+        if (path === "/api/providers")
+          return Response.json([
+            {
+              id: "mock-image",
+              name: "Mock",
+              availability: { status: "available" },
+              capabilities: { fullSlideGeneration: true },
+            },
+          ]);
+        if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+        if (path.includes("/readiness"))
+          return Response.json({
+            providerId: "mock-image",
+            status: "ready",
+            blocking: false,
+            requiresAcknowledgement: false,
+            message: "Ready",
+            checkedAt: new Date().toISOString(),
+            expiresAt: new Date().toISOString(),
+          });
+        return Response.json(project);
+      }),
+    );
+    Object.defineProperty(document.documentElement, "requestFullscreen", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("歷史版本簡報"));
+    expect(await screen.findByDisplayValue(project.slides[0]!.purpose)).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "版本 1" }));
+    expect(await screen.findByText("正在預覽歷史版本")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+    const slideImage = screen.getByAltText("簡報第 1 頁");
+    expect(slideImage.getAttribute("src")).toContain("old-version.png");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
+  });
+
   it("opens current-image editing and submits an instruction without replacing the base version", async () => {
     const project = createProject({ topic: "圖片局部編輯", brief: { desiredSlideCount: 1 } });
     project.workflowStage = "editing";
@@ -1201,6 +1384,15 @@ describe("Editor MVP navigation", () => {
         project = { ...project, workflowStage: "editing" };
         return Response.json(project.slides.map((slide) => ({ id: `job-${slide.id}` })));
       }
+      if (path.endsWith("/api/text-providers") && method === "GET")
+        return Response.json([
+          {
+            id: "openai",
+            name: "OpenAI 相容（Gemini 等）",
+            availability: { status: "available" },
+            isDefault: true,
+          },
+        ]);
       if (/\/api\/projects\/[^/]+$/.test(path) && method === "GET") return Response.json(project);
       return Response.json(project);
     });
@@ -1208,19 +1400,22 @@ describe("Editor MVP navigation", () => {
 
     render(<Editor />);
     fireEvent.click(await screen.findByText("不預設三頁的流程"));
-    expect(await screen.findByText("STEP 1 · 需求到大綱")).toBeTruthy();
+    expect(await screen.findByText("STEP 2 · 需求")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("簡報頁數"), { target: { value: "7" } });
+    fireEvent.click(screen.getByText("下一步：上傳素材"));
+    expect(await screen.findByText("STEP 3 · 上傳素材")).toBeTruthy();
     fireEvent.click(screen.getByText("產生 7 頁大綱"));
     expect(await screen.findByText("確認設定並生成 7 頁簡報")).toBeTruthy();
     expect(screen.getByText(/全部 7 頁/)).toBeTruthy();
     fireEvent.click(screen.getByText("確認設定並生成 7 頁簡報"));
 
+    // 生成流程改為組合驅動：client 不再送 providerId，由 server 依專案組合解析影像模型。
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringMatching(/\/api\/projects\/[^/]+\/generate$/),
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ providerId: "mock-image", acceptUnknownReadiness: false }),
+          body: JSON.stringify({ acceptUnknownReadiness: false }),
         }),
       ),
     );

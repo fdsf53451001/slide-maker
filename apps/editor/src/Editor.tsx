@@ -1,9 +1,11 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import type {
   EditableTextBox,
@@ -23,6 +25,12 @@ import {
   type WebSearchResult,
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
+import { SourcePanel } from "./SourcePanel.js";
+import { ModelLibrary } from "./ModelLibrary.js";
+import { LibraryHeader } from "./LibraryHeader.js";
+import { useSystemSettings, type SystemSettings } from "./systemSettings.js";
+
+type CombinationSummary = { id: string; name: string; isDefault: boolean; imageModelRef?: string };
 
 const PHASE_LABELS: Record<string, string> = {
   queued: "等待排程",
@@ -52,6 +60,84 @@ const TEXT_HISTORY_LIMIT = 60;
 // 文字框陣列一律以不可變方式更新，歷史可直接存引用，不需深拷貝。
 function pushHistory(history: EditableTextBox[][], boxes: EditableTextBox[]): EditableTextBox[][] {
   return [...history, boxes].slice(-TEXT_HISTORY_LIMIT);
+}
+
+export function SystemSettingsDialog({
+  webSearchMode,
+  onWebSearchMode,
+  combinations,
+  combinationId,
+  onCombinationId,
+  onOpenModelLibrary,
+  onClose,
+}: {
+  webSearchMode: SystemSettings["webSearchMode"];
+  onWebSearchMode: (value: SystemSettings["webSearchMode"]) => void;
+  combinations: CombinationSummary[];
+  combinationId: string | undefined;
+  onCombinationId: (value: string) => void;
+  onOpenModelLibrary: () => void;
+  onClose: () => void;
+}) {
+  const defaultCombination = combinations.find((item) => item.isDefault);
+  return (
+    <div
+      className="system-settings-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="系統設定"
+      onClick={onClose}
+    >
+      <div className="system-settings-dialog" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="section-label">SYSTEM</span>
+            <h2>系統設定</h2>
+            <p>影像／文字／搜尋模型都由專案的模型組合決定。</p>
+          </div>
+          <button type="button" aria-label="關閉系統設定" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        <label>
+          專案模型組合
+          <select
+            value={combinationId ?? ""}
+            disabled={combinations.length === 0}
+            onChange={(event) => {
+              if (event.target.value) onCombinationId(event.target.value);
+            }}
+          >
+            <option value="">
+              {`跟隨預設${defaultCombination ? `（${defaultCombination.name}）` : ""}`}
+            </option>
+            {combinations.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+                {item.isDefault ? "（預設）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Web Search
+          <select
+            value={webSearchMode}
+            onChange={(event) =>
+              onWebSearchMode(event.target.value as SystemSettings["webSearchMode"])
+            }
+          >
+            <option value="live">Live（即時搜尋）</option>
+            <option value="cached">Cached</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </label>
+        <button type="button" className="system-settings-link" onClick={onOpenModelLibrary}>
+          管理模型組合（模型庫）→
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function TextLayerCanvas({
@@ -114,7 +200,11 @@ export function TextLayerCanvas({
     };
     if (editingId !== box.id) setEditingId(undefined);
     onSelect(box.id);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Synthetic or already-ended pointers can reject capture; selection must still succeed.
+    }
   };
   const move = (event: ReactPointerEvent) => {
     const active = drag.current;
@@ -239,6 +329,20 @@ export function TextLayerCanvas({
                   letterSpacing: `${box.letterSpacing}px`,
                   textAlign: box.align,
                   paddingTop: `${(verticalOffset / canvasHeight) * 100}cqh`,
+                  // 伺服器 SVG 匯出不會在框邊裁字；非編輯狀態放大顯示區，
+                  // 讓超出框的文字照樣顯示，與最終合成結果一致。
+                  // 編輯中維持框尺寸，避免放大的透明區攔截畫布點擊。
+                  ...(editing
+                    ? {}
+                    : {
+                        width: "400%",
+                        height: "400%",
+                        ...(box.align === "center"
+                          ? { left: "-150%" }
+                          : box.align === "right"
+                            ? { left: "auto", right: 0 }
+                            : {}),
+                      }),
                 }}
               />
               {selectedId === box.id &&
@@ -263,10 +367,12 @@ function NewSlideDialog({
   busy,
   onCancel,
   onSubmit,
+  onSkipOutline,
 }: {
   busy: boolean;
   onCancel: () => void;
   onSubmit: (purpose: string) => void;
+  onSkipOutline?: () => void;
 }) {
   const [purpose, setPurpose] = useState("");
   return (
@@ -312,335 +418,15 @@ function NewSlideDialog({
           <button type="button" disabled={busy} onClick={onCancel}>
             取消
           </button>
+          {onSkipOutline && (
+            <button type="button" disabled={busy} onClick={onSkipOutline}>
+              跳過大綱，建立空白頁
+            </button>
+          )}
           <button className="primary" disabled={busy || !purpose.trim()}>
             {busy ? "AI 正在產生頁面架構…" : "用 AI 產生頁面架構 →"}
           </button>
         </div>
-      </form>
-    </div>
-  );
-}
-
-function sourceTypeLabel(source: SourceAsset): string {
-  if (source.mediaType.startsWith("image/")) return "圖片";
-  if (source.mediaType === "application/pdf") return "PDF";
-  if (source.mediaType.includes("presentationml")) return "PPTX";
-  if (source.mediaType.includes("wordprocessingml")) return "DOCX";
-  if (source.mediaType === "text/markdown") return "Markdown";
-  return "文字";
-}
-
-function sourceSummary(source: SourceAsset): string {
-  return source.extractedText.replace(/\s+/g, " ").trim();
-}
-
-function sourceUsageLabel(source: SourceAsset): string {
-  return (
-    {
-      content: "內容依據",
-      "visual-reference": "視覺參考",
-      "style-reference": "風格參考",
-      "direct-asset": "直接素材",
-      "exclude-from-generation": "不參與生成",
-    } as const
-  )[source.usage];
-}
-
-function sourceSize(sizeBytes: number): string {
-  if (sizeBytes < 1024) return `${sizeBytes} B`;
-  if (sizeBytes < 1024 ** 2) return `${(sizeBytes / 1024).toFixed(1)} KB`;
-  return `${(sizeBytes / 1024 ** 2).toFixed(1)} MB`;
-}
-
-function SourcePreviewDialog({
-  projectId,
-  source,
-  onClose,
-}: {
-  projectId: string;
-  source: SourceAsset;
-  onClose: () => void;
-}) {
-  const imageSource = source.mediaType.startsWith("image/");
-  const summary = sourceSummary(source);
-  const assetUrl = projectAssetUrl(projectId, source.assetPath);
-  return (
-    <div
-      className="source-preview-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`預覽來源：${source.name}`}
-      onClick={onClose}
-    >
-      <section
-        className={`source-preview-dialog ${imageSource ? "image" : "text"}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header>
-          <div>
-            <span className="section-label">SOURCE DETAIL · {sourceTypeLabel(source)}</span>
-            <h2>{source.name}</h2>
-          </div>
-          <button type="button" aria-label="關閉來源預覽" onClick={onClose}>
-            ×
-          </button>
-        </header>
-        <div className="source-preview-content">
-          <section className="source-preview-intro">
-            <h3>簡介</h3>
-            <dl>
-              <div>
-                <dt>格式</dt>
-                <dd>{sourceTypeLabel(source)}</dd>
-              </div>
-              <div>
-                <dt>大小</dt>
-                <dd>{sourceSize(source.sizeBytes)}</dd>
-              </div>
-              <div>
-                <dt>生成用途</dt>
-                <dd>{sourceUsageLabel(source)}</dd>
-              </div>
-              <div>
-                <dt>AI 使用</dt>
-                <dd>{source.allowModelAccess ? "已允許" : "未允許"}</dd>
-              </div>
-            </dl>
-            <p>
-              {imageSource
-                ? "此圖片可作為生成時的視覺參考或直接素材。"
-                : summary || "尚未擷取到可預覽的文字內容。"}
-            </p>
-          </section>
-          <section className="source-preview-full">
-            <h3>{imageSource ? "完整圖片" : "全文"}</h3>
-            <div className="source-preview-body">
-              {imageSource ? (
-                <img src={assetUrl} alt={source.name} />
-              ) : summary ? (
-                <pre>{source.extractedText}</pre>
-              ) : (
-                <div className="source-preview-empty">這個檔案沒有可顯示的文字內容。</div>
-              )}
-            </div>
-          </section>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function WebSourceDialog({
-  onCancel,
-  onSearch,
-  onSave,
-}: {
-  onCancel: () => void;
-  onSearch: (query: string) => Promise<WebSearchResult[]>;
-  onSave: (sources: WebSearchResult[]) => Promise<void>;
-}) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<WebSearchResult[]>([]);
-  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
-  const [searching, setSearching] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [searched, setSearched] = useState(false);
-  const [localError, setLocalError] = useState<string>();
-  const busy = searching || saving;
-  const search = async () => {
-    const keyword = query.trim();
-    if (keyword.length < 2) return;
-    setSearching(true);
-    setLocalError(undefined);
-    try {
-      const found = await onSearch(keyword);
-      const unique = [...new Map(found.map((result) => [result.url, result])).values()];
-      setResults(unique);
-      setSelectedUrls(new Set(unique.map((result) => result.url)));
-      setSearched(true);
-    } catch (reason) {
-      setLocalError(reason instanceof Error ? reason.message : "搜尋失敗");
-    } finally {
-      setSearching(false);
-    }
-  };
-  const selected = results.filter((result) => selectedUrls.has(result.url));
-  return (
-    <div
-      className="web-source-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="搜尋並加入資料"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
-    >
-      <section className="web-source-dialog" onClick={(event) => event.stopPropagation()}>
-        <header>
-          <div>
-            <span className="section-label">ADD WEB SOURCES</span>
-            <h2>加入搜尋資料</h2>
-            <p>先搜尋並確認結果；加入後會擷取網頁全文、建立索引並存回目前專案。</p>
-          </div>
-          <button type="button" aria-label="關閉搜尋資料" disabled={busy} onClick={onCancel}>
-            ×
-          </button>
-        </header>
-        <form
-          className="web-source-search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void search();
-          }}
-        >
-          <label>
-            搜尋關鍵字
-            <input
-              aria-label="搜尋關鍵字"
-              autoFocus
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="例如：Grok Build agent development advantages"
-            />
-          </label>
-          <button className="primary" disabled={busy || query.trim().length < 2}>
-            {searching ? "正在搜尋網路…" : "搜尋"}
-          </button>
-        </form>
-        {localError && <div className="web-source-error">{localError}</div>}
-        <div className="web-search-results">
-          {!searched && !searching && (
-            <div className="web-search-empty">輸入關鍵字後搜尋，這一步不會直接寫入來源。</div>
-          )}
-          {searched && results.length === 0 && (
-            <div className="web-search-empty">找不到可加入的搜尋結果，請換一組關鍵字。</div>
-          )}
-          {results.map((result) => (
-            <label
-              className={`web-search-result ${selectedUrls.has(result.url) ? "selected" : ""}`}
-              key={result.url}
-            >
-              <input
-                type="checkbox"
-                checked={selectedUrls.has(result.url)}
-                onChange={(event) =>
-                  setSelectedUrls((current) => {
-                    const next = new Set(current);
-                    if (event.target.checked) next.add(result.url);
-                    else next.delete(result.url);
-                    return next;
-                  })
-                }
-              />
-              <span>
-                <strong>{result.title}</strong>
-                <small>{result.url}</small>
-                <p>{result.summary}</p>
-              </span>
-            </label>
-          ))}
-        </div>
-        <footer>
-          <span>
-            已選 {selected.length} / {results.length} 筆
-          </span>
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
-          <button
-            className="primary"
-            disabled={busy || selected.length === 0}
-            onClick={() => {
-              setSaving(true);
-              setLocalError(undefined);
-              void onSave(selected)
-                .catch((reason: unknown) =>
-                  setLocalError(reason instanceof Error ? reason.message : "加入搜尋資料失敗"),
-                )
-                .finally(() => setSaving(false));
-            }}
-          >
-            {saving ? "正在擷取全文並儲存…" : `加入所選來源（${selected.length}）`}
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function TextSourceDialog({
-  busy,
-  onCancel,
-  onSubmit,
-}: {
-  busy: boolean;
-  onCancel: () => void;
-  onSubmit: (name: string, text: string) => void;
-}) {
-  const [name, setName] = useState("貼上文字.md");
-  const [content, setContent] = useState("");
-  const normalizedName = /\.(?:md|txt)$/i.test(name.trim())
-    ? name.trim()
-    : `${name.trim() || "貼上文字"}.md`;
-  return (
-    <div
-      className="text-source-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="輸入文字來源"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
-    >
-      <form
-        className="text-source-dialog"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (content.trim()) onSubmit(normalizedName, content.trim());
-        }}
-      >
-        <header>
-          <div>
-            <span className="section-label">PASTE TEXT SOURCE</span>
-            <h2>輸入文字來源</h2>
-            <p>貼上的內容會存成專案來源、切成文字區塊並加入檢索。</p>
-          </div>
-          <button type="button" aria-label="關閉輸入文字" disabled={busy} onClick={onCancel}>
-            ×
-          </button>
-        </header>
-        <label>
-          來源名稱
-          <input
-            aria-label="文字來源名稱"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="例如：訪談筆記.md"
-          />
-        </label>
-        <label>
-          文字內容
-          <textarea
-            aria-label="文字來源內容"
-            autoFocus
-            rows={14}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder="在這裡貼上研究資料、訪談逐字稿、會議筆記或其他文字…"
-          />
-        </label>
-        <small>
-          {content.length.toLocaleString("zh-TW")} 字元 · 將儲存為 {normalizedName}
-        </small>
-        <footer>
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
-          <button className="primary" disabled={busy || !content.trim()}>
-            {busy ? "正在建立來源…" : "加入文字來源"}
-          </button>
-        </footer>
       </form>
     </div>
   );
@@ -841,6 +627,7 @@ function CreateProject({
   onOpen,
   onCreate,
   onNavigate,
+  onDelete,
 }: {
   projects: PresentationProject[];
   styles: StylePreset[];
@@ -848,12 +635,15 @@ function CreateProject({
   onOpen: (project: PresentationProject) => void;
   onCreate: (topic: string, styleId?: string) => Promise<void>;
   onNavigate: (path: string) => void;
+  onDelete: (project: PresentationProject) => Promise<void>;
 }) {
   const [topic, setTopic] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState<string | undefined>(
     () => new URLSearchParams(window.location.search).get("style") ?? undefined,
   );
   const [busy, setBusy] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<PresentationProject | undefined>();
+  const [deleting, setDeleting] = useState(false);
   const styleCard = (style: StylePreset) => {
     const cover =
       style.referenceImages.find((item) => item.id === style.coverImageId) ??
@@ -884,20 +674,7 @@ function CreateProject({
   };
   return (
     <main className={`welcome dashboard ${styleLibrary ? "library-mode" : ""}`}>
-      <header className="dashboard-header">
-        <button className="dashboard-brand" onClick={() => onNavigate("/")}>
-          SM<span>↗</span>
-        </button>
-        <nav className="library-tabs">
-          <button className={!styleLibrary ? "active" : ""} onClick={() => onNavigate("/")}>
-            簡報
-          </button>
-          <button className={styleLibrary ? "active" : ""} onClick={() => onNavigate("/styles")}>
-            風格庫
-          </button>
-        </nav>
-        <span className="dashboard-local">LOCAL-FIRST · IMAGE DECKS</span>
-      </header>
+      <LibraryHeader active={styleLibrary ? "styles" : "decks"} onNavigate={onNavigate} />
       <div className="dashboard-content">
         {!styleLibrary ? (
           <>
@@ -919,7 +696,7 @@ function CreateProject({
                   aria-label="簡報需求"
                   value={topic}
                   onChange={(event) => setTopic(event.target.value)}
-                  placeholder="例如：用 8 頁向主管說明 AI agent 導入計畫、效益與風險"
+                  placeholder="例如：向主管說明 AI agent 導入計畫、效益與風險"
                   autoFocus
                 />
                 <button className="primary" disabled={busy || !topic.trim()}>
@@ -991,26 +768,42 @@ function CreateProject({
                       ? currentImage(project, project.slides[0])
                       : undefined;
                     return (
-                      <button
-                        key={project.id}
-                        className="project-card"
-                        onClick={() => onOpen(project)}
-                      >
-                        <span className="project-card-cover">
-                          {cover ? (
-                            <img src={cover} alt={`${project.name} 第一頁`} />
-                          ) : (
-                            <b>{project.slides.length ? `${project.slides.length} 頁` : "空白"}</b>
-                          )}
-                        </span>
-                        <span className="project-card-info">
-                          <strong>{project.name}</strong>
-                          <small>
-                            {project.slides.length} 頁 ·{" "}
-                            {new Date(project.updatedAt).toLocaleString("zh-TW")}
-                          </small>
-                        </span>
-                      </button>
+                      <div key={project.id} className="project-card">
+                        <button
+                          className="project-card-body"
+                          onClick={() => onOpen(project)}
+                          aria-label={`開啟 ${project.name}`}
+                        >
+                          <span className="project-card-cover">
+                            {cover ? (
+                              <img src={cover} alt={`${project.name} 第一頁`} />
+                            ) : (
+                              <b>
+                                {project.slides.length ? `${project.slides.length} 頁` : "空白"}
+                              </b>
+                            )}
+                          </span>
+                          <span className="project-card-info">
+                            <strong>{project.name}</strong>
+                            <small>
+                              {project.slides.length} 頁 ·{" "}
+                              {new Date(project.updatedAt).toLocaleString("zh-TW")}
+                            </small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="project-card-delete"
+                          aria-label={`刪除 ${project.name}`}
+                          title="刪除簡報"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setPendingDelete(project);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1033,6 +826,49 @@ function CreateProject({
           </section>
         )}
       </div>
+      {pendingDelete && (
+        <div
+          className="confirm-backdrop"
+          onClick={() => {
+            if (!deleting) setPendingDelete(undefined);
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>刪除簡報</h2>
+            <p>
+              確定要刪除「<strong>{pendingDelete.name}</strong>
+              」嗎？此動作無法復原，簡報的所有頁面與版本都會一併移除。
+            </p>
+            <div className="confirm-actions">
+              <button type="button" onClick={() => setPendingDelete(undefined)} disabled={deleting}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={deleting}
+                onClick={async () => {
+                  const target = pendingDelete;
+                  setDeleting(true);
+                  try {
+                    await onDelete(target);
+                    setPendingDelete(undefined);
+                  } finally {
+                    setDeleting(false);
+                  }
+                }}
+              >
+                {deleting ? "刪除中…" : "刪除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -1041,11 +877,7 @@ function SetupFlow({
   project,
   providers,
   styles,
-  providerId,
-  readiness,
-  readinessBusy,
   acceptUnknownReadiness,
-  onProviderId,
   onAcceptUnknownReadiness,
   onProject,
   onExit,
@@ -1054,11 +886,7 @@ function SetupFlow({
   project: PresentationProject;
   providers: ProviderSummary[];
   styles: StylePreset[];
-  providerId: string;
-  readiness?: ProviderReadiness;
-  readinessBusy: boolean;
   acceptUnknownReadiness: boolean;
-  onProviderId: (value: string) => void;
   onAcceptUnknownReadiness: (value: boolean) => void;
   onProject: (value: PresentationProject) => void;
   onExit: () => void;
@@ -1070,9 +898,74 @@ function SetupFlow({
   const [showRequirements, setShowRequirements] = useState(
     project.workflowStage === "requirements",
   );
+  // requirements 階段拆成兩個客戶端子步驟：false=填需求（brief），true=上傳素材。
+  // 素材上傳後才產大綱，讓大綱一開始就被素材 grounding。
+  const [materialsSubstep, setMaterialsSubstep] = useState(false);
+  const providerRef = useRef<HTMLElement>(null);
   const [showNewSlide, setShowNewSlide] = useState(false);
-  const provider = providers.find((candidate) => candidate.id === providerId);
+  const [showSettings, setShowSettings] = useState(false);
+  const systemSettings = useSystemSettings();
+  const [combinations, setCombinations] = useState<
+    { id: string; name: string; isDefault: boolean; imageModelRef?: string }[]
+  >([]);
+  // 生成流程改為「選組合」：影像 provider 由組合（或預設組合）解析，不再單獨選 provider。
+  const defaultImageRef = combinations.find((item) => item.isDefault)?.imageModelRef;
+  const boundCombination = combinations.find((item) => item.id === project.combinationId);
+  const effectiveImageProviderId =
+    boundCombination?.imageModelRef ?? defaultImageRef ?? "mock-image";
+  const effectiveImageProvider = providers.find(
+    (candidate) => candidate.id === effectiveImageProviderId,
+  );
+  // readiness 追蹤「實際會用到的影像 provider」（由組合解析），不是舊的 system providerId。
+  const [readiness, setReadiness] = useState<ProviderReadiness>();
+  const [readinessBusy, setReadinessBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setReadiness(undefined);
+    setReadinessBusy(true);
+    void api
+      .readiness(effectiveImageProviderId)
+      .then((value) => {
+        if (alive) setReadiness(value);
+      })
+      .catch(() => {
+        if (alive) setReadiness(undefined);
+      })
+      .finally(() => {
+        if (alive) setReadinessBusy(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [effectiveImageProviderId]);
+  // 生成前先檢查影像模型能力 vs 風格參考圖，讓衝突在此步就顯示、而非生成時才報錯。
+  const styleRefCount = project.styleSnapshot.referenceImages.length;
+  const referenceIssue =
+    effectiveImageProvider &&
+    styleRefCount > 0 &&
+    !effectiveImageProvider.capabilities.referenceImages
+      ? "此組合的影像模型不支援參考圖。請改用支援參考圖的影像模型（OpenAI 影像 API 設為 chat），或移除風格的參考圖。"
+      : effectiveImageProvider &&
+          styleRefCount > 1 &&
+          !effectiveImageProvider.capabilities.multipleReferenceImages
+        ? "此組合的影像模型只支援單張參考圖。請把風格的參考圖減到 1 張，或改用支援多張參考圖的影像模型。"
+        : undefined;
 
+  useEffect(() => {
+    void api
+      .modelLibrary()
+      .then((library) =>
+        setCombinations(
+          library.combinations.map((combination) => ({
+            id: combination.id,
+            name: combination.name,
+            isDefault: combination.id === library.defaultCombinationId,
+            ...(combination.imageModelRef ? { imageModelRef: combination.imageModelRef } : {}),
+          })),
+        ),
+      )
+      .catch(() => setCombinations([]));
+  }, []);
   useEffect(() => {
     setBrief(structuredClone(project.brief));
   }, [project.id, project.brief]);
@@ -1089,9 +982,15 @@ function SetupFlow({
     try {
       const withBrief = await api.updateBrief(project.id, brief);
       onProject(withBrief);
+      // 文字模型由專案組合決定（server 端解析），前端不再傳 textEngine。
       const withOutline = await api.regenerateOutline(project.id, true);
       onProject(withOutline);
+      // 明確以新大綱同步 outline：若是「返回修改需求」後再生成，workflowStage 仍是
+      // "settings" 不變，倚賴 workflowStage 變化的同步 effect 不會觸發，會殘留舊 slide id
+      // 導致確認生成時 updateSlide 打到不存在的頁面（NOT_FOUND）。
+      setOutline(structuredClone(withOutline.slides));
       setShowRequirements(false);
+      setMaterialsSubstep(false);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "產生大綱失敗");
     } finally {
@@ -1115,14 +1014,16 @@ function SetupFlow({
         });
       }
       onProject(updated);
-      const currentReadiness = await api.readiness(providerId);
+      if (referenceIssue) throw new Error(referenceIssue);
+      const currentReadiness = await api.readiness(effectiveImageProviderId);
       if (
         currentReadiness.blocking ||
         (currentReadiness.requiresAcknowledgement && !acceptUnknownReadiness)
       ) {
         throw new Error(currentReadiness.message);
       }
-      await api.generateAll(project.id, providerId, acceptUnknownReadiness);
+      // 不傳 providerId：server 依專案組合（或預設組合）解析影像模型。
+      await api.generateAll(project.id, undefined, acceptUnknownReadiness);
       onProject(await api.getProject(project.id));
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "生成簡報失敗");
@@ -1132,6 +1033,25 @@ function SetupFlow({
   };
 
   const requirementsStep = project.workflowStage === "requirements" || showRequirements;
+  // 進度列可回跳：已產生過大綱（outlineExists）後任一步都能點回去改，否則只能點到目前步驟為止。
+  const outlineExists = project.slides.length > 0;
+  const currentStep = !requirementsStep ? 4 : materialsSubstep ? 3 : 2;
+  const stepClickable = (step: number) => step === 1 || step <= currentStep || outlineExists;
+  const goToStep = (step: number) => {
+    if (step === 1) {
+      providerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (step === 2) {
+      setShowRequirements(true);
+      setMaterialsSubstep(false);
+    } else if (step === 3) {
+      setShowRequirements(true);
+      setMaterialsSubstep(true);
+    } else if (step === 4 && outlineExists) {
+      setShowRequirements(false);
+    }
+  };
   return (
     <main className="setup-page">
       <header className="setup-header">
@@ -1140,125 +1060,222 @@ function SetupFlow({
         </button>
         <div>
           <strong>{project.name}</strong>
-          <small>兩步完成整份簡報</small>
+          <small>四步完成整份簡報</small>
         </div>
       </header>
       <div className="setup-steps" aria-label="建立簡報流程">
-        <div className={!requirementsStep ? "done" : "active"}>
-          <b>1</b>
-          <span>需求 → 大綱</span>
-        </div>
-        <i />
-        <div className={!requirementsStep ? "active" : ""}>
-          <b>2</b>
-          <span>設定 → 生成簡報</span>
-        </div>
+        {[
+          { step: 1, label: "選擇模型" },
+          { step: 2, label: "需求" },
+          { step: 3, label: "上傳素材" },
+          { step: 4, label: "確認生成" },
+        ].map(({ step, label }, index) => (
+          <Fragment key={step}>
+            {index > 0 && <i />}
+            <button
+              type="button"
+              className={step === currentStep ? "active" : step < currentStep ? "done" : ""}
+              disabled={busy || !stepClickable(step)}
+              aria-current={step === currentStep ? "step" : undefined}
+              onClick={() => goToStep(step)}
+            >
+              <b>{step}</b>
+              <span>{label}</span>
+            </button>
+          </Fragment>
+        ))}
       </div>
+      <section className="setup-card setup-provider" aria-label="選擇模型組合" ref={providerRef}>
+        <div className="section-label">STEP 1 · 選擇模型組合</div>
+        <p>影像／文字／搜尋模型都由組合決定。要調整或新增組合，請到模型庫。</p>
+        <div className="setup-grid">
+          <label>
+            專案模型組合
+            <select
+              value={project.combinationId ?? ""}
+              disabled={combinations.length === 0}
+              onChange={(event) => {
+                const combinationId = event.target.value;
+                if (!combinationId) return;
+                void api
+                  .setProjectCombination(project.id, combinationId)
+                  .then(onProject)
+                  .catch((reason: unknown) =>
+                    onError(reason instanceof Error ? reason.message : "設定組合失敗"),
+                  );
+              }}
+            >
+              <option value="">
+                {`跟隨預設${
+                  combinations.find((item) => item.isDefault)
+                    ? `（${combinations.find((item) => item.isDefault)!.name}）`
+                    : ""
+                }`}
+              </option>
+              {combinations.map((combination) => (
+                <option key={combination.id} value={combination.id}>
+                  {combination.name}
+                  {combination.isDefault ? "（預設）" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Web Search
+            <select
+              value={systemSettings.webSearchMode}
+              onChange={(event) =>
+                systemSettings.setWebSearchMode(
+                  event.target.value as SystemSettings["webSearchMode"],
+                )
+              }
+            >
+              <option value="live">Live（即時搜尋）</option>
+              <option value="cached">Cached</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+        </div>
+        {effectiveImageProviderId === "mock-image" && (
+          <p className="setup-provider-hint">
+            此組合的影像模型是
+            Mock（不消耗配額、非真實生成）。要用真實模型出圖，請到模型庫調整組合。
+          </p>
+        )}
+        {referenceIssue && <p className="provider-note">{referenceIssue}</p>}
+      </section>
       {requirementsStep ? (
-        <section className="setup-card">
-          <div className="section-label">STEP 1 · 需求到大綱</div>
-          <h1>先確認這份簡報要說什麼</h1>
-          <p>系統會依下列需求建立大綱；頁數以這裡確認的數字為準。</p>
-          <div className="setup-grid">
-            <label className="wide">
-              簡報需求
-              <textarea
-                rows={4}
-                value={brief.topic}
-                onChange={(event) => setBrief({ ...brief, topic: event.target.value })}
-              />
-            </label>
-            <label>
-              目標觀眾
-              <input
-                value={brief.audience}
-                onChange={(event) => setBrief({ ...brief, audience: event.target.value })}
-              />
-            </label>
-            <label>
-              簡報目的
-              <input
-                value={brief.purpose}
-                onChange={(event) => setBrief({ ...brief, purpose: event.target.value })}
-              />
-            </label>
-            <label>
-              頁數
-              <input
-                aria-label="簡報頁數"
-                type="number"
-                min={1}
-                max={100}
-                value={brief.desiredSlideCount}
-                onChange={(event) =>
-                  setBrief({ ...brief, desiredSlideCount: Number(event.target.value) })
-                }
-              />
-            </label>
-            <label>
-              語言
-              <input
-                value={brief.language}
-                onChange={(event) => setBrief({ ...brief, language: event.target.value })}
-              />
-            </label>
-            <label>
-              語氣
-              <input
-                value={brief.tone}
-                onChange={(event) => setBrief({ ...brief, tone: event.target.value })}
-              />
-            </label>
-            <label>
-              演講時間（分鐘）
-              <input
-                type="number"
-                min={1}
-                value={brief.durationMinutes ?? ""}
-                onChange={(event) =>
-                  setBrief({
-                    ...brief,
-                    durationMinutes: event.target.value ? Number(event.target.value) : undefined,
-                  })
-                }
-              />
-            </label>
-            <label>
-              Web Search
-              <select
-                value={brief.webSearchMode}
-                onChange={(event) =>
-                  setBrief({
-                    ...brief,
-                    webSearchMode: event.target.value as PresentationBrief["webSearchMode"],
-                  })
-                }
+        materialsSubstep ? (
+          <section className="setup-card setup-materials">
+            <div className="section-label">STEP 3 · 上傳素材</div>
+            <h1>上傳生成會用到的素材</h1>
+            <p>
+              文件、圖片、貼上文字或加入搜尋資料都會建立索引；產生大綱與後續生成時即可引用。這一步可略過。
+            </p>
+            <SourcePanel project={project} onProject={onProject} onError={onError} />
+            <div className="setup-materials-actions">
+              <button
+                type="button"
+                className="setup-back"
+                disabled={busy}
+                onClick={() => setMaterialsSubstep(false)}
               >
-                <option value="live">Live（即時搜尋）</option>
-                <option value="cached">Cached</option>
-                <option value="disabled">Disabled</option>
-              </select>
-            </label>
-          </div>
-          <button
-            className="primary setup-submit"
-            disabled={
-              busy ||
-              !brief.topic.trim() ||
-              brief.desiredSlideCount < 1 ||
-              brief.desiredSlideCount > 100
-            }
-            onClick={() => void produceOutline()}
-          >
-            {busy ? "正在產生大綱…" : `產生 ${brief.desiredSlideCount} 頁大綱`}
-            <span>→</span>
-          </button>
-        </section>
+                <span>←</span> 上一步
+              </button>
+              <button
+                className="primary setup-submit"
+                disabled={busy || !brief.topic.trim()}
+                onClick={() => void produceOutline()}
+              >
+                {busy ? "正在產生大綱…" : `產生 ${brief.desiredSlideCount} 頁大綱`}
+                <span>→</span>
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section className="setup-card">
+            <div className="section-label">STEP 2 · 需求</div>
+            <h1>先確認這份簡報要說什麼</h1>
+            <p>系統會依下列需求建立大綱；頁數以這裡確認的數字為準。</p>
+            <div className="setup-grid">
+              <label className="wide">
+                簡報需求
+                <textarea
+                  rows={4}
+                  value={brief.topic}
+                  onChange={(event) => setBrief({ ...brief, topic: event.target.value })}
+                />
+              </label>
+              <label>
+                目標觀眾
+                <input
+                  value={brief.audience}
+                  onChange={(event) => setBrief({ ...brief, audience: event.target.value })}
+                />
+              </label>
+              <label>
+                簡報目的
+                <input
+                  value={brief.purpose}
+                  onChange={(event) => setBrief({ ...brief, purpose: event.target.value })}
+                />
+              </label>
+              <label>
+                頁數
+                <input
+                  aria-label="簡報頁數"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={brief.desiredSlideCount}
+                  onChange={(event) =>
+                    setBrief({ ...brief, desiredSlideCount: Number(event.target.value) })
+                  }
+                />
+              </label>
+              <label>
+                語言
+                <input
+                  value={brief.language}
+                  onChange={(event) => setBrief({ ...brief, language: event.target.value })}
+                />
+              </label>
+              <label>
+                語氣
+                <input
+                  value={brief.tone}
+                  onChange={(event) => setBrief({ ...brief, tone: event.target.value })}
+                />
+              </label>
+              <label>
+                演講時間（分鐘）
+                <input
+                  type="number"
+                  min={1}
+                  value={brief.durationMinutes ?? ""}
+                  onChange={(event) =>
+                    setBrief({
+                      ...brief,
+                      durationMinutes: event.target.value ? Number(event.target.value) : undefined,
+                    })
+                  }
+                />
+              </label>
+            </div>
+            <button
+              className="primary setup-submit"
+              disabled={
+                busy ||
+                !brief.topic.trim() ||
+                brief.desiredSlideCount < 1 ||
+                brief.desiredSlideCount > 100
+              }
+              onClick={() => {
+                void api
+                  .updateBrief(project.id, brief)
+                  .then(onProject)
+                  .catch(() => undefined);
+                setMaterialsSubstep(true);
+              }}
+            >
+              下一步：上傳素材
+              <span>→</span>
+            </button>
+          </section>
+        )
       ) : (
         <section className="setup-card setup-settings">
-          <div className="section-label">STEP 2 · 設定到生成簡報</div>
-          <h1>確認大綱與生成設定</h1>
-          <p>確認後會立即排程大綱中的全部 {outline.length} 頁，不會另外假定頁數。</p>
+          <header className="setup-settings-header">
+            <div>
+              <div className="section-label">STEP 4 · 確認大綱與生成設定</div>
+              <h1>確認大綱與生成設定</h1>
+              <p>逐頁檢查內容與敘事，確認後會立即排程全部 {outline.length} 頁。</p>
+            </div>
+            <div className="outline-count" aria-label={`共 ${outline.length} 頁`}>
+              <strong>{outline.length}</strong>
+              <span>頁簡報</span>
+            </div>
+          </header>
           {project.outlineRationale && (
             <div className="outline-rationale">
               <strong>AI 頁數與敘事說明</strong>
@@ -1268,9 +1285,77 @@ function SetupFlow({
           <div className="outline-review">
             {outline.map((slide, index) => (
               <article key={slide.id}>
-                <b>{String(index + 1).padStart(2, "0")}</b>
+                <div className="outline-card-header">
+                  <b>{String(index + 1).padStart(2, "0")}</b>
+                  <span>第 {index + 1} 頁</span>
+                  <div className="outline-actions" aria-label={`第 ${index + 1} 頁操作`}>
+                    <button
+                      aria-label="往上移動"
+                      title="往上移動"
+                      disabled={busy || index === 0}
+                      onClick={() => {
+                        const ids = outline.map((item) => item.id);
+                        [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
+                        setBusy(true);
+                        void api
+                          .reorderSlides(project.id, ids)
+                          .then((updated) => {
+                            onProject(updated);
+                            setOutline(structuredClone(updated.slides));
+                          })
+                          .catch((reason: unknown) =>
+                            onError(reason instanceof Error ? reason.message : "排序失敗"),
+                          )
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      aria-label="往下移動"
+                      title="往下移動"
+                      disabled={busy || index === outline.length - 1}
+                      onClick={() => {
+                        const ids = outline.map((item) => item.id);
+                        [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
+                        setBusy(true);
+                        void api
+                          .reorderSlides(project.id, ids)
+                          .then((updated) => {
+                            onProject(updated);
+                            setOutline(structuredClone(updated.slides));
+                          })
+                          .catch((reason: unknown) =>
+                            onError(reason instanceof Error ? reason.message : "排序失敗"),
+                          )
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      className="outline-delete"
+                      disabled={busy || outline.length === 1}
+                      onClick={() => {
+                        setBusy(true);
+                        void api
+                          .deleteSlide(project.id, slide.id)
+                          .then((updated) => {
+                            onProject(updated);
+                            setOutline(structuredClone(updated.slides));
+                          })
+                          .catch((reason: unknown) =>
+                            onError(reason instanceof Error ? reason.message : "刪除失敗"),
+                          )
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      刪除
+                    </button>
+                  </div>
+                </div>
                 <div className="outline-fields">
-                  <label>
+                  <label className="outline-purpose">
                     頁面目的
                     <input
                       value={slide.purpose}
@@ -1283,7 +1368,7 @@ function SetupFlow({
                       }
                     />
                   </label>
-                  <label>
+                  <label className="outline-content">
                     頁面內容
                     <textarea
                       rows={2}
@@ -1330,93 +1415,47 @@ function SetupFlow({
                     />
                   </label>
                   {project.sources.length > 0 && (
-                    <fieldset>
-                      <legend>來源</legend>
-                      {project.sources.map((source) => (
-                        <label className="check-row" key={source.id}>
-                          <input
-                            type="checkbox"
-                            checked={slide.sourceIds.includes(source.id)}
-                            onChange={(event) =>
-                              setOutline(
-                                outline.map((item) =>
-                                  item.id === slide.id
-                                    ? {
-                                        ...item,
-                                        sourceIds: event.target.checked
-                                          ? [...item.sourceIds, source.id]
-                                          : item.sourceIds.filter((id) => id !== source.id),
-                                      }
-                                    : item,
-                                ),
-                              )
-                            }
-                          />
-                          {source.name}
-                        </label>
-                      ))}
-                    </fieldset>
+                    <div className="outline-sources">
+                      <span className="outline-sources-label">
+                        來源 · 已選 {slide.sourceIds.length}/{project.sources.length}
+                      </span>
+                      <div className="outline-source-chips">
+                        {project.sources.map((source) => {
+                          const checked = slide.sourceIds.includes(source.id);
+                          return (
+                            <label
+                              key={source.id}
+                              className={`source-chip${checked ? " selected" : ""}`}
+                              title={source.name}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) =>
+                                  setOutline(
+                                    outline.map((item) =>
+                                      item.id === slide.id
+                                        ? {
+                                            ...item,
+                                            sourceIds: event.target.checked
+                                              ? [...item.sourceIds, source.id]
+                                              : item.sourceIds.filter((id) => id !== source.id),
+                                          }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                              />
+                              <span className="source-chip-check" aria-hidden="true">
+                                ✓
+                              </span>
+                              <span className="source-chip-name">{source.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
-                </div>
-                <div className="outline-actions">
-                  <button
-                    disabled={busy || index === 0}
-                    onClick={() => {
-                      const ids = outline.map((item) => item.id);
-                      [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
-                      setBusy(true);
-                      void api
-                        .reorderSlides(project.id, ids)
-                        .then((updated) => {
-                          onProject(updated);
-                          setOutline(structuredClone(updated.slides));
-                        })
-                        .catch((reason: unknown) =>
-                          onError(reason instanceof Error ? reason.message : "排序失敗"),
-                        )
-                        .finally(() => setBusy(false));
-                    }}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    disabled={busy || index === outline.length - 1}
-                    onClick={() => {
-                      const ids = outline.map((item) => item.id);
-                      [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
-                      setBusy(true);
-                      void api
-                        .reorderSlides(project.id, ids)
-                        .then((updated) => {
-                          onProject(updated);
-                          setOutline(structuredClone(updated.slides));
-                        })
-                        .catch((reason: unknown) =>
-                          onError(reason instanceof Error ? reason.message : "排序失敗"),
-                        )
-                        .finally(() => setBusy(false));
-                    }}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    disabled={busy || outline.length === 1}
-                    onClick={() => {
-                      setBusy(true);
-                      void api
-                        .deleteSlide(project.id, slide.id)
-                        .then((updated) => {
-                          onProject(updated);
-                          setOutline(structuredClone(updated.slides));
-                        })
-                        .catch((reason: unknown) =>
-                          onError(reason instanceof Error ? reason.message : "刪除失敗"),
-                        )
-                        .finally(() => setBusy(false));
-                    }}
-                  >
-                    刪除
-                  </button>
                 </div>
               </article>
             ))}
@@ -1424,57 +1463,52 @@ function SetupFlow({
           <button className="add-outline" disabled={busy} onClick={() => setShowNewSlide(true)}>
             ＋ 新增一頁
           </button>
-          <div className="generation-settings">
-            <label>
-              風格
-              <select
-                value={project.styleSnapshot.id}
-                onChange={(event) => {
-                  setBusy(true);
-                  void api
-                    .applyStyle(project.id, event.target.value)
-                    .then(onProject)
-                    .catch((reason: unknown) =>
-                      onError(reason instanceof Error ? reason.message : "套用風格失敗"),
-                    )
-                    .finally(() => setBusy(false));
-                }}
-              >
-                {styles.map((style) => (
-                  <option key={style.id} value={style.id}>
-                    {style.name} v{style.version}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              圖片 Provider
-              <select value={providerId} onChange={(event) => onProviderId(event.target.value)}>
-                {providers.map((item) => (
-                  <option
-                    key={item.id}
-                    value={item.id}
-                    disabled={item.availability.status === "unavailable"}
-                  >
-                    {item.name}
-                    {item.availability.status === "unavailable" ? " — unavailable" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="generation-panel">
+            <div className="generation-panel-copy">
+              <span className="section-label">FINAL CHECK</span>
+              <strong>準備生成 {outline.length} 頁簡報</strong>
+              <p>選擇視覺風格後，即可建立全部頁面的生成工作。</p>
+            </div>
+            <div className="generation-settings">
+              <label>
+                簡報風格
+                <select
+                  value={project.styleSnapshot.id}
+                  onChange={(event) => {
+                    setBusy(true);
+                    void api
+                      .applyStyle(project.id, event.target.value)
+                      .then(onProject)
+                      .catch((reason: unknown) =>
+                        onError(reason instanceof Error ? reason.message : "套用風格失敗"),
+                      )
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  {styles.map((style) => (
+                    <option key={style.id} value={style.id}>
+                      {style.name} v{style.version}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
-          {provider?.availability.status === "unavailable" && (
-            <div className="provider-note">{provider.availability.reason}</div>
+          {effectiveImageProvider?.availability.status === "unavailable" && (
+            <div className="provider-note">{effectiveImageProvider.availability.reason}</div>
           )}
-          {provider?.availability.status === "available" && provider.availability.warning && (
-            <div className="provider-warning">⚠ {provider.availability.warning}</div>
-          )}
+          {effectiveImageProvider?.availability.status === "available" &&
+            effectiveImageProvider.availability.warning && (
+              <div className="provider-warning">
+                ⚠ {effectiveImageProvider.availability.warning}
+              </div>
+            )}
           {readinessBusy && (
             <div className="provider-note" role="status">
               正在檢查 provider readiness…
             </div>
           )}
-          {readiness && (
+          {readiness && readiness.status !== "ready" && (
             <div
               className={readiness.blocking ? "provider-note" : "provider-warning"}
               role="status"
@@ -1503,7 +1537,8 @@ function SetupFlow({
               disabled={
                 busy ||
                 outline.length === 0 ||
-                provider?.availability.status !== "available" ||
+                !!referenceIssue ||
+                effectiveImageProvider?.availability.status !== "available" ||
                 readinessBusy ||
                 !readiness ||
                 readiness.blocking ||
@@ -1552,7 +1587,15 @@ export function Editor() {
   const [panel, setPanel] = useState<"slide" | "project" | "sources" | "export">("slide");
   const [briefDraft, setBriefDraft] = useState<PresentationBrief>();
   const [draggedId, setDraggedId] = useState<string>();
-  const [providerId, setProviderId] = useState("mock-image");
+  const system = useSystemSettings();
+  const webSearchMode = system.webSearchMode;
+  const [showSystemSettings, setShowSystemSettings] = useState(false);
+  // 影像 provider 由專案綁定的組合（或模型庫預設組合）解析，不再用 localStorage 的 providerId。
+  const [combinations, setCombinations] = useState<
+    { id: string; name: string; isDefault: boolean; imageModelRef?: string }[]
+  >([]);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const [readiness, setReadiness] = useState<ProviderReadiness>();
   const [readinessBusy, setReadinessBusy] = useState(false);
   const [acceptUnknownReadiness, setAcceptUnknownReadiness] = useState(false);
@@ -1567,22 +1610,23 @@ export function Editor() {
   const [stylePickerBusy, setStylePickerBusy] = useState(false);
   const [showNewSlide, setShowNewSlide] = useState(false);
   const [newSlideBusy, setNewSlideBusy] = useState(false);
-  const [sourcePreview, setSourcePreview] = useState<SourceAsset>();
   const [showImageEdit, setShowImageEdit] = useState(false);
   const [imageEditBusy, setImageEditBusy] = useState(false);
   const [previewVersionId, setPreviewVersionId] = useState<string>();
-  const [showWebSourceSearch, setShowWebSourceSearch] = useState(false);
   const [outlineBusy, setOutlineBusy] = useState(false);
-  const [showTextSource, setShowTextSource] = useState(false);
-  const [sourceUploadBusy, setSourceUploadBusy] = useState(false);
   const [textBoxes, setTextBoxes] = useState<EditableTextBox[]>([]);
   // 使用者是否編輯過目前版本的文字圖層；未編輯前自動儲存不得寫回伺服器（見自動儲存 effect）。
   const textDirty = useRef(false);
   const [selectedTextId, setSelectedTextId] = useState<string>();
   const [textThreshold, setTextThreshold] = useState(0.75);
+  const [showTextThreshold, setShowTextThreshold] = useState(false);
   const [textLayerBusy, setTextLayerBusy] = useState(false);
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
+  // 縮圖列容器：切換投影片時把選取項捲進可視範圍。
+  const railRef = useRef<HTMLDivElement>(null);
+  // 編輯區滾輪切換頁面的冷卻時間戳，避免慣性滾動一次跳好幾頁。
+  const wheelCooldown = useRef(0);
 
   const navigate = (path: string) => {
     window.history.pushState({}, "", path);
@@ -1620,12 +1664,32 @@ export function Editor() {
     }
   }, [route, projects, project?.id]);
   useEffect(() => {
+    void api
+      .modelLibrary()
+      .then((library) =>
+        setCombinations(
+          library.combinations.map((combination) => ({
+            id: combination.id,
+            name: combination.name,
+            isDefault: combination.id === library.defaultCombinationId,
+            ...(combination.imageModelRef ? { imageModelRef: combination.imageModelRef } : {}),
+          })),
+        ),
+      )
+      .catch(() => setCombinations([]));
+  }, []);
+  // 影像 provider 由組合（或預設組合）解析；generate 時不再傳 providerId，但 readiness 需先查。
+  const defaultImageRef = combinations.find((item) => item.isDefault)?.imageModelRef;
+  const boundCombination = combinations.find((item) => item.id === project?.combinationId);
+  const effectiveImageProviderId =
+    boundCombination?.imageModelRef ?? defaultImageRef ?? "mock-image";
+  useEffect(() => {
     let current = true;
     setReadiness(undefined);
     setAcceptUnknownReadiness(false);
     setReadinessBusy(true);
     void api
-      .readiness(providerId)
+      .readiness(effectiveImageProviderId)
       .then((value) => {
         if (current) setReadiness(value);
       })
@@ -1639,16 +1703,36 @@ export function Editor() {
     return () => {
       current = false;
     };
-  }, [providerId]);
+  }, [effectiveImageProviderId]);
 
   const selected = project?.slides.find((slide) => slide.id === selectedId) ?? project?.slides[0];
+  // 編輯區滾輪：向下捲切到下一頁、向上捲切到上一頁；用冷卻節流避免慣性滾動連跳。
+  const handleStageWheel = (event: ReactWheelEvent) => {
+    const slides = project?.slides;
+    if (!slides || slides.length < 2 || presentationIndex !== null) return;
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const nowMs = Date.now();
+    if (nowMs - wheelCooldown.current < 320) return;
+    const currentIndex = Math.max(
+      0,
+      slides.findIndex((slide) => slide.id === selected?.id),
+    );
+    const nextIndex =
+      event.deltaY > 0
+        ? Math.min(slides.length - 1, currentIndex + 1)
+        : Math.max(0, currentIndex - 1);
+    if (nextIndex === currentIndex) return;
+    wheelCooldown.current = nowMs;
+    setSelectedId(slides[nextIndex]?.id);
+    setPanel("slide");
+  };
   const selectedVersion = selected?.versions.find(
     (version) => version.id === selected.currentVersionId,
   );
   const previewVersion = selected?.versions.find(
     (version) => version.id === previewVersionId && version.id !== selected.currentVersionId,
   );
-  const provider = providers.find((candidate) => candidate.id === providerId);
+  const provider = providers.find((candidate) => candidate.id === effectiveImageProviderId);
   const activeJob = project?.jobs.find(
     (job) => job.slideId === selected?.id && (job.status === "queued" || job.status === "running"),
   );
@@ -1708,6 +1792,26 @@ export function Editor() {
   useEffect(() => {
     if (project) setBriefDraft(structuredClone(project.brief));
   }, [project?.id]);
+  // 系統層級 Web Search Mode：當系統值與目前專案 brief 不一致時，自動同步到伺服器端 brief，
+  // 讓大綱生成 / 重建大綱等流程都使用全域偏好，而不需要在每個專案面板重新選擇。
+  useEffect(() => {
+    if (!project || project.brief.webSearchMode === webSearchMode) return;
+    let active = true;
+    void api
+      .updateBrief(project.id, { webSearchMode })
+      .then((updated) => {
+        if (active) {
+          setProject(updated);
+          setBriefDraft(structuredClone(updated.brief));
+        }
+      })
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "同步 Web Search 設定失敗"),
+      );
+    return () => {
+      active = false;
+    };
+  }, [project?.id, webSearchMode]);
   useEffect(() => {
     if (
       !project ||
@@ -1778,10 +1882,13 @@ export function Editor() {
         setTextBoxes(snapshot);
         setTextUndo((history) => history.slice(0, -1));
       }
+      // 還原後若選中的文字框不在快照中，清掉選取狀態，與按鈕列的還原/重做一致。
+      if (selectedTextId && !snapshot.some((box) => box.id === selectedTextId))
+        setSelectedTextId(undefined);
     };
     window.addEventListener("keydown", onUndo);
     return () => window.removeEventListener("keydown", onUndo);
-  }, [textBoxes, textEditing, textRedo, textUndo]);
+  }, [textBoxes, selectedTextId, textEditing, textRedo, textUndo]);
   useEffect(() => {
     if (!project || project.workflowStage !== "editing") return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1790,27 +1897,6 @@ export function Editor() {
       const isFormControl =
         target instanceof HTMLElement &&
         (target.matches("input, textarea, select, button, a") || target.isContentEditable);
-      if (sourcePreview) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setSourcePreview(undefined);
-        }
-        return;
-      }
-      if (showWebSourceSearch) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setShowWebSourceSearch(false);
-        }
-        return;
-      }
-      if (showTextSource) {
-        if (event.key === "Escape" && !sourceUploadBusy) {
-          event.preventDefault();
-          setShowTextSource(false);
-        }
-        return;
-      }
       if (showImageEdit) {
         if (event.key === "Escape" && !imageEditBusy) {
           event.preventDefault();
@@ -1877,10 +1963,6 @@ export function Editor() {
     selectedId,
     showImageEdit,
     showNewSlide,
-    showTextSource,
-    showWebSourceSearch,
-    sourcePreview,
-    sourceUploadBusy,
     stylePickerVersion,
   ]);
   useEffect(() => {
@@ -1891,6 +1973,13 @@ export function Editor() {
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, [presentationIndex]);
+  // 選取的縮圖若超出縮圖列可視範圍（例如以方向鍵切換），自動捲入視野。
+  useEffect(() => {
+    if (!selectedId) return;
+    railRef.current?.querySelector(".thumbnail.selected")?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedId]);
+
+  if (route === "/models") return <ModelLibrary onNavigate={navigate} />;
 
   const versionRoute = /^\/styles\/([a-zA-Z0-9_-]+)\/versions\/(\d+)$/.exec(route);
   const styleRoute = /^\/styles\/([a-zA-Z0-9_-]+)$/.exec(route);
@@ -1928,6 +2017,10 @@ export function Editor() {
             setSelectedId(value.slides[0]?.id);
             navigate(`/projects/${value.id}`);
           }}
+          onDelete={async (target) => {
+            await api.deleteProject(target.id);
+            setProjects((current) => current.filter((candidate) => candidate.id !== target.id));
+          }}
         />
       </>
     );
@@ -1944,11 +2037,7 @@ export function Editor() {
           project={project}
           providers={providers}
           styles={styles}
-          providerId={providerId}
-          {...(readiness ? { readiness } : {})}
-          readinessBusy={readinessBusy}
           acceptUnknownReadiness={acceptUnknownReadiness}
-          onProviderId={setProviderId}
           onAcceptUnknownReadiness={setAcceptUnknownReadiness}
           onProject={(value) => {
             setProject(value);
@@ -1991,7 +2080,7 @@ export function Editor() {
     if (!selected) return;
     let currentReadiness: ProviderReadiness;
     try {
-      currentReadiness = await api.readiness(providerId);
+      currentReadiness = await api.readiness(effectiveImageProviderId);
       setReadiness(currentReadiness);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Provider readiness 檢查失敗");
@@ -2004,7 +2093,8 @@ export function Editor() {
       return;
     if (!(await save())) return;
     try {
-      await api.generate(project.id, selected.id, providerId, acceptUnknownReadiness);
+      // 不傳 providerId：server 依專案組合（或預設組合）解析影像模型。
+      await api.generate(project.id, selected.id, undefined, acceptUnknownReadiness);
       setProject(await api.getProject(project.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "生成失敗");
@@ -2020,6 +2110,15 @@ export function Editor() {
     : draft;
   const outlineReadOnly = !!previewVersion;
   const outlineDirty = !!selected?.outlineDirty && !outlineReadOnly;
+  // 目前使用中版本生成時的 outline 快照，作為「哪一欄與畫面上的圖片不同步」的比對基準。
+  const currentOutlineSnapshot = selectedVersion?.outlineSnapshot;
+  // 逐欄標示：只有實際與現有圖片不同步的那一欄才亮橘框；
+  // 無快照可比（例如尚未生成過圖片）時退回整組標示。
+  const fieldDirty = (field: "content" | "narrative" | "layoutHint" | "imagePrompt"): boolean => {
+    if (!outlineDirty) return false;
+    if (!currentOutlineSnapshot || !outlineView) return true;
+    return outlineView[field] !== currentOutlineSnapshot[field];
+  };
   const previewOutlineMatchesCurrent =
     !!draft &&
     !!previewVersion?.outlineSnapshot &&
@@ -2031,8 +2130,11 @@ export function Editor() {
     JSON.stringify(draft.sourceIds) === JSON.stringify(previewVersion.outlineSnapshot.sourceIds);
   const presentationSlide =
     presentationIndex === null ? undefined : project.slides[presentationIndex];
+  // 正在預覽歷史版本時，簡報模式的該頁要跟編輯畫布一致，顯示預覽中的版本。
   const presentationImage = presentationSlide
-    ? currentImage(project, presentationSlide)
+    ? presentationSlide.id === selected?.id && previewVersion
+      ? imageUrl(project.id, previewVersion.imagePath)
+      : currentImage(project, presentationSlide)
     : undefined;
   const run = async (operation: () => Promise<PresentationProject>) => {
     setError(undefined);
@@ -2078,24 +2180,6 @@ export function Editor() {
       setStylePickerBusy(false);
     }
   };
-  const uploadSourceFiles = async (files: File[]) => {
-    if (!files.length) return;
-    setSourceUploadBusy(true);
-    setError(undefined);
-    try {
-      const results = await Promise.allSettled(
-        files.map((file) => api.uploadSource(project.id, file)),
-      );
-      setProject(await api.getProject(project.id));
-      const failed = results.filter((result) => result.status === "rejected");
-      if (failed.length)
-        throw new Error(`${files.length - failed.length} 個檔案已上傳，${failed.length} 個失敗`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "來源上傳失敗");
-    } finally {
-      setSourceUploadBusy(false);
-    }
-  };
   const changeTextBoxes = (next: EditableTextBox[]) => {
     setTextUndo((history) => pushHistory(history, textBoxes));
     setTextRedo([]);
@@ -2119,7 +2203,7 @@ export function Editor() {
       await api.extractText(
         project.id,
         selected.id,
-        providerId,
+        effectiveImageProviderId,
         textThreshold,
         acceptUnknownReadiness,
       );
@@ -2144,7 +2228,56 @@ export function Editor() {
           SM<span>↗</span>
         </button>
         <div className="title-block">
-          <strong>{project.name}</strong>
+          {editingName ? (
+            <input
+              className="title-name-input"
+              autoFocus
+              value={nameDraft}
+              maxLength={200}
+              onChange={(event) => setNameDraft(event.target.value)}
+              onBlur={() => {
+                setEditingName(false);
+                const next = nameDraft.trim();
+                if (next && next !== project.name) {
+                  void api
+                    .updateProjectName(project.id, next)
+                    .then((updated) => setProject(updated))
+                    .catch((reason: unknown) =>
+                      setError(reason instanceof Error ? reason.message : "重新命名失敗"),
+                    );
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  (event.currentTarget as HTMLInputElement).blur();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setEditingName(false);
+                }
+              }}
+            />
+          ) : (
+            <strong
+              className="title-name"
+              role="button"
+              tabIndex={0}
+              title="點一下重新命名"
+              onClick={() => {
+                setNameDraft(project.name);
+                setEditingName(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setNameDraft(project.name);
+                  setEditingName(true);
+                }
+              }}
+            >
+              {project.name}
+            </strong>
+          )}
           <small>
             {project.canvas.width} × {project.canvas.height} · {project.styleSnapshot.name}
           </small>
@@ -2163,16 +2296,49 @@ export function Editor() {
           <span className="status-dot" />
           {saving ? "正在自動儲存…" : "已自動儲存"}
         </div>
+        <button
+          className="system-settings-button"
+          aria-label="系統設定"
+          title="系統設定"
+          onClick={() => setShowSystemSettings(true)}
+        >
+          ⚙
+        </button>
       </header>
+      {showSystemSettings && (
+        <SystemSettingsDialog
+          webSearchMode={system.webSearchMode}
+          onWebSearchMode={system.setWebSearchMode}
+          combinations={combinations}
+          combinationId={project.combinationId}
+          onCombinationId={(combinationId) => {
+            void api
+              .setProjectCombination(project.id, combinationId)
+              .then((updated) => setProject(updated))
+              .catch((reason: unknown) =>
+                setError(reason instanceof Error ? reason.message : "設定組合失敗"),
+              );
+          }}
+          onOpenModelLibrary={() => navigate("/models")}
+          onClose={() => setShowSystemSettings(false)}
+        />
+      )}
       <aside className="rail">
         <div className="rail-heading">
           <span>PAGES</span>
-          <b>{project.slides.length}</b>
+          <span className="rail-heading-count">
+            <b>{project.slides.length}</b>
+            <button
+              className="add-page"
+              aria-label="新增頁面"
+              title="新增頁面"
+              onClick={() => setShowNewSlide(true)}
+            >
+              ＋
+            </button>
+          </span>
         </div>
-        <button className="add-page" onClick={() => setShowNewSlide(true)}>
-          ＋ 新增頁面
-        </button>
-        <div className="thumbnails">
+        <div className="thumbnails" ref={railRef}>
           {project.slides.map((slide) => {
             const thumb = currentImage(project, slide);
             return (
@@ -2257,29 +2423,31 @@ export function Editor() {
             </span>
           </span>
         </div>
-        <div
-          className={`canvas ${activeJob ? "generating" : ""}`}
-          style={{ aspectRatio: `${project.canvas.width} / ${project.canvas.height}` }}
-        >
-          {activeTextLayer ? (
-            <TextLayerCanvas
-              background={imageUrl(project.id, activeTextLayer.backgroundPath)}
-              boxes={textBoxes}
-              canvasWidth={project.canvas.width}
-              canvasHeight={project.canvas.height}
-              selectedId={selectedTextId}
-              onSelect={setSelectedTextId}
-              onChange={changeTextBoxes}
-            />
-          ) : image ? (
-            <img src={image} alt={`Slide ${(selected?.order ?? 0) + 1}`} />
-          ) : (
-            <div className="canvas-empty">
-              <div className="orbit" />
-              <strong>{selected?.purpose}</strong>
-              <p>內容會自動儲存，準備好後即可生成此頁。</p>
-            </div>
-          )}
+        <div className="canvas-fit" onWheel={handleStageWheel}>
+          <div
+            className={`canvas ${activeJob ? "generating" : ""}`}
+            style={{ aspectRatio: `${project.canvas.width} / ${project.canvas.height}` }}
+          >
+            {activeTextLayer ? (
+              <TextLayerCanvas
+                background={imageUrl(project.id, activeTextLayer.backgroundPath)}
+                boxes={textBoxes}
+                canvasWidth={project.canvas.width}
+                canvasHeight={project.canvas.height}
+                selectedId={selectedTextId}
+                onSelect={setSelectedTextId}
+                onChange={changeTextBoxes}
+              />
+            ) : image ? (
+              <img src={image} alt={`Slide ${(selected?.order ?? 0) + 1}`} />
+            ) : (
+              <div className="canvas-empty">
+                <div className="orbit" />
+                <strong>{selected?.purpose}</strong>
+                <p>內容會自動儲存，準備好後即可生成此頁。</p>
+              </div>
+            )}
+          </div>
         </div>
         {activeTextLayer && (
           <div className="text-layer-toolbar">
@@ -2334,6 +2502,9 @@ export function Editor() {
                 setTextRedo((history) => pushHistory(history, textBoxes));
                 setTextBoxes(previous);
                 setTextUndo((history) => history.slice(0, -1));
+                // 還原後若選中的文字框已不在快照中，清掉選取，避免「刪除」按鈕看起來莫名熄滅。
+                if (selectedTextId && !previous.some((box) => box.id === selectedTextId))
+                  setSelectedTextId(undefined);
               }}
             >
               復原
@@ -2347,6 +2518,8 @@ export function Editor() {
                 setTextUndo((history) => pushHistory(history, textBoxes));
                 setTextBoxes(next);
                 setTextRedo((history) => history.slice(0, -1));
+                if (selectedTextId && !next.some((box) => box.id === selectedTextId))
+                  setSelectedTextId(undefined);
               }}
             >
               重做
@@ -2452,10 +2625,13 @@ export function Editor() {
                 >
                   <img src={imageUrl(project.id, version.imagePath)} alt="version" />
                   <span>
-                    {new Date(version.createdAt).toLocaleTimeString("zh-TW", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {(() => {
+                      const d = new Date(version.createdAt);
+                      const p2 = (n: number) => String(n).padStart(2, "0");
+                      return `${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(
+                        d.getMinutes(),
+                      )}`;
+                    })()}
                     {isCurrent ? " · 使用中" : isPreviewing ? " · 預覽" : ""}
                   </span>
                 </button>
@@ -2509,7 +2685,7 @@ export function Editor() {
                     onChange={(event) => setDraft({ ...draft, purpose: event.target.value })}
                   />
                 </label>
-                <label className={outlineDirty ? "outline-dirty" : ""}>
+                <label className={fieldDirty("content") ? "outline-dirty" : ""}>
                   內容
                   <textarea
                     readOnly={outlineReadOnly}
@@ -2518,7 +2694,7 @@ export function Editor() {
                     onChange={(event) => setDraft({ ...draft, content: event.target.value })}
                   />
                 </label>
-                <label className={outlineDirty ? "outline-dirty" : ""}>
+                <label className={fieldDirty("narrative") ? "outline-dirty" : ""}>
                   敘事
                   <textarea
                     readOnly={outlineReadOnly}
@@ -2527,7 +2703,7 @@ export function Editor() {
                     onChange={(event) => setDraft({ ...draft, narrative: event.target.value })}
                   />
                 </label>
-                <label className={outlineDirty ? "outline-dirty" : ""}>
+                <label className={fieldDirty("layoutHint") ? "outline-dirty" : ""}>
                   構圖提示
                   <textarea
                     readOnly={outlineReadOnly}
@@ -2536,7 +2712,7 @@ export function Editor() {
                     onChange={(event) => setDraft({ ...draft, layoutHint: event.target.value })}
                   />
                 </label>
-                <label className={outlineDirty ? "outline-dirty" : ""}>
+                <label className={fieldDirty("imagePrompt") ? "outline-dirty" : ""}>
                   完整圖片提示詞
                   <textarea
                     readOnly={outlineReadOnly}
@@ -2571,24 +2747,6 @@ export function Editor() {
                     ))
                   )}
                 </fieldset>
-                <label>
-                  圖片 Provider
-                  <select
-                    value={providerId}
-                    onChange={(event) => setProviderId(event.target.value)}
-                  >
-                    {providers.map((item) => (
-                      <option
-                        key={item.id}
-                        value={item.id}
-                        disabled={item.availability.status === "unavailable"}
-                      >
-                        {item.name}
-                        {item.availability.status === "unavailable" ? " — unavailable" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 {provider?.availability.status === "unavailable" && (
                   <div className="provider-note">{provider.availability.reason}</div>
                 )}
@@ -2600,7 +2758,7 @@ export function Editor() {
                     正在檢查 provider readiness…
                   </div>
                 )}
-                {readiness && (
+                {readiness && readiness.status !== "ready" && (
                   <div
                     className={readiness.blocking ? "provider-note" : "provider-warning"}
                     role="status"
@@ -2676,35 +2834,47 @@ export function Editor() {
               >
                 編輯當頁圖片
               </button>
-              <div className="text-extraction-control">
-                <label>
-                  OCR 門檻 <b>{textThreshold.toFixed(2)}</b>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="0.95"
-                    step="0.05"
-                    value={textThreshold}
-                    onChange={(event) => setTextThreshold(Number(event.target.value))}
-                  />
-                </label>
-                <button
-                  onClick={() => void startTextExtraction()}
-                  disabled={
-                    !selectedVersion ||
-                    !!activeJob ||
-                    !!previewVersion ||
-                    textLayerBusy ||
-                    !provider?.capabilities.maskedEditing
-                  }
-                >
-                  {textLayerBusy
-                    ? "處理中…"
-                    : selectedVersion?.textLayer
-                      ? "依門檻重新抽離文字"
-                      : "文字抽離"}
-                </button>
-                <small>只處理當頁；低於門檻的文字保留在原圖。</small>
+              <div
+                className={`text-extraction-control${showTextThreshold ? " open" : ""}`}
+                title="只處理當頁；低於門檻的文字保留在原圖。"
+              >
+                <div className="text-extraction-row">
+                  <button
+                    className="extract-button"
+                    onClick={() => void startTextExtraction()}
+                    disabled={
+                      !selectedVersion ||
+                      !!activeJob ||
+                      !!previewVersion ||
+                      textLayerBusy ||
+                      !provider?.capabilities.maskedEditing
+                    }
+                  >
+                    {textLayerBusy ? "處理中…" : "抽離文字"}
+                  </button>
+                  <button
+                    className="threshold-toggle"
+                    aria-expanded={showTextThreshold}
+                    aria-label="調整文字抽離門檻"
+                    title="調整文字抽離門檻"
+                    onClick={() => setShowTextThreshold((open) => !open)}
+                  >
+                    <span className="caret">▾</span>
+                  </button>
+                </div>
+                {showTextThreshold && (
+                  <label className="threshold-slider">
+                    門檻 <b>{textThreshold.toFixed(2)}</b>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="0.95"
+                      step="0.05"
+                      value={textThreshold}
+                      onChange={(event) => setTextThreshold(Number(event.target.value))}
+                    />
+                  </label>
+                )}
               </div>
             </div>
             {textEditing && (
@@ -2713,14 +2883,16 @@ export function Editor() {
                 {!selectedText && <small>在畫布選擇一個文字框以調整格式。</small>}
                 {selectedText && (
                   <>
-                    <label>
-                      字體
-                      <input
-                        value={selectedText.fontFamily}
-                        onChange={(event) => patchSelectedText({ fontFamily: event.target.value })}
-                      />
-                    </label>
-                    <div className="text-property-grid">
+                    <div className="text-property-grid font-row">
+                      <label>
+                        字體
+                        <input
+                          value={selectedText.fontFamily}
+                          onChange={(event) =>
+                            patchSelectedText({ fontFamily: event.target.value })
+                          }
+                        />
+                      </label>
                       <label>
                         大小
                         <input
@@ -2748,7 +2920,7 @@ export function Editor() {
                         </select>
                       </label>
                     </div>
-                    <div className="text-property-grid">
+                    <div className="text-property-grid detail-row">
                       <label>
                         顏色
                         <input
@@ -2772,8 +2944,6 @@ export function Editor() {
                           <option value="right">靠右</option>
                         </select>
                       </label>
-                    </div>
-                    <div className="text-property-grid">
                       <label>
                         行高
                         <input
@@ -2875,22 +3045,6 @@ export function Editor() {
               </select>
             </label>
             <label>
-              Web Search
-              <select
-                value={briefDraft.webSearchMode}
-                onChange={(event) =>
-                  setBriefDraft({
-                    ...briefDraft,
-                    webSearchMode: event.target.value as PresentationBrief["webSearchMode"],
-                  })
-                }
-              >
-                <option value="cached">Cached</option>
-                <option value="live">Live</option>
-                <option value="disabled">Disabled</option>
-              </select>
-            </label>
-            <label>
               風格
               <select
                 value={project.styleSnapshot.id}
@@ -2924,7 +3078,7 @@ export function Editor() {
                   void save().then(async (saved) => {
                     if (!saved) return;
                     try {
-                      await api.generateAll(project.id, providerId, acceptUnknownReadiness);
+                      await api.generateAll(project.id, undefined, acceptUnknownReadiness);
                       setProject(await api.getProject(project.id));
                     } catch (reason) {
                       setError(reason instanceof Error ? reason.message : "批次生成失敗");
@@ -2952,124 +3106,7 @@ export function Editor() {
             <p className="source-panel-intro">
               管理 AI 可使用的參考資料。點擊預覽可檢查擷取文字或原始圖片。
             </p>
-            <div className="source-add-actions">
-              <label className={`upload-source ${sourceUploadBusy ? "disabled" : ""}`}>
-                ＋ {sourceUploadBusy ? "正在上傳來源…" : "上傳來源檔案"}
-                <span>可多選 · PDF · PPTX · DOCX · MD · TXT · PNG · JPG</span>
-                <input
-                  aria-label="上傳來源檔案"
-                  type="file"
-                  multiple
-                  disabled={sourceUploadBusy}
-                  accept=".pdf,.pptx,.docx,.md,.txt,.png,.jpg,.jpeg"
-                  onChange={(event) => {
-                    const files = Array.from(event.target.files ?? []);
-                    event.target.value = "";
-                    void uploadSourceFiles(files);
-                  }}
-                />
-              </label>
-              <button
-                className="add-text-source"
-                disabled={sourceUploadBusy}
-                onClick={() => setShowTextSource(true)}
-              >
-                ＋ 輸入文字<span>貼上文字 · 自動建立索引</span>
-              </button>
-              <button
-                className="add-web-source"
-                disabled={sourceUploadBusy}
-                onClick={() => setShowWebSourceSearch(true)}
-              >
-                ⌕ 加入搜尋資料<span>輸入關鍵字 · 確認後儲存全文</span>
-              </button>
-            </div>
-            {project.sources.length === 0 && (
-              <div className="source-empty">
-                <b>尚無來源</b>
-                <span>上傳文字、文件或圖片，生成時即可引用。</span>
-              </div>
-            )}
-            <div className="source-list">
-              {project.sources.map((source) => {
-                const imageSource = source.mediaType.startsWith("image/");
-                const summary = sourceSummary(source);
-                const assetUrl = projectAssetUrl(project.id, source.assetPath);
-                return (
-                  <article key={source.id} className="source-card">
-                    <header className="source-card-header">
-                      <label className="source-access-toggle" title="允許 AI 在生成時讀取此來源">
-                        <input
-                          aria-label={`允許 AI 使用 ${source.name}`}
-                          type="checkbox"
-                          checked={source.allowModelAccess}
-                          onChange={(event) =>
-                            void run(() =>
-                              api.updateSource(project.id, source.id, {
-                                allowModelAccess: event.target.checked,
-                              }),
-                            )
-                          }
-                        />
-                      </label>
-                      <div>
-                        <strong title={source.name}>{source.name}</strong>
-                        <small>
-                          {sourceSize(source.sizeBytes)} · {source.chunks.length} 個文字區塊
-                        </small>
-                      </div>
-                      <span className="source-kind">{sourceTypeLabel(source)}</span>
-                    </header>
-                    <button
-                      type="button"
-                      className={`source-preview-trigger ${imageSource ? "image" : "text"}`}
-                      aria-label={`預覽 ${source.name}`}
-                      onClick={() => setSourcePreview(source)}
-                    >
-                      {imageSource ? (
-                        <img src={assetUrl} alt="" />
-                      ) : (
-                        <p>{summary || "尚未擷取到可預覽的文字內容"}</p>
-                      )}
-                      <span>
-                        查看來源詳情 <b>→</b>
-                      </span>
-                    </button>
-                    <label className="source-usage">
-                      生成用途
-                      <select
-                        aria-label={`${source.name} 的生成用途`}
-                        value={source.usage}
-                        onChange={(event) =>
-                          void run(() =>
-                            api.updateSource(project.id, source.id, {
-                              usage: event.target.value as typeof source.usage,
-                            }),
-                          )
-                        }
-                      >
-                        <option value="content">內容依據</option>
-                        <option value="visual-reference">視覺參考</option>
-                        <option value="style-reference">風格參考</option>
-                        <option value="direct-asset">直接素材</option>
-                        <option value="exclude-from-generation">不參與生成</option>
-                      </select>
-                    </label>
-                    <div className="source-card-actions">
-                      <button
-                        className="danger"
-                        onClick={() => {
-                          if (confirm("刪除來源？既有版本的來源快照仍會保留。"))
-                            void run(() => api.deleteSource(project.id, source.id, true));
-                        }}
-                      >
-                        刪除來源
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+            <SourcePanel project={project} onProject={setProject} onError={setError} />
           </div>
         )}
         {panel === "export" && (
@@ -3114,48 +3151,22 @@ export function Editor() {
               )
               .finally(() => setNewSlideBusy(false));
           }}
-        />
-      )}
-      {sourcePreview && (
-        <SourcePreviewDialog
-          projectId={project.id}
-          source={sourcePreview}
-          onClose={() => setSourcePreview(undefined)}
-        />
-      )}
-      {showWebSourceSearch && (
-        <WebSourceDialog
-          onCancel={() => setShowWebSourceSearch(false)}
-          onSearch={(query) => api.searchWebSources(project.id, query)}
-          onSave={async (sources) => {
-            const updated = await api.addWebSources(project.id, sources);
-            setProject(updated);
-            setShowWebSourceSearch(false);
-            setPanel("sources");
-          }}
-        />
-      )}
-      {showTextSource && (
-        <TextSourceDialog
-          busy={sourceUploadBusy}
-          onCancel={() => setShowTextSource(false)}
-          onSubmit={(name, text) => {
-            setSourceUploadBusy(true);
+          onSkipOutline={() => {
+            setNewSlideBusy(true);
             setError(undefined);
-            const file = new File([text], name, {
-              type: name.toLowerCase().endsWith(".txt") ? "text/plain" : "text/markdown",
-            });
+            const previousIds = new Set(project.slides.map((slide) => slide.id));
             void api
-              .uploadSource(project.id, file)
+              .addSlide(project.id, selected ? { afterSlideId: selected.id } : {})
               .then((updated) => {
                 setProject(updated);
-                setShowTextSource(false);
-                setPanel("sources");
+                setSelectedId(updated.slides.find((slide) => !previousIds.has(slide.id))?.id);
+                setPanel("slide");
+                setShowNewSlide(false);
               })
               .catch((reason: unknown) =>
-                setError(reason instanceof Error ? reason.message : "文字來源建立失敗"),
+                setError(reason instanceof Error ? reason.message : "新增空白頁失敗"),
               )
-              .finally(() => setSourceUploadBusy(false));
+              .finally(() => setNewSlideBusy(false));
           }}
         />
       )}
@@ -3174,7 +3185,7 @@ export function Editor() {
                 await api.editSlideImage(
                   project.id,
                   selected.id,
-                  providerId,
+                  effectiveImageProviderId,
                   instruction,
                   maskDataUrl,
                   acceptUnknownReadiness,
