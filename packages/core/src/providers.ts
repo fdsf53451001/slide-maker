@@ -6,6 +6,7 @@ import type {
   SourceAsset,
   SourceCitation,
   StylePreset,
+  WebSearchResult,
 } from "./schemas.js";
 
 export interface ImageProviderCapabilities {
@@ -30,12 +31,18 @@ export interface ImageGenerationRequest {
   references: ReadonlyArray<{
     path: string;
     mediaType: string;
-    role: "style" | "content";
+    role: "style" | "content" | "direct-asset";
     name?: string;
   }>;
   model: string;
   parameters: Record<string, unknown>;
-  edit?: { instruction: string; baseImageIndex: number; maskImageIndex?: number };
+  edit?: {
+    instruction: string;
+    baseImageIndex: number;
+    maskImageIndex?: number;
+    /** 標記遮罩去字任務：provider 必須改用文字移除合約，而非一般編輯合約。 */
+    purpose?: "text-removal";
+  };
 }
 
 export interface GeneratedImage {
@@ -114,6 +121,44 @@ export interface LLMProvider {
     brief: PresentationBrief,
     context: ReadonlyArray<SourceCitation>,
   ): Promise<SlideSpec[]>;
+}
+
+export interface StructuredTextRequest {
+  /** 完整 prompt（含 untrusted 資料前綴約定）。 */
+  prompt: string;
+  /** 期望輸出的 JSON schema，用於強制結構化輸出。 */
+  outputSchema: Record<string, unknown>;
+  /** 可選的參考影像（本機檔案路徑，供 vision 模型）。 */
+  imagePaths?: ReadonlyArray<string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * 結構化文字生成（純推理，不瀏覽網路）。網路搜尋一律交由
+ * {@link WebSearchProvider} 處理，再把來源餵進 prompt。
+ */
+export interface StructuredTextProvider {
+  readonly id: string;
+  readonly availability: ProviderAvailability;
+  preflight?(): Promise<ProviderPreflightResult>;
+  runStructured(request: StructuredTextRequest): Promise<unknown>;
+}
+
+/**
+ * 網路搜尋後端。從文字推理中解耦——不論文字引擎是否具備瀏覽能力，
+ * 搜尋都由此接口的實作負責。
+ */
+export interface WebSearchProvider {
+  readonly id: string;
+  readonly availability: ProviderAvailability;
+  preflight?(): Promise<ProviderPreflightResult>;
+  search(
+    query: string,
+    limit: number,
+    language: string,
+    signal?: AbortSignal,
+  ): Promise<WebSearchResult[]>;
 }
 
 export interface SourceProvider {

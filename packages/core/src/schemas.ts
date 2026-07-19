@@ -4,6 +4,13 @@ export const SCHEMA_VERSION = 1 as const;
 
 export const contentModeSchema = z.enum(["creative", "grounded"]);
 export const webSearchModeSchema = z.enum(["cached", "live", "disabled"]);
+
+/** 單筆網路搜尋結果（供 WebSearchProvider 回傳）。 */
+export const webSearchResultSchema = z.object({
+  url: z.string().url(),
+  title: z.string().trim().min(1).max(500),
+  summary: z.string().trim().min(1).max(4_000),
+});
 export const sourceUsageSchema = z.enum([
   "content",
   "visual-reference",
@@ -84,11 +91,11 @@ export const stylePresetSchema = z.object({
 });
 
 export const slideOutlineSnapshotSchema = z.object({
-  purpose: z.string().min(1),
-  content: z.string().min(1),
+  purpose: z.string().default(""),
+  content: z.string().default(""),
   narrative: z.string().default(""),
   layoutHint: z.string().default(""),
-  imagePrompt: z.string().min(1),
+  imagePrompt: z.string().default(""),
   sourceIds: z.array(z.string()).default([]),
 });
 
@@ -133,6 +140,8 @@ export const slideVersionSchema = z.object({
   prompt: z.string(),
   providerId: z.string().min(1),
   model: z.string().min(1),
+  /** 產生此版本時專案綁定的模型組合 id（來源溯源）。 */
+  combinationId: z.string().optional(),
   parameters: z.record(z.unknown()),
   styleVersion: z.number().int().positive(),
   sources: z.array(sourceCitationSchema),
@@ -145,12 +154,12 @@ export const slideVersionSchema = z.object({
 export const slideSpecSchema = z.object({
   id: z.string().min(1),
   order: z.number().int().nonnegative(),
-  purpose: z.string().min(1),
-  content: z.string().min(1),
+  purpose: z.string().default(""),
+  content: z.string().default(""),
   narrative: z.string().default(""),
   layoutHint: z.string().default(""),
   dataBasis: z.array(z.string()).default([]),
-  imagePrompt: z.string().min(1),
+  imagePrompt: z.string().default(""),
   styleOverride: stylePresetSchema.partial().optional(),
   sourceIds: z.array(z.string()).default([]),
   outlineDirty: z.boolean().default(false),
@@ -232,6 +241,8 @@ export const presentationProjectSchema = z.object({
     height: z.number().int().positive().default(1080),
   }),
   styleSnapshot: stylePresetSchema,
+  /** 綁定的模型組合 id（模型庫）。未設時生成流程回退到庫的 default 組合（lazy 綁定）。 */
+  combinationId: z.string().optional(),
   slides: z.array(slideSpecSchema),
   sources: z.array(sourceAssetSchema),
   jobs: z.array(generationJobSchema),
@@ -278,3 +289,4 @@ export type GenerationJob = z.infer<typeof generationJobSchema>;
 export type PresentationProject = z.infer<typeof presentationProjectSchema>;
 export type SourceAsset = z.infer<typeof sourceAssetSchema>;
 export type SourceCitation = z.infer<typeof sourceCitationSchema>;
+export type WebSearchResult = z.infer<typeof webSearchResultSchema>;
