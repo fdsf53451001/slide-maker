@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { StylePreset, StyleReferenceImage } from "@slide-maker/core";
 import { api, styleAssetUrl } from "./api.js";
+import { PdfImportModal } from "./PdfImportModal.js";
 
 type Draft = Pick<
   StylePreset,
@@ -54,6 +55,7 @@ export function StyleEditor({
   const [baseline, setBaseline] = useState(() => JSON.stringify(fromStyle()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [pdfImport, setPdfImport] = useState(false);
   const dirty = JSON.stringify(draft) !== baseline;
   const readOnly = !!historicalVersion || !!style?.system;
 
@@ -288,42 +290,6 @@ export function StyleEditor({
             <span>{cover ? "封面參考圖" : draft.name || "風格預覽"}</span>
           </div>
           <div className="section-label">REFERENCE IMAGES · {draft.referenceImages.length}/4</div>
-          {!readOnly && draft.referenceImages.length > 0 && (
-            <button
-              className="analyze-style"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                setError(undefined);
-                void api
-                  .analyzeStyle(draft.referenceImages.map((item) => item.id))
-                  .then((suggestion) => {
-                    const shouldMerge =
-                      (!draft.imageDirection &&
-                        !draft.promptTemplate &&
-                        draft.avoid.length === 0) ||
-                      confirm("AI 分析完成。要將建議合併到目前草稿嗎？現有文字會保留並附加建議。");
-                    if (shouldMerge)
-                      setDraft((value) => ({
-                        ...value,
-                        imageDirection: [value.imageDirection, suggestion.imageDirection]
-                          .filter(Boolean)
-                          .join("\n\n"),
-                        promptTemplate: [value.promptTemplate, suggestion.promptTemplate]
-                          .filter(Boolean)
-                          .join("\n\n"),
-                        avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
-                      }));
-                  })
-                  .catch((reason: unknown) =>
-                    setError(reason instanceof Error ? reason.message : "AI 分析失敗"),
-                  )
-                  .finally(() => setBusy(false));
-              }}
-            >
-              {busy ? "AI 分析中…" : "AI 分析風格（不會自動儲存）"}
-            </button>
-          )}
           {!readOnly && (
             <label
               className={`upload-source ${draft.referenceImages.length >= 4 ? "disabled" : ""}`}
@@ -354,6 +320,16 @@ export function StyleEditor({
                 }}
               />
             </label>
+          )}
+          {!readOnly && (
+            <button
+              type="button"
+              className={`upload-source pdf-source ${draft.referenceImages.length >= 4 ? "disabled" : ""}`}
+              disabled={busy || draft.referenceImages.length >= 4}
+              onClick={() => setPdfImport(true)}
+            >
+              ＋ 從 PDF 匯入參考圖
+            </button>
           )}
           <div className="reference-list">
             {draft.referenceImages.map((reference, index) => (
@@ -397,6 +373,42 @@ export function StyleEditor({
               </article>
             ))}
           </div>
+          {!readOnly && draft.referenceImages.length > 0 && (
+            <button
+              className="analyze-style"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setError(undefined);
+                void api
+                  .analyzeStyle(draft.referenceImages.map((item) => item.id))
+                  .then((suggestion) => {
+                    const shouldMerge =
+                      (!draft.imageDirection &&
+                        !draft.promptTemplate &&
+                        draft.avoid.length === 0) ||
+                      confirm("AI 分析完成。要將建議合併到目前草稿嗎？現有文字會保留並附加建議。");
+                    if (shouldMerge)
+                      setDraft((value) => ({
+                        ...value,
+                        imageDirection: [value.imageDirection, suggestion.imageDirection]
+                          .filter(Boolean)
+                          .join("\n\n"),
+                        promptTemplate: [value.promptTemplate, suggestion.promptTemplate]
+                          .filter(Boolean)
+                          .join("\n\n"),
+                        avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
+                      }));
+                  })
+                  .catch((reason: unknown) =>
+                    setError(reason instanceof Error ? reason.message : "AI 分析失敗"),
+                  )
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {busy ? "AI 分析中…" : "AI 分析風格"}
+            </button>
+          )}
           {styleId && (
             <div className="version-links">
               <strong>版本歷史</strong>
@@ -409,6 +421,23 @@ export function StyleEditor({
           )}
         </aside>
       </section>
+      {pdfImport && (
+        <PdfImportModal
+          remaining={4 - draft.referenceImages.length}
+          onClose={() => setPdfImport(false)}
+          onImported={(references) => {
+            setDraft((value) => {
+              const added = references.slice(0, 4 - value.referenceImages.length);
+              return {
+                ...value,
+                referenceImages: [...value.referenceImages, ...added],
+                coverImageId: value.coverImageId ?? added[0]?.id,
+              };
+            });
+            setPdfImport(false);
+          }}
+        />
+      )}
       {error && (
         <button className="toast error" onClick={() => setError(undefined)}>
           {error} ×
