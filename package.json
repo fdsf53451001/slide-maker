@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.13.1",
   "scripts": {
-    "dev": "pnpm --filter @slide-maker/core build && pnpm --filter @slide-maker/provider-mock build && pnpm --filter @slide-maker/provider-codex build && pnpm --filter @slide-maker/editor build && NODE_OPTIONS=--conditions=development pnpm --filter @slide-maker/server dev",
+    "dev": "pnpm --filter @slide-maker/core build && pnpm --filter @slide-maker/provider-mock build && pnpm --filter @slide-maker/provider-codex build && pnpm --filter @slide-maker/provider-openai build && pnpm --filter @slide-maker/editor build && NODE_OPTIONS=--conditions=development pnpm --filter @slide-maker/server dev",
     "dev:web": "pnpm --filter @slide-maker/editor dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",

@@ -63,6 +63,13 @@ export class FileProjectRepository implements StorageAdapter {
     await this.withProjectLock(project.id, async () => this.writeProject(project));
   }
 
+  async deleteProject(id: string): Promise<void> {
+    assertSafeSegment(id);
+    await this.withProjectLock(id, async () => {
+      await rm(this.projectRoot(id), { recursive: true, force: true });
+    });
+  }
+
   async updateProject<T>(
     id: string,
     update: (project: PresentationProject) => T | Promise<T>,

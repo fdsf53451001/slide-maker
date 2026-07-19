@@ -15,9 +15,11 @@
     "@slide-maker/core": "workspace:*",
     "@slide-maker/provider-codex": "workspace:*",
     "@slide-maker/provider-mock": "workspace:*",
+    "@slide-maker/provider-openai": "workspace:*",
     "express": "^5.1.0",
     "fflate": "^0.8.3",
     "pdf-lib": "^1.17.1",
+    "pdf-to-img": "^6.2.0",
     "pptxgenjs": "^4.0.1",
     "sharp": "0.35.3",
     "zod": "^3.25.76"
