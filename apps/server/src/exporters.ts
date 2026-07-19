@@ -116,13 +116,20 @@ async function exportPptx(
       for (const box of version.textLayer.boxes.filter(
         (candidate) => candidate.role === "presentation",
       )) {
+        const fontSizePt = box.fontSize * scaleY * 72;
+        // 框寬是貼齊字墨的緊框，而 PowerPoint 的 CJK 字型 advance 比量測略寬，
+        // 原寬會觸發自動換行讓整段文字跑版：加 1em 餘裕並關閉換行。
+        // center/right 對齊時餘裕要往左補回，否則錨點跟著位移。
+        const extraWidth = box.fontSize * scaleX;
+        const shiftX =
+          box.align === "center" ? extraWidth / 2 : box.align === "right" ? extraWidth : 0;
         slide.addText(box.text, {
-          x: box.x * scaleX,
+          x: Math.max(0, box.x * scaleX - shiftX),
           y: box.y * scaleY,
-          w: box.width * scaleX,
+          w: box.width * scaleX + extraWidth,
           h: box.height * scaleY,
           fontFace: box.fontFamily,
-          fontSize: box.fontSize * scaleY * 72,
+          fontSize: fontSizePt,
           bold: box.fontWeight >= 600,
           color: box.color.slice(1),
           transparency: Math.round((1 - box.opacity) * 100),
@@ -130,9 +137,14 @@ async function exportPptx(
           valign: box.verticalAlign,
           margin: 0,
           breakLine: false,
+          wrap: false,
+          // 行距鎖定為編輯器的 CSS line-height 模型；不設的話 PowerPoint 用
+          // 字型自身行距（CJK 字型常達 1.3–1.4 em），多行文字會越排越低。
+          lineSpacing: fontSizePt * box.lineHeight,
           rotate: box.rotation,
           charSpacing: box.letterSpacing * scaleX * 72,
-          fit: "shrink",
+          // 不用 fit:"shrink"——autofit 在 PowerPoint／Keynote／LibreOffice 的
+          // 縮放行為不一致，是文字跑版的另一來源。
         });
       }
     }

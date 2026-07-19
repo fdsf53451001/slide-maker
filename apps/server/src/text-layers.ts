@@ -14,6 +14,12 @@ function xml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+// 編輯器以 CSS line-height 排版（字形內容區在行框內垂直置中，上下各留 half-leading），
+// SVG 端必須重現同一模型，否則合成圖的文字會比編輯畫面偏高。
+// ascent/descent 取 Arial／Helvetica／Liberation Sans 共通的 hhea metrics 近似值。
+const FONT_ASCENT = 0.905;
+const FONT_DESCENT = 0.212;
+
 export function textOverlaySvg(
   boxes: readonly EditableTextBox[],
   width: number,
@@ -29,23 +35,27 @@ export function textOverlaySvg(
             ? box.x + box.width
             : box.x;
       const lines = box.text.split("\n");
-      const totalHeight = box.fontSize * box.lineHeight * Math.max(1, lines.length);
+      const lineBox = box.fontSize * box.lineHeight;
+      const totalHeight = lineBox * Math.max(1, lines.length);
+      // 與編輯器一致：文字總高超過框高時貼齊框頂，不往上溢出。
+      const spareHeight = Math.max(0, box.height - totalHeight);
       const top =
         box.verticalAlign === "middle"
-          ? box.y + (box.height - totalHeight) / 2
+          ? box.y + spareHeight / 2
           : box.verticalAlign === "bottom"
-            ? box.y + box.height - totalHeight
+            ? box.y + spareHeight
             : box.y;
+      const halfLeading = (lineBox - box.fontSize * (FONT_ASCENT + FONT_DESCENT)) / 2;
+      const firstBaseline = top + halfLeading + box.fontSize * FONT_ASCENT;
       const tspans = lines
         .map(
-          (line, index) =>
-            `<tspan x="${x}" dy="${index === 0 ? 0 : box.fontSize * box.lineHeight}">${xml(line)}</tspan>`,
+          (line, index) => `<tspan x="${x}" dy="${index === 0 ? 0 : lineBox}">${xml(line)}</tspan>`,
         )
         .join("");
       const transform = box.rotation
         ? ` transform="rotate(${box.rotation} ${box.x + box.width / 2} ${box.y + box.height / 2})"`
         : "";
-      return `<text x="${x}" y="${top}" text-anchor="${anchor}" dominant-baseline="text-before-edge" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
+      return `<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
     })
     .join("");
   return Buffer.from(
@@ -94,14 +104,17 @@ export function boxesFromOcr(
 }
 
 export async function textMask(
-  boxes: readonly EditableTextBox[],
+  boxes: readonly Pick<EditableTextBox, "x" | "y" | "width" | "height" | "fontSize">[],
   width: number,
   height: number,
 ): Promise<Uint8Array> {
   const rects = boxes
     .map((box) => {
-      const pad = Math.max(4, Math.min(18, box.fontSize * 0.12));
-      return `<rect x="${Math.max(0, box.x - pad)}" y="${Math.max(0, box.y - pad)}" width="${Math.min(width - box.x + pad, box.width + pad * 2)}" height="${Math.min(height - box.y + pad, box.height + pad * 2)}" rx="${Math.min(8, pad)}" fill="white"/>`;
+      // 垂直 padding 要蓋住字緣反鋸齒殘墨（太小會留鬼影），至少 8px 並隨字級放大；
+      // 水平 padding 刻意收小——卡片的「｜」分隔線緊貼文字左右，外擴太多會把它抹掉。
+      const padY = Math.max(8, Math.min(28, box.fontSize * 0.25));
+      const padX = Math.max(5, Math.min(14, box.fontSize * 0.12));
+      return `<rect x="${Math.max(0, box.x - padX)}" y="${Math.max(0, box.y - padY)}" width="${Math.min(width - box.x + padX, box.width + padX * 2)}" height="${Math.min(height - box.y + padY, box.height + padY * 2)}" rx="${Math.min(8, padX)}" fill="white"/>`;
     })
     .join("");
   const svg = Buffer.from(
@@ -131,6 +144,10 @@ export async function renderComposite(
     .composite([{ input: overlay, blend: "over" }])
     .png()
     .toBuffer();
-  const relative = `text-layers/${layer.originalVersionId}/composite-${layer.renderRevision}.png`;
+  // 檔名必須每次重渲染都不同：server 對 assets 下送 immutable + max-age=1yr，
+  // 且前端 cache key 只用檔名（projectAssetUrl）。重新抽離會把 renderRevision 重設為 0，
+  // 若沿用 composite-0.png，瀏覽器會持續顯示舊的合成圖（簡報模式字疊在一起的元凶），
+  // 因此在檔名尾巴接 randomUUID 確保每次重渲染 URL 都不一樣。
+  const relative = `text-layers/${layer.originalVersionId}/composite-${layer.renderRevision}-${randomUUID()}.png`;
   return repository.saveAsset(project.id, relative, new Uint8Array(composite));
 }
