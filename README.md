@@ -19,7 +19,7 @@ The local MVP supports:
 - versioned server-side styles with immutable project snapshots;
 - persistent per-slide jobs, bounded provider concurrency, cancellation, recovery and batch generation;
 - compressed full-slide PPTX, PDF, ordered PNG ZIP and portable `.slide-project` export/import;
-- a safe-by-default deterministic mock image provider and the separately opt-in Codex experimental provider.
+- a safe-by-default deterministic mock image provider plus three maintained production image transports.
 
 Run the complete gate with:
 
@@ -37,6 +37,18 @@ Codex image jobs default to a concurrency of `3`. Set `SLIDE_MAKER_CODEX_MAX_CON
 
 The default `mock-image` provider creates deterministic SVG slide images without using network access or model quota. The Codex image provider is disabled unless the local server is started with `SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1`. Enabling it consumes Codex quota and accepts **soft isolation, not a security boundary (H1 risk)**. The provider pins the experimental Codex `0.144.4` app-server protocol and requests read-only filesystem policy, no approvals, no turn network access, and an ephemeral thread. It permits the read-only command lifecycle and Codex's built-in code-mode `exec` wrapper required by the installed image-generation skill, while rejecting file changes, MCP calls, non-`exec` dynamic tools, Web Search, unexpected response policies, and uncorrelated events.
 
+### Image generation transports
+
+All three production transports use the same provider-neutral **Codex-baseline image contract** from `@slide-maker/core`: canvas, complete slide fields, style snapshot, information density, edit/mask semantics, ordered reference roles, direct-asset fidelity, and the untrusted-data boundary. Each transport adapter only adds its invocation and response-format rules, and every accepted raster result is normalized to the project canvas as PNG.
+
+| Transport              | Module                              | Endpoint / protocol                    | Suitable CLIProxyAPI model                                                            | Supplemental references                 |
+| ---------------------- | ----------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------- |
+| Codex app-server       | `@slide-maker/provider-codex`       | Codex app-server image generation      | configured Codex image-capable model                                                  | Yes                                     |
+| OpenAI-compatible Chat | `provider-openai/src/image-chat.ts` | `/chat/completions`                    | `gpt-5.6-terra` through injected image generation, or native `gemini-3.1-flash-image` | Yes, ordered; up to 8                   |
+| OpenAI Images API      | `provider-openai/src/image-api.ts`  | `/images/generations`, `/images/edits` | `gpt-image-2`                                                                         | No; edit base and mask remain supported |
+
+For an OpenAI-compatible endpoint, set `SLIDE_MAKER_OPENAI_BASE_URL`, `SLIDE_MAKER_OPENAI_API_KEY`, and `SLIDE_MAKER_OPENAI_IMAGE_MODEL`, then choose `SLIDE_MAKER_OPENAI_IMAGE_API=chat` or `images`. `gemini-3-flash-agent` is not an image-output model for this flow; use `gemini-3.1-flash-image` on the Chat transport instead.
+
 Those checks do not create a complete read or tool boundary. App-server still loads the real `CODEX_HOME` configuration, instructions and configured tool surfaces, and Codex may read other files available to the local account. A malicious reference or prompt can therefore still cause prompt injection, local-data disclosure, configured-tool side effects, or quota consumption before a forbidden event is observed. Run the spike only in a disposable OS account/container with no secrets or privileged tools. A hard server crash can also leave detached descendants for the OS supervisor to reap. Each job otherwise receives a dedicated workspace; its bounded presentation JSON is marked as untrusted data in the app-server prompt and also recorded in `input.json` for local auditability.
 
 The image provider intentionally rejects observed `webSearch` items. Future Web Search support belongs in a separate content-planning/source provider with its own source records and trust policy; it is not part of the image artifact transport.
@@ -50,6 +62,7 @@ The live smoke is deliberately separate from `pnpm check` because it consumes qu
 - `@slide-maker/core`: versioned schemas, project helpers, provider contracts and registry.
 - `@slide-maker/provider-mock`: deterministic no-cost image provider.
 - `@slide-maker/provider-codex`: opt-in Codex process spike with argument-only process spawning.
+- `@slide-maker/provider-openai`: modular OpenAI-compatible Chat, Images, structured-text and web-search adapters.
 - `@slide-maker/server`: local persistent API and job runner.
 - `@slide-maker/editor`: embeddable React page-workflow editor and reference UI.
 
