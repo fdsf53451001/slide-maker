@@ -83,10 +83,12 @@ else:
 describe("Codex image soft sandbox", () => {
   it("turns high density into concrete information and layout requirements", () => {
     const instruction = informationDensityInstruction("high");
-    expect(instruction).toContain("5-8 meaningful information units");
-    expect(instruction).toContain("120-220 Traditional Chinese characters");
+    expect(instruction).toContain("detailed and substantive");
+    expect(instruction).toContain("rather than hitting a fixed character or unit count");
     expect(instruction).toContain("50-65% of the canvas");
-    expect(instruction).toContain("never invent unsupported facts");
+    expect(instruction).toContain("takeaway line only when the slide genuinely needs one");
+    expect(instruction).toContain("not to copy them onto the slide verbatim");
+    expect(instruction).toContain("Never invent unsupported facts");
   });
 
   it("recognizes the required flags in an installed Codex CLI without running a turn", async (context) => {

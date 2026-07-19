@@ -418,6 +418,34 @@ describe("QA version-pinned app-server artifact protocol", () => {
     expect(serializedTurn).toContain("preserve the current image's established visual style");
   });
 
+  it("uses the text-removal contract for masked text extraction instead of the copy-preservation contract", async () => {
+    const fake = await fixture("inline");
+    const provider = new CodexImageSpikeProvider({
+      allowExecution: true,
+      executable: fake.executable,
+      workspaceRoot: join(fake.root, "jobs"),
+    });
+    await provider.generate({
+      ...generationRequest(),
+      edit: {
+        instruction: "Erase all text inside the masked regions.",
+        baseImageIndex: 0,
+        maskImageIndex: 1,
+        purpose: "text-removal",
+      },
+    });
+    const turnRequest = (await requests(fake.audit)).find(
+      (message) => message.method === "turn/start",
+    );
+    const serializedTurn = JSON.stringify(turnRequest);
+    expect(serializedTurn).toContain("TEXT REMOVAL CONTRACT");
+    expect(serializedTurn).toContain("zero readable glyphs");
+    // 去字任務不得帶入會叫模型把文案畫回去的合約
+    expect(serializedTurn).not.toContain("authoritative visible copy");
+    expect(serializedTurn).not.toContain("Information density requirement");
+    expect(serializedTurn).not.toContain("STYLE FIDELITY CONTRACT FOR NEW GENERATION");
+  });
+
   it("normalizes a valid 16:9-ish generated PNG to the project canvas", async () => {
     const fake = await fixture("scaled-image");
     const provider = new CodexImageSpikeProvider({
