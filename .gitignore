@@ -11,3 +11,8 @@ playwright-report/
 .playwright-mcp/
 test-results/
 *.tsbuildinfo
+
+# cli-switch managed entries (per-CLI private fixtures)
+.claude/
+.cli-switch/
+.kiro/

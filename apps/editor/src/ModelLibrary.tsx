@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type {
   CodexReasoningEffort,
   ModelCapability,
@@ -29,6 +29,68 @@ const OPENAI_IMAGE_APIS: OpenAiImageApi[] = ["images", "chat", "openrouter-image
 
 function modelsByCapability(library: ModelLibraryData, capability: ModelCapability): ModelEntry[] {
   return library.models.filter((entry) => entry.capability === capability);
+}
+
+function Icon({ children }: { children: ReactNode }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
+const SECTION_ICONS: Record<string, ReactNode> = {
+  connections: (
+    <Icon>
+      <path d="M9 17H7A5 5 0 0 1 7 7h2" />
+      <path d="M15 7h2a5 5 0 1 1 0 10h-2" />
+      <line x1="8" x2="16" y1="12" y2="12" />
+    </Icon>
+  ),
+  models: (
+    <Icon>
+      <rect width="16" height="16" x="4" y="4" rx="2" />
+      <rect width="6" height="6" x="9" y="9" rx="1" />
+      <path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2" />
+    </Icon>
+  ),
+  combinations: (
+    <Icon>
+      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+      <path d="m22 12.18-9.17 4.16a2 2 0 0 1-1.66 0L2 12.18" />
+      <path d="m22 17.18-9.17 4.16a2 2 0 0 1-1.66 0L2 17.18" />
+    </Icon>
+  ),
+  system: (
+    <Icon>
+      <path d="M10 4.5V2M14 4.5V2M4.5 10H2M4.5 14H2M22 10h-2.5M22 14h-2.5M10 22v-2.5M14 22v-2.5" />
+      <rect width="14" height="14" x="5" y="5" rx="3" />
+    </Icon>
+  ),
+};
+
+function SectionHeading({ icon, label, title }: { icon: string; label: string; title: string }) {
+  return (
+    <div className="dashboard-section-heading">
+      <span className="model-library-section-icon" aria-hidden="true">
+        {SECTION_ICONS[icon]}
+      </span>
+      <div>
+        <span className="section-label">{label}</span>
+        <h2>{title}</h2>
+      </div>
+    </div>
+  );
 }
 
 export interface ConnectionModels {
@@ -174,12 +236,7 @@ function ConnectionsSection({
   };
   return (
     <section className="dashboard-section model-library-section">
-      <div className="dashboard-section-heading">
-        <div>
-          <span className="section-label">CONNECTIONS</span>
-          <h2>連線（OpenAI 相容端點）</h2>
-        </div>
-      </div>
+      <SectionHeading icon="connections" label="CONNECTIONS" title="連線（OpenAI 相容端點）" />
       <p className="model-library-hint">
         供 OpenAI 相容模型引用的 base URL 與 API key。金鑰只寫不讀，顯示為佔位符。
       </p>
@@ -358,9 +415,7 @@ function ModelsSection({
         model: model.trim(),
         ...(providerKind === "openai" && connectionRef ? { connectionRef } : {}),
         ...(providerKind === "codex" && reasoningEffort ? { reasoningEffort } : {}),
-        ...(providerKind === "openai" && capability === "image" && imageApi
-          ? { imageApi }
-          : {}),
+        ...(providerKind === "openai" && capability === "image" && imageApi ? { imageApi } : {}),
       }),
     );
     setName("");
@@ -370,27 +425,39 @@ function ModelsSection({
   };
   return (
     <section className="dashboard-section model-library-section">
-      <div className="dashboard-section-heading">
-        <div>
-          <span className="section-label">MODELS</span>
-          <h2>模型</h2>
-        </div>
-      </div>
+      <SectionHeading icon="models" label="MODELS" title="模型" />
       <p className="model-library-hint">
         每個模型服務單一能力（影像／文字／搜尋）。OpenAI 相容模型需選擇連線。
       </p>
-      <div className="model-library-list">
-        {library.models.map((entry) => (
-          <ModelRow
-            key={entry.id}
-            entry={entry}
-            library={library}
-            busy={busy}
-            run={run}
-            connectionModels={connectionModels}
-            onEnsureModels={onEnsureModels}
-          />
-        ))}
+      <div className="model-library-groups">
+        {CAPABILITIES.map((cap) => {
+          const rows = modelsByCapability(library, cap);
+          return (
+            <div key={cap} className={`model-library-group cap-${cap}`}>
+              <div className="model-library-group-head">
+                <span className={`model-library-tag cap-${cap}`}>{CAPABILITY_LABEL[cap]}</span>
+                <span className="model-library-group-count">{rows.length}</span>
+              </div>
+              <div className="model-library-list">
+                {rows.length === 0 ? (
+                  <p className="model-library-empty">尚無{CAPABILITY_LABEL[cap]}模型。</p>
+                ) : (
+                  rows.map((entry) => (
+                    <ModelRow
+                      key={entry.id}
+                      entry={entry}
+                      library={library}
+                      busy={busy}
+                      run={run}
+                      connectionModels={connectionModels}
+                      onEnsureModels={onEnsureModels}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <div className="model-library-create">
         <input
@@ -460,7 +527,9 @@ function ModelsSection({
         ) : (
           <input
             aria-label="模型名"
-            placeholder={providerKind === "codex" ? "model（留空用 Codex 預設）" : "model（如 gpt-image-2）"}
+            placeholder={
+              providerKind === "codex" ? "model（留空用 Codex 預設）" : "model（如 gpt-image-2）"
+            }
             value={model}
             onChange={(event) => setModel(event.target.value)}
           />
@@ -469,7 +538,9 @@ function ModelsSection({
           <select
             aria-label="推理強度"
             value={reasoningEffort}
-            onChange={(event) => setReasoningEffort(event.target.value as CodexReasoningEffort | "")}
+            onChange={(event) =>
+              setReasoningEffort(event.target.value as CodexReasoningEffort | "")
+            }
           >
             <option value="">推理強度（預設）</option>
             {REASONING_EFFORTS.map((item) => (
@@ -535,7 +606,6 @@ function ModelRow({
       : [];
   return (
     <div className="model-library-row">
-      <span className="model-library-tag">{CAPABILITY_LABEL[entry.capability]}</span>
       <span className="model-library-tag muted">{KIND_LABEL[entry.providerKind]}</span>
       <input aria-label="模型名稱" value={name} onChange={(event) => setName(event.target.value)} />
       {availableModels.length > 0 ? (
@@ -544,7 +614,9 @@ function ModelRow({
           value={availableModels.includes(model) ? model : ""}
           onChange={(event) => setModel(event.target.value)}
         >
-          <option value="">{model && !availableModels.includes(model) ? model : "選擇模型…"}</option>
+          <option value="">
+            {model && !availableModels.includes(model) ? model : "選擇模型…"}
+          </option>
           {availableModels.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -656,12 +728,7 @@ function CombinationsSection({
   };
   return (
     <section className="dashboard-section model-library-section">
-      <div className="dashboard-section-heading">
-        <div>
-          <span className="section-label">COMBINATIONS</span>
-          <h2>組合</h2>
-        </div>
-      </div>
+      <SectionHeading icon="combinations" label="COMBINATIONS" title="組合" />
       <p className="model-library-hint">
         一次挑三個模型（影像／文字／搜尋）組成具名組合，供專案綁定。標為預設者是未綁定專案的回退。
       </p>
@@ -803,12 +870,7 @@ function SystemSection({
     );
   return (
     <section className="dashboard-section model-library-section">
-      <div className="dashboard-section-heading">
-        <div>
-          <span className="section-label">SYSTEM</span>
-          <h2>系統設定</h2>
-        </div>
-      </div>
+      <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
       <p className="model-library-hint">
         影響執行而非品質的維運旋鈕。OCR 相關設定改動需重啟伺服器才生效。
       </p>
