@@ -195,6 +195,19 @@ describe("QA local API vertical flow", () => {
     expect(saved.body.sources[0]?.chunks.length).toBeGreaterThan(0);
 
     const slide = saved.body.slides[0]!;
+    // imagePrompt 是使用者的手動視覺微調，大綱模型不再產出它，重跑也不得覆蓋。
+    const tuned = "使用者指定：左側放流程圖，右側留白";
+    const patched = await json<PresentationProject>(
+      `/api/projects/${projectId}/slides/${slide.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ imagePrompt: tuned }),
+      },
+    );
+    expect(patched.response.status).toBe(200);
+    expect(patched.body.slides[0]?.imagePrompt).toBe(tuned);
+
     const regenerated = await json<PresentationProject>(
       `/api/projects/${projectId}/slides/${slide.id}/outline`,
       {
@@ -208,6 +221,7 @@ describe("QA local API vertical flow", () => {
     expect(regenerated.body.slides[0]?.content).toContain("補充來源證據與具體細節");
     expect(regenerated.body.slides[0]?.sourceIds).toContain(saved.body.sources[0]?.id);
     expect(regenerated.body.slides[0]?.outlineDirty).toBe(true);
+    expect(regenerated.body.slides[0]?.imagePrompt).toBe(tuned);
   });
 
   it("serves the editor shell from the root route", async (context) => {

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildImageGenerationContract,
   imageGenerationInput,
+  informationDensityInstruction,
+  outlineBrevityInstruction,
+  outlineContentCharBudget,
+  outlineContentLength,
   type ImageGenerationRequest,
 } from "../src/index.js";
 
@@ -52,6 +56,64 @@ function request(): ImageGenerationRequest {
   };
 }
 
+describe("outlineContentLength", () => {
+  it("counts CJK as one unit and Latin as half", () => {
+    expect(outlineContentLength("一二三四五")).toBe(5);
+    expect(outlineContentLength("abcdefghij")).toBe(5);
+    expect(outlineContentLength("0123456789")).toBe(5);
+  });
+
+  it("ignores whitespace entirely", () => {
+    expect(outlineContentLength(" 一 二\n三\t")).toBe(3);
+    expect(outlineContentLength("a b\nc d")).toBe(2);
+  });
+
+  it("counts full-width punctuation as a full unit", () => {
+    expect(outlineContentLength("一、二。")).toBe(4);
+  });
+
+  it("stops over-charging technical slides for their English terms", () => {
+    // 舊算法把每個字母當一個中文字，扣掉空白仍是 11；實寬 5.5，四捨五入為 6。
+    expect(outlineContentLength("Kimi Code CLI")).toBe(6);
+    // 第 8 頁實測：舊算法 247（逼近 270 上限），改後落回舒適區。
+    const slide8 = `${"中".repeat(118)}${"a".repeat(97)}${"、".repeat(32)}`;
+    expect(outlineContentLength(slide8)).toBe(199);
+  });
+});
+
+describe("density and length instructions", () => {
+  // app.ts 的大綱 prompt 把這兩條指令放在相鄰兩行，各自寫字數就會互相打架。
+  const densities = ["low", "medium", "high"] as const;
+
+  it("keeps character counts out of the density instruction", () => {
+    for (const density of densities)
+      expect(informationDensityInstruction(density)).not.toMatch(
+        /\d+\s*-\s*\d+\s+Traditional Chinese characters/,
+      );
+  });
+
+  it("never tells the model that density overrides the character budget", () => {
+    // 這句原本寫 "rather than hitting a fixed character or unit count"，等於叫模型
+    // 無視字數上限，是 CODEX_OUTLINE_CONTENT_TOO_LONG 反覆發生的主因。
+    for (const density of densities) {
+      const instruction = informationDensityInstruction(density);
+      expect(instruction).not.toMatch(/fixed character/);
+      expect(instruction).not.toMatch(/rather than hitting a fixed character or unit count/);
+    }
+    expect(informationDensityInstruction("high")).toContain("never overrides it");
+  });
+
+  it("states the character budget in exactly one place", () => {
+    for (const density of densities) {
+      const { soft, hard } = outlineContentCharBudget(density);
+      const brevity = outlineBrevityInstruction(density);
+      expect(brevity).toContain(String(soft));
+      expect(brevity).toContain(String(hard));
+      expect(informationDensityInstruction(density)).not.toContain(String(soft));
+    }
+  });
+});
+
 describe("shared image-generation contract", () => {
   it("carries the full slide/style contract and labelled reference semantics", () => {
     const prompt = buildImageGenerationContract(request());
@@ -60,9 +122,58 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain("DIRECT-ASSET FIDELITY CONTRACT");
     expect(prompt).toContain('role=style; name="Style A"');
     expect(prompt).toContain('role=direct-asset; name="Source panel"');
+    // 官方 multi-image 慣例：每張圖都要有角色描述與互動說明，不能只給標籤。
+    expect(prompt).toContain("Style reference — take its palette");
+    expect(prompt).toContain("Direct asset — reproduce this image faithfully");
     expect(prompt).toContain('"layoutHint": "左文右圖"');
     expect(prompt).toContain('"description": "大量白色留白"');
     expect(prompt).toContain('"promptTemplate": "以 {subject} 為主體"');
+  });
+
+  it("forbids fabricated figures and verification claims on generated slides", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toContain("FACTUAL GROUNDING CONTRACT");
+    expect(prompt).toContain("must already appear in slide.content");
+    expect(prompt).toContain("Never add wording that asserts measurement");
+    // 沒有數據時要畫不帶刻度的視覺，而不是編一個看起來合理的數字。
+    expect(prompt).toContain("leave axes, ticks, and values unlabelled");
+  });
+
+  it("blocks style references from leaking their own copy, figures, and branding", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toContain("Do not reproduce what those references say");
+    expect(prompt).toContain("no chart values");
+    expect(prompt).toContain("no footnotes");
+    // 這次外洩的具體形態：參考圖的 KPI 數字被當成內容搬到輸出上。
+    expect(prompt).toContain("Reproduce the treatment; discard the words and values entirely");
+    // gemini 那次自行加上的 "© Moonshot AI" 也屬於這條。
+    expect(prompt).toContain("Add no copyright lines");
+  });
+
+  it("keeps the grounding contract on edits, which can also repaint figures", () => {
+    const input = request();
+    input.edit = { instruction: "Make the accent colour warmer", baseImageIndex: 0 };
+    expect(buildImageGenerationContract(input)).toContain("FACTUAL GROUNDING CONTRACT");
+  });
+
+  it("sets a canvas-relative type floor and forbids shrinking to fit", () => {
+    const prompt = buildImageGenerationContract(request());
+    // 1080 高 → 標題 59px、內文 28px、最小字 22px。
+    expect(prompt).toContain("TYPOGRAPHY FLOOR");
+    expect(prompt).toContain("render the headline at 59px or larger");
+    expect(prompt).toContain("body copy at 28px or larger");
+    expect(prompt).toContain("smaller than 22px");
+    expect(prompt).toContain("Never shrink type below the floor");
+  });
+
+  it("scales the type floor with the canvas instead of hard-coding 1080p", () => {
+    const input = request();
+    input.width = 3840;
+    input.height = 2160;
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("3840x2160 canvas");
+    expect(prompt).toContain("render the headline at 119px or larger");
+    expect(prompt).toContain("body copy at 56px or larger");
   });
 
   it("keeps provider and persistence metadata out of the model input", () => {
@@ -87,5 +198,7 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain("Do not re-render text from slide.content");
     expect(prompt).not.toContain("Information density requirement");
     expect(prompt).not.toContain("slide.content field is the authoritative visible copy");
+    // 文字移除不渲染任何字，接地合約在此無意義且會與「不要重畫文字」相衝。
+    expect(prompt).not.toContain("FACTUAL GROUNDING CONTRACT");
   });
 });

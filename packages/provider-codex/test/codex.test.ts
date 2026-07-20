@@ -84,7 +84,10 @@ describe("Codex image soft sandbox", () => {
   it("turns high density into concrete information and layout requirements", () => {
     const instruction = informationDensityInstruction("high");
     expect(instruction).toContain("detailed and substantive");
-    expect(instruction).toContain("rather than hitting a fixed character or unit count");
+    // 舊版寫 "rather than hitting a fixed character or unit count"，等於授權模型無視
+    // 字數上限；密度只決定資訊單元數，字數預算永遠優先。
+    expect(instruction).toContain("rather than padding to a fixed count");
+    expect(instruction).toContain("never overrides it");
     expect(instruction).toContain("50-65% of the canvas");
     expect(instruction).toContain("takeaway line only when the slide genuinely needs one");
     expect(instruction).toContain("not to copy them onto the slide verbatim");

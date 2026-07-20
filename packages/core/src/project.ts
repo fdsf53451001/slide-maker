@@ -39,7 +39,8 @@ function slide(order: number, purpose: string, content: string, layoutHint: stri
     narrative: content,
     layoutHint,
     dataBasis: [],
-    imagePrompt: `${purpose}. ${content}. ${layoutHint}. All text should be Traditional Chinese.`,
+    // 視覺方向來自 style；imagePrompt 留空，只在使用者要單頁微調時才填。
+    imagePrompt: "",
     sourceIds: [],
     outlineDirty: false,
     versions: [],
