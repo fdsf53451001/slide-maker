@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { PresentationProject, SourceAsset } from "@slide-maker/core";
 import { api, projectAssetUrl, type WebSearchResult } from "./api.js";
+import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
 
 export function sourceTypeLabel(source: SourceAsset): string {
   if (source.mediaType.startsWith("image/")) return "圖片";
@@ -36,15 +37,24 @@ function sourceSize(sizeBytes: number): string {
 function SourcePreviewDialog({
   projectId,
   source,
+  terms,
   onClose,
 }: {
   projectId: string;
   source: SourceAsset;
+  terms: readonly string[];
   onClose: () => void;
 }) {
   const imageSource = source.mediaType.startsWith("image/");
   const summary = sourceSummary(source);
   const assetUrl = projectAssetUrl(projectId, source.assetPath);
+  // 只 highlight 全文；簡介是壓縮空白後的另一份文字，兩邊都標會讓視線分散。
+  const segments = highlightSegments(source.extractedText, terms);
+  const firstHit = segments.findIndex((segment) => segment.hit);
+  const firstHitRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    firstHitRef.current?.scrollIntoView?.({ block: "center" });
+  }, [source.id]);
   return (
     <div
       className="source-preview-backdrop"
@@ -95,11 +105,26 @@ function SourcePreviewDialog({
           </section>
           <section className="source-preview-full">
             <h3>{imageSource ? "完整圖片" : "全文"}</h3>
+            {terms.length > 0 && firstHit < 0 && (
+              <p className="source-preview-nohit">
+                關鍵字符合{imageSource ? "檔名" : "檔名或網址"}，全文中未出現。
+              </p>
+            )}
             <div className="source-preview-body">
               {imageSource ? (
                 <img src={assetUrl} alt={source.name} />
               ) : summary ? (
-                <pre>{source.extractedText}</pre>
+                <pre>
+                  {segments.map((segment, index) =>
+                    segment.hit ? (
+                      <mark key={index} ref={index === firstHit ? firstHitRef : null}>
+                        {segment.text}
+                      </mark>
+                    ) : (
+                      <Fragment key={index}>{segment.text}</Fragment>
+                    ),
+                  )}
+                </pre>
               ) : (
                 <div className="source-preview-empty">這個檔案沒有可顯示的文字內容。</div>
               )}
@@ -328,9 +353,12 @@ function TextSourceDialog({
 }
 
 /**
- * 專案素材（sources）管理面板：上傳檔案／輸入文字／加入搜尋資料，以及來源清單的
- * 預覽、AI 存取開關、生成用途與刪除。自管上傳 busy 與三個對話框狀態，透過 onProject
- * 回報更新後的專案。編輯器側欄與建立流程「上傳素材」步驟共用此元件。
+ * 專案素材（sources）管理面板：上傳檔案／輸入文字／從網路加入資料，以及來源清單的
+ * 搜尋、預覽、AI 存取開關、生成用途與刪除。自管上傳 busy 與三個對話框狀態，透過
+ * onProject 回報更新後的專案。編輯器側欄與建立流程「上傳素材」步驟共用此元件。
+ *
+ * 來源搜尋純在前端比對已載入的 project.sources（全文／檔名／來源網址），不呼叫後端；
+ * 命中的來源在預覽對話框裡會 highlight 全文中的關鍵字。
  */
 export function SourcePanel({
   project,
@@ -345,6 +373,13 @@ export function SourcePanel({
   const [showWebSourceSearch, setShowWebSourceSearch] = useState(false);
   const [showTextSource, setShowTextSource] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const terms = searchTerms(query);
+  // 新增來源後清空搜尋，否則新來源若不符合目前關鍵字會「加了卻沒出現」。
+  const visibleSources = terms.length
+    ? project.sources.filter((source) => matchSource(source, terms))
+    : project.sources;
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -352,12 +387,13 @@ export function SourcePanel({
       if (sourcePreview) setSourcePreview(undefined);
       else if (showWebSourceSearch) setShowWebSourceSearch(false);
       else if (showTextSource && !uploadBusy) setShowTextSource(false);
+      else if (query) setQuery("");
       else return;
       event.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sourcePreview, showWebSourceSearch, showTextSource, uploadBusy]);
+  }, [sourcePreview, showWebSourceSearch, showTextSource, uploadBusy, query]);
 
   const run = async (operation: () => Promise<PresentationProject>) => {
     try {
@@ -375,6 +411,7 @@ export function SourcePanel({
         files.map((file) => api.uploadSource(project.id, file)),
       );
       onProject(await api.getProject(project.id));
+      setQuery("");
       const failed = results.filter((result) => result.status === "rejected");
       if (failed.length)
         throw new Error(`${files.length - failed.length} 個檔案已上傳，${failed.length} 個失敗`);
@@ -416,17 +453,49 @@ export function SourcePanel({
           disabled={uploadBusy}
           onClick={() => setShowWebSourceSearch(true)}
         >
-          ⌕ 加入搜尋資料<span>輸入關鍵字 · 確認後儲存全文</span>
+          ＋ 從網路加入資料<span>輸入關鍵字 · 確認後儲存全文</span>
         </button>
       </div>
+      {project.sources.length > 0 && (
+        <div className="source-search">
+          <label>
+            <span aria-hidden="true">⌕</span>
+            <input
+              aria-label="搜尋來源"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜尋來源內容、檔名或網址"
+            />
+          </label>
+          {query && (
+            <button type="button" aria-label="清除搜尋關鍵字" onClick={() => setQuery("")}>
+              ×
+            </button>
+          )}
+        </div>
+      )}
+      {terms.length > 0 && visibleSources.length > 0 && (
+        <p className="source-search-count">
+          {visibleSources.length} / {project.sources.length} 份來源符合
+        </p>
+      )}
       {project.sources.length === 0 && (
         <div className="source-empty">
           <b>尚無來源</b>
           <span>上傳文字、文件或圖片，生成時即可引用。</span>
         </div>
       )}
+      {terms.length > 0 && visibleSources.length === 0 && (
+        <div className="source-empty">
+          <b>找不到符合的來源</b>
+          <span>沒有來源包含「{query.trim()}」。</span>
+          <button type="button" className="source-search-clear" onClick={() => setQuery("")}>
+            清除搜尋
+          </button>
+        </div>
+      )}
       <div className="source-list">
-        {project.sources.map((source) => {
+        {visibleSources.map((source) => {
           const imageSource = source.mediaType.startsWith("image/");
           const summary = sourceSummary(source);
           const assetUrl = projectAssetUrl(project.id, source.assetPath);
@@ -509,6 +578,7 @@ export function SourcePanel({
         <SourcePreviewDialog
           projectId={project.id}
           source={sourcePreview}
+          terms={terms}
           onClose={() => setSourcePreview(undefined)}
         />
       )}
@@ -519,6 +589,7 @@ export function SourcePanel({
           onSave={async (sources) => {
             onProject(await api.addWebSources(project.id, sources));
             setShowWebSourceSearch(false);
+            setQuery("");
           }}
         />
       )}
@@ -536,6 +607,7 @@ export function SourcePanel({
               .then((updated) => {
                 onProject(updated);
                 setShowTextSource(false);
+                setQuery("");
               })
               .catch((reason: unknown) =>
                 onError(reason instanceof Error ? reason.message : "建立文字來源失敗"),

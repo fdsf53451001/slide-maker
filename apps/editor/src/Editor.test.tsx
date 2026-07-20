@@ -869,6 +869,131 @@ describe("Editor MVP navigation", () => {
     expect(await screen.findByRole("img", { name: "流程圖.png" })).toBeTruthy();
   });
 
+  describe("source search", () => {
+    const openSourcesPanel = async () => {
+      const project = createProject({ topic: "來源搜尋", brief: { desiredSlideCount: 1 } });
+      project.workflowStage = "editing";
+      const now = new Date().toISOString();
+      const source = (overrides: Partial<(typeof project.sources)[number]>) => ({
+        id: "source",
+        name: "來源.md",
+        mediaType: "text/markdown",
+        usage: "content" as const,
+        allowModelAccess: true,
+        status: "indexed" as const,
+        assetPath: "assets/sources/source/來源.md",
+        sizeBytes: 1024,
+        extractedText: "",
+        chunks: [],
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      });
+      project.sources = [
+        source({
+          id: "margin-source",
+          name: "財報摘要.md",
+          assetPath: "assets/sources/margin-source/財報摘要.md",
+          extractedText: "2024 年毛利率成長明顯，第二段再次提到毛利率。",
+        }),
+        source({
+          id: "other-source",
+          name: "訪談筆記.md",
+          assetPath: "assets/sources/other-source/訪談筆記.md",
+          extractedText: "受訪者談的是通路策略。",
+        }),
+        source({
+          id: "image-source",
+          name: "毛利率圖表.png",
+          mediaType: "image/png",
+          usage: "visual-reference",
+          assetPath: "assets/sources/image-source/毛利率圖表.png",
+        }),
+      ];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request) => {
+          const path =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.pathname
+                : new URL(input.url).pathname;
+          if (path === "/api/projects") return Response.json([project]);
+          if (path === "/api/providers")
+            return Response.json([
+              {
+                id: "mock-image",
+                name: "Mock",
+                availability: { status: "available" },
+                capabilities: { fullSlideGeneration: true },
+              },
+            ]);
+          if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+          if (path.includes("/readiness"))
+            return Response.json({
+              providerId: "mock-image",
+              status: "ready",
+              blocking: false,
+              requiresAcknowledgement: false,
+              message: "Ready",
+              checkedAt: now,
+              expiresAt: now,
+            });
+          return Response.json(project);
+        }),
+      );
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("來源搜尋"));
+      fireEvent.click(await screen.findByRole("button", { name: "來源 3" }));
+      await screen.findByRole("button", { name: "預覽 財報摘要.md" });
+      return screen.getByLabelText("搜尋來源");
+    };
+
+    it("filters the list to matching sources and reports how many matched", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "毛利率" } });
+
+      expect(screen.getByText("2 / 3 份來源符合")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "預覽 財報摘要.md" })).toBeTruthy();
+      // 圖片沒有擷取文字，只能靠檔名命中。
+      expect(screen.getByRole("button", { name: "預覽 毛利率圖表.png" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "預覽 訪談筆記.md" })).toBeNull();
+    });
+
+    it("shows an empty state that clears the search", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "不存在的字" } });
+
+      expect(screen.getByText("找不到符合的來源")).toBeTruthy();
+      expect(screen.queryByText(/份來源符合/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "清除搜尋" }));
+
+      expect((search as HTMLInputElement).value).toBe("");
+      expect(screen.getByRole("button", { name: "預覽 訪談筆記.md" })).toBeTruthy();
+    });
+
+    it("highlights every hit in the preview, and explains a name-only match", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "毛利率" } });
+      fireEvent.click(screen.getByRole("button", { name: "預覽 財報摘要.md" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "預覽來源：財報摘要.md" });
+      const marks = dialog.querySelectorAll("pre mark");
+      expect([...marks].map((mark) => mark.textContent)).toEqual(["毛利率", "毛利率"]);
+      expect(dialog.querySelector("pre")?.textContent).toBe(
+        "2024 年毛利率成長明顯，第二段再次提到毛利率。",
+      );
+      expect(screen.queryByText(/全文中未出現/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "關閉來源預覽" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "預覽 毛利率圖表.png" }));
+      await screen.findByRole("dialog", { name: "預覽來源：毛利率圖表.png" });
+      expect(screen.getByText(/全文中未出現/)).toBeTruthy();
+    });
+  });
+
   it("searches web sources and saves only confirmed results back to the project", async () => {
     let project = createProject({ topic: "搜尋來源", brief: { desiredSlideCount: 1 } });
     project.workflowStage = "editing";
@@ -944,7 +1069,7 @@ describe("Editor MVP navigation", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("搜尋來源"));
     fireEvent.click(await screen.findByRole("button", { name: "來源 0" }));
-    fireEvent.click(await screen.findByText("⌕ 加入搜尋資料"));
+    fireEvent.click(await screen.findByText("＋ 從網路加入資料"));
     fireEvent.change(screen.getByLabelText("搜尋關鍵字"), {
       target: { value: "building AI agents" },
     });

@@ -1910,6 +1910,83 @@ header {
   color: #cfd8e7;
   background: var(--surface-4);
 }
+.source-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 0 9px;
+  border: 1px solid var(--border-1);
+  border-radius: 7px;
+  background: var(--surface-4);
+}
+.source-search:focus-within {
+  border-color: var(--accent);
+}
+.source-search label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim-2);
+}
+.source-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: #cfd8e7;
+  padding: 8px 0;
+  font-size: 11px;
+}
+.source-search input:focus {
+  outline: none;
+}
+.source-search > button {
+  border: 0;
+  background: none;
+  color: var(--text-dim-2);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px;
+}
+.source-search > button:hover {
+  color: #cfd8e7;
+}
+.source-search-count {
+  margin: 8px 0 0;
+  color: var(--text-dim-2);
+  font:
+    9px "DM Mono",
+    monospace;
+  letter-spacing: 0.04em;
+}
+.source-search-clear {
+  justify-self: center;
+  margin-top: 4px;
+  border: 1px solid #3c4b65;
+  border-radius: 6px;
+  background: var(--surface-4);
+  color: #cfd8e7;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.source-search-clear:hover {
+  border-color: var(--accent);
+}
+.source-preview-nohit {
+  margin: 0 0 8px;
+  color: var(--text-dim-2);
+  font-size: 11px;
+}
+.source-preview-body mark {
+  border-radius: 2px;
+  background: rgba(var(--accent-rgb), 0.32);
+  color: inherit;
+}
 .source-empty {
   display: grid;
   gap: 5px;
