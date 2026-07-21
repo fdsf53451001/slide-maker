@@ -26,9 +26,12 @@ import {
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
 import { SourcePanel } from "./SourcePanel.js";
+import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
+import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
 import { LibraryHeader } from "./LibraryHeader.js";
 import { useSystemSettings, type SystemSettings } from "./systemSettings.js";
+import { useOneTimeNotice } from "./oneTimeNotice.js";
 
 type CombinationSummary = { id: string; name: string; isDefault: boolean; imageModelRef?: string };
 
@@ -54,9 +57,63 @@ function currentImage(project: PresentationProject, slide: SlideSpec): string | 
   return version ? imageUrl(project.id, version.imagePath) : undefined;
 }
 
+/** 這個版本是不是 PDF 匯入落地的（原圖與可編輯文字兩個版本都算）。 */
+function isPdfImportVersion(version?: {
+  providerId?: string;
+  parameters?: Record<string, unknown>;
+}) {
+  return version?.providerId === "pdf-import" && version.parameters?.pdfImport === true;
+}
+
+/** 這份專案是不是由 PDF 匯入建立的（決定 setup 階段要走分析頁而不是四步 wizard）。 */
+function isPdfImportProject(project: PresentationProject): boolean {
+  return project.slides.some((slide) =>
+    slide.versions.some((version) => isPdfImportVersion(version)),
+  );
+}
+
+/**
+ * 風格下拉選單的選項。
+ *
+ * 專案自己的 styleSnapshot 不一定在風格庫清單裡（PDF 匯入分析出來的 `pdf-style-*`
+ * 就不在），少了代表它的那個 option，`value` 會對不上任何選項，瀏覽器改為顯示
+ * 第一個選項「AI 自由設計」——畫面上寫的風格與實際套用的不是同一個。
+ */
+function styleOptions(styles: StylePreset[], snapshot: StylePreset) {
+  return (
+    <>
+      {!styles.some((style) => style.id === snapshot.id) && (
+        <option value={snapshot.id}>{snapshot.name}（本專案專屬）</option>
+      )}
+      {styles.map((style) => (
+        <option key={style.id} value={style.id}>
+          {style.name} v{style.version}
+        </option>
+      ))}
+    </>
+  );
+}
+
+/**
+ * 換風格前的確認。專案專屬的分析結果（PDF 匯入分析出來的 designSystem）被庫裡的
+ * 風格蓋掉之後沒有復原路徑，所以只有這種情況會問；一般專案照舊直接套用。
+ * 回傳 false 代表不要執行。
+ */
+function confirmStyleReplacement(
+  styles: StylePreset[],
+  snapshot: StylePreset,
+  nextStyleId: string,
+): boolean {
+  if (nextStyleId === snapshot.id) return false;
+  const projectLocal = !styles.some((style) => style.id === snapshot.id);
+  if (!projectLocal || !snapshot.designSystem) return true;
+  return confirm("這份簡報用的是從 PDF 分析出來的專屬風格，套用其他風格會覆蓋分析結果，確定繼續？");
+}
+
 const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
 
 const TEXT_HISTORY_LIMIT = 60;
+
 // 文字框陣列一律以不可變方式更新，歷史可直接存引用，不需深拷貝。
 function pushHistory(history: EditableTextBox[][], boxes: EditableTextBox[]): EditableTextBox[][] {
   return [...history, boxes].slice(-TEXT_HISTORY_LIMIT);
@@ -559,6 +616,7 @@ function CreateProject({
   onCreate,
   onNavigate,
   onDelete,
+  onImportNotice,
 }: {
   projects: PresentationProject[];
   styles: StylePreset[];
@@ -567,7 +625,10 @@ function CreateProject({
   onCreate: (topic: string, styleId?: string) => Promise<void>;
   onNavigate: (path: string) => void;
   onDelete: (project: PresentationProject) => Promise<void>;
+  /** 匯入報告要交給上層顯示：`onOpen` 會立刻把這個元件換掉。 */
+  onImportNotice: (notice: string | undefined) => void;
 }) {
+  const [importing, setImporting] = useState(false);
   const [topic, setTopic] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState<string | undefined>(
     () => new URLSearchParams(window.location.search).get("style") ?? undefined,
@@ -640,6 +701,18 @@ function CreateProject({
                   ? `目前風格：${styles.find((item) => item.id === selectedStyleId)?.name ?? "已選風格"}`
                   : "未指定時由 AI 自由設計。"}
               </small>
+            </section>
+
+            {/* 匯入 PDF 與「建立簡報」地位對等：不進四步 wizard，選頁後專案立刻落地。 */}
+            <section className="dashboard-section import-panel">
+              <div>
+                <span className="section-label">IMPORT</span>
+                <h2>已經有 PDF 了？</h2>
+                <p>把既有的 16:9 簡報 PDF 匯入成專案，每頁保留原圖，之後可逐頁編輯文字。</p>
+              </div>
+              <button className="primary" onClick={() => setImporting(true)}>
+                匯入 PDF
+              </button>
             </section>
 
             <section className="dashboard-section style-start-section">
@@ -757,6 +830,32 @@ function CreateProject({
           </section>
         )}
       </div>
+      {importing && (
+        <PdfDeckImportModal
+          onClose={() => setImporting(false)}
+          onImported={(project, report) => {
+            setImporting(false);
+            const notes = [
+              report.skippedPages.length
+                ? `比例不符略過第 ${report.skippedPages.join("、")} 頁`
+                : "",
+              report.failedPages.length
+                ? `render 失敗略過第 ${report.failedPages.join("、")} 頁`
+                : "",
+              report.textLayerFailedPages.length
+                ? `第 ${report.textLayerFailedPages.join("、")} 頁沒有可編輯文字版本`
+                : "",
+              report.truncated ? `頁數超過上限，只取前 ${report.importedPages.length} 頁` : "",
+            ].filter(Boolean);
+            onImportNotice(
+              notes.length
+                ? `已匯入 ${project.slides.length} 頁：${notes.join("；")}。`
+                : undefined,
+            );
+            onOpen(project);
+          }}
+        />
+      )}
       {pendingDelete && (
         <div
           className="confirm-backdrop"
@@ -1423,6 +1522,8 @@ function SetupFlow({
                 <select
                   value={project.styleSnapshot.id}
                   onChange={(event) => {
+                    if (!confirmStyleReplacement(styles, project.styleSnapshot, event.target.value))
+                      return;
                     setBusy(true);
                     void api
                       .applyStyle(project.id, event.target.value)
@@ -1433,11 +1534,7 @@ function SetupFlow({
                       .finally(() => setBusy(false));
                   }}
                 >
-                  {styles.map((style) => (
-                    <option key={style.id} value={style.id}>
-                      {style.name} v{style.version}
-                    </option>
-                  ))}
+                  {styleOptions(styles, project.styleSnapshot)}
                 </select>
               </label>
             </div>
@@ -1527,6 +1624,11 @@ export function Editor() {
   const [readinessBusy, setReadinessBusy] = useState(false);
   const [acceptUnknownReadiness, setAcceptUnknownReadiness] = useState(false);
   const [error, setError] = useState<string>();
+  /**
+   * PDF 匯入的略過／失敗頁碼。必須放在 `Editor` 這一層：匯入成功會立刻開啟專案，
+   * `CreateProject` 當場 unmount，報告放在它裡面等於一次都不會被看到。
+   */
+  const [importNotice, setImportNotice] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [presentationIndex, setPresentationIndex] = useState<number | null>(null);
@@ -1665,6 +1767,15 @@ export function Editor() {
   // 生成中或預覽歷史版本時不可互動編輯文字圖層，避免完成瞬間覆蓋掉未儲存的編輯。
   const activeTextLayer = previewVersion || activeJob ? undefined : selectedVersion?.textLayer;
   const textEditing = !!activeTextLayer;
+  /**
+   * PDF 匯入的「可編輯文字」版本要提示一次系統字型重繪：`pdf-text-layer.ts` 把 PDF
+   * 內嵌字型收斂成 Arial／Times New Roman／Courier New（那些字型在瀏覽器與伺服器都
+   * 不存在，必然 fallback），所以切到這個版本整頁字型會肉眼可見地改變。不解釋的話
+   * 使用者只會覺得「這一頁壞了」。
+   */
+  const pdfFontNotice = useOneTimeNotice("pdf-import-text-layer-font");
+  const showPdfFontNotice =
+    !!activeTextLayer && isPdfImportVersion(selectedVersion) && pdfFontNotice.pending;
   const lastJob = useMemo(
     () => project?.jobs.filter((job) => job.slideId === selected?.id).at(-1),
     [project?.jobs, selected?.id],
@@ -1889,6 +2000,12 @@ export function Editor() {
     railRef.current?.querySelector(".thumbnail.selected")?.scrollIntoView?.({ block: "nearest" });
   }, [selectedId]);
 
+  const importNoticeToast = importNotice ? (
+    <button className="toast import-report" onClick={() => setImportNotice(undefined)}>
+      {importNotice} ×
+    </button>
+  ) : null;
+
   if (route === "/models") return <ModelLibrary onNavigate={navigate} />;
 
   const versionRoute = /^\/styles\/([a-zA-Z0-9_-]+)\/versions\/(\d+)$/.exec(route);
@@ -1910,12 +2027,14 @@ export function Editor() {
     return (
       <>
         {error && <div className="toast error">{error}</div>}
+        {importNoticeToast}
         <CreateProject
           key={`${route}:${window.location.search}`}
           projects={projects}
           styles={styles}
           styleLibrary={route === "/styles"}
           onNavigate={navigate}
+          onImportNotice={setImportNotice}
           onOpen={(value) => {
             setProject(value);
             setSelectedId(value.slides[0]?.id);
@@ -1930,6 +2049,33 @@ export function Editor() {
           onDelete={async (target) => {
             await api.deleteProject(target.id);
             setProjects((current) => current.filter((candidate) => candidate.id !== target.id));
+          }}
+        />
+      </>
+    );
+
+  // PDF 匯入的專案完全不進四步 wizard：settings 階段就是它的風格分析頁。
+  if (project.workflowStage !== "editing" && isPdfImportProject(project))
+    return (
+      <>
+        {error && (
+          <button className="toast error" onClick={() => setError(undefined)}>
+            {error} ×
+          </button>
+        )}
+        {importNoticeToast}
+        <PdfDeckAnalysis
+          project={project}
+          styles={styles}
+          onProject={setProject}
+          onEnterEditor={(value) => {
+            setProject(value);
+            setSelectedId(value.slides[0]?.id);
+          }}
+          onExit={() => {
+            setProject(undefined);
+            setSelectedId(undefined);
+            navigate("/");
           }}
         />
       </>
@@ -2392,6 +2538,15 @@ export function Editor() {
             )}
           </div>
         </div>
+        {showPdfFontNotice && (
+          <div className="pdf-font-notice" role="status">
+            <span>
+              這是從 PDF 匯入的「可編輯文字」版本：文字會以系統字型重繪，字型看起來會和原始 PDF
+              不同。要保留原始字型外觀，請切回「原始頁面」版本，匯出時也會保真。
+            </span>
+            <button onClick={pdfFontNotice.acknowledge}>知道了</button>
+          </div>
+        )}
         {activeTextLayer && (
           <div className="text-layer-toolbar">
             <span>
@@ -2562,11 +2717,16 @@ export function Editor() {
               return (
                 <button
                   key={version.id}
-                  aria-label={`版本 ${versionNumber}${isCurrent ? "（目前）" : ""}`}
+                  aria-label={`版本 ${versionNumber}${version.label ? `：${version.label}` : ""}${isCurrent ? "（目前）" : ""}`}
                   className={`${isCurrent ? "current" : ""} ${isPreviewing ? "previewing" : ""}`.trim()}
                   onClick={() => setPreviewVersionId(isCurrent ? undefined : version.id)}
                 >
                   <img src={imageUrl(project.id, version.imagePath)} alt="version" />
+                  {/*
+                    PDF 匯入的兩個版本是同一秒建立的，只看時間戳分不出哪個是原圖、
+                    哪個是可編輯文字，所以有 label 就顯示 label。
+                  */}
+                  {version.label && <span className="version-label">{version.label}</span>}
                   <span>
                     {(() => {
                       const d = new Date(version.createdAt);
@@ -2795,7 +2955,15 @@ export function Editor() {
                       !!activeJob ||
                       !!previewVersion ||
                       textLayerBusy ||
+                      // 這個版本已經有文字層了：再抽一次是拿 OCR ＋ 生圖模型重做一份
+                      // 已經精確而且零成本的東西（PDF 匯入的文字層取自原生文字層）。
+                      !!selectedVersion?.textLayer ||
                       !provider?.capabilities.maskedEditing
+                    }
+                    title={
+                      selectedVersion?.textLayer
+                        ? "這個版本已經有可編輯文字層了"
+                        : "以 OCR 抽離文字並抹除原圖上的文字"
                     }
                   >
                     {textLayerBusy ? "處理中…" : "抽離文字"}
@@ -2996,13 +3164,13 @@ export function Editor() {
               風格
               <select
                 value={project.styleSnapshot.id}
-                onChange={(event) => void run(() => api.applyStyle(project.id, event.target.value))}
+                onChange={(event) => {
+                  if (!confirmStyleReplacement(styles, project.styleSnapshot, event.target.value))
+                    return;
+                  void run(() => api.applyStyle(project.id, event.target.value));
+                }}
               >
-                {styles.map((style) => (
-                  <option key={style.id} value={style.id}>
-                    {style.name} v{style.version}
-                  </option>
-                ))}
+                {styleOptions(styles, project.styleSnapshot)}
               </select>
             </label>
             <div className="panel-actions">
@@ -3248,6 +3416,7 @@ export function Editor() {
           </div>
         </div>
       )}
+      {importNoticeToast}
       {error && (
         <button className="toast error" onClick={() => setError(undefined)}>
           {error} ×

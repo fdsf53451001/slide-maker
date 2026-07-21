@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   renderDesignSystem,
   STYLE_ANALYSIS_PROMPT,
+  StyleAnalysisError,
   styleAnalysisSchema,
 } from "../src/style-analysis.js";
 
@@ -56,9 +57,18 @@ describe("style analysis output", () => {
   it("refuses to hand back a hollow design system", () => {
     // 寬鬆 parse 的代價要顯性化，不能讓使用者存下一份沒有色票的「設計系統」。
     const noPalette = styleAnalysisSchema.parse({ ...complete, palette: [] });
-    expect(() => renderDesignSystem(noPalette)).toThrow("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    expect(() => renderDesignSystem(noPalette)).toThrow(StyleAnalysisError);
     const noRationale = styleAnalysisSchema.parse({ ...complete, designRationale: "   " });
-    expect(() => renderDesignSystem(noRationale)).toThrow("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    expect(() => renderDesignSystem(noRationale)).toThrow(StyleAnalysisError);
+  });
+
+  it("explains the failure in a sentence the user can act on", () => {
+    // 分析頁會直接顯示這個訊息；只丟 `CODEX_STYLE_ANALYSIS_INCOMPLETE` 等於沒說明。
+    const failure = new StyleAnalysisError("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    expect(failure.code).toBe("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    expect(failure.message).toContain("設計系統");
+    expect(failure.message).not.toMatch(/CODEX_/);
+    expect(new StyleAnalysisError("CODEX_STYLE_ANALYSIS_DISABLED").message).toContain("模型組合");
   });
 
   it("asks for one system behind the pages rather than a per-image description", () => {
