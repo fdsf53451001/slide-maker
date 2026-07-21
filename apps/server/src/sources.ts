@@ -32,12 +32,21 @@ function cellText(value: string): string {
   return value.replaceAll(PARAGRAPH, " ").replace(/\s+/g, " ").replaceAll("|", "\\|").trim();
 }
 
-/** 表格外的一般文字：段落界還原成換行，殘留的表格標記丟棄。 */
+/**
+ * 表格外的一般文字：段落界還原成換行，殘留的表格標記丟棄。
+ *
+ * 巢狀表格的哨兵一定要在這裡清掉。非貪婪配對會停在內層的結束標記，於是內層的
+ * TABLE_START 留在外層儲存格裡、外層的 TABLE_END 流到表格外——兩者都是不可見控制字元，
+ * 漏出去會一路汙染 extractedText、FTS chunk 與編輯器 UI。xmlText 是對「組裝完的整份文字」
+ * 呼叫 flowText，所以這一步同時涵蓋表格內外，是唯一收得乾淨的位置。
+ */
 function flowText(value: string): string {
   return value
     .replaceAll(PARAGRAPH, "\n")
     .replaceAll(CELL_END, "")
     .replaceAll(ROW_END, "")
+    .replaceAll(TABLE_START, "")
+    .replaceAll(TABLE_END, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n");
 }
@@ -173,8 +182,14 @@ function layoutPdfPage(items: readonly unknown[]): string {
     return cells;
   });
 
-  // 連續且欄數一致（≥2 欄、≥2 列）的區塊視為表格。條件放寬會把雙欄排版誤判成表格，
-  // 那比讀成散文更糟——欄位會被錯誤配對。
+  // 連續且欄數一致（≥2 欄、≥2 列）的區塊視為表格。
+  //
+  // 已知限制：這條件擋不住雙欄排版。一頁兩欄的散文，每一行都會因為欄間留白被切成 2 格、
+  // 欄數又剛好一致，於是被輸出成 pipe table，在左右兩欄不相干的句子之間硬造出對應關係。
+  // 沒有修，是因為單靠文字幾何分不出「短儲存格的表」與「長文字的欄」——收緊條件（限制
+  // 儲存格長度之類）會反過來把長文字的真表格降級成散文，那正是先前修掉的失敗模式，而且
+  // 手上沒有 PDF 語料可以衡量取捨。真正的判別訊號是表格的框線：pdf.js 的 getOperatorList()
+  // 拿得到繪製指令，有框線才是表——那是另一個題目，不在這次的範圍內。
   const output: string[] = [];
   for (let index = 0; index < rows.length; index += 1) {
     const width = rows[index]!.length;
