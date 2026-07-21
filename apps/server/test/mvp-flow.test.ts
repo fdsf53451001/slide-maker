@@ -186,4 +186,49 @@ describe("MVP end-to-end local workflow", () => {
     expect(imported.slides).toHaveLength(confirmedSlideCount);
     expect(imported.jobs).toHaveLength(0);
   }, 60_000);
+
+  it("inserts a manually specified slide after a given slide without an outline call", async (context) => {
+    if (unavailable) return context.skip();
+    let project = await json<PresentationProject>("/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic: "素材頁插入", brief: { desiredSlideCount: 2 } }),
+    });
+    project = await json<PresentationProject>(`/api/projects/${project.id}/outline`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ replace: true }),
+    });
+    const [first, second] = project.slides;
+    project = await json<PresentationProject>(`/api/projects/${project.id}/slides`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        purpose: "展示素材：checkout.png",
+        content: "完整呈現「checkout.png」的畫面內容。",
+        imagePrompt: "以 DIRECT-ASSET 參考圖為畫面主體，忠實嵌入呈現。",
+        sourceIds: [],
+        afterSlideId: first!.id,
+      }),
+    });
+    expect(project.slides).toHaveLength(3);
+    expect(project.slides.map((slide) => slide.id)).toEqual([
+      first!.id,
+      project.slides[1]!.id,
+      second!.id,
+    ]);
+    expect(project.slides.map((slide) => slide.order)).toEqual([0, 1, 2]);
+    expect(project.slides[1]).toMatchObject({
+      purpose: "展示素材：checkout.png",
+      imagePrompt: "以 DIRECT-ASSET 參考圖為畫面主體，忠實嵌入呈現。",
+    });
+
+    await expect(
+      json(`/api/projects/${project.id}/slides`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ afterSlideId: "missing-slide" }),
+      }),
+    ).rejects.toThrow(/NOT_FOUND/);
+  });
 });

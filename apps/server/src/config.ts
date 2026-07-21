@@ -57,6 +57,94 @@ export function parseOcrDetSideLen(value: string | undefined): number {
   return sideLen;
 }
 
+export function parseCodexModel(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value.trim();
+}
+
+export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
+export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
+
+export function parseCodexReasoningEffort(
+  value: string | undefined,
+): CodexReasoningEffort | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  if (!(CODEX_REASONING_EFFORTS as readonly string[]).includes(value)) {
+    throw new Error(
+      `SLIDE_MAKER_CODEX_REASONING_EFFORT must be one of: ${CODEX_REASONING_EFFORTS.join(", ")}`,
+    );
+  }
+  return value as CodexReasoningEffort;
+}
+
+export const DEFAULT_OPENAI_TIMEOUT_MS = 120_000;
+export const MIN_OPENAI_TIMEOUT_MS = 5_000;
+export const MAX_OPENAI_TIMEOUT_MS = 30 * 60_000;
+
+export const AI_ENGINES = ["codex", "openai"] as const;
+export type AiEngine = (typeof AI_ENGINES)[number];
+
+export const OPENAI_IMAGE_APIS = ["images", "chat", "openrouter-image"] as const;
+export type OpenAiImageApi = (typeof OPENAI_IMAGE_APIS)[number];
+
+/**
+ * 影像端點型態：`images`（CLI2Proxy `/images/generations`＋`/images/edits`，gpt-image 系，預設）、
+ * `chat`（CLI2Proxy `/chat/completions`，GPT tool / Gemini native）、`openrouter-image`
+ * （OpenRouter 專用 `/images` 端點，`input_references` 帶參考圖）。
+ */
+export function parseOpenAiImageApi(value: string | undefined): OpenAiImageApi {
+  if (value === undefined || value.trim() === "") return "images";
+  if (!(OPENAI_IMAGE_APIS as readonly string[]).includes(value))
+    throw new Error(`SLIDE_MAKER_OPENAI_IMAGE_API must be one of: ${OPENAI_IMAGE_APIS.join(", ")}`);
+  return value as OpenAiImageApi;
+}
+
+/** OpenAI-compatible 端點根位址（http/https），未設回 undefined，非法值 throw。 */
+export function parseOpenAiBaseUrl(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const trimmed = value.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("SLIDE_MAKER_OPENAI_BASE_URL must be a valid URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new Error("SLIDE_MAKER_OPENAI_BASE_URL must be an http(s) URL");
+  return trimmed;
+}
+
+/** 非空字串（API key / 模型名），未設回 undefined。 */
+export function parseOptionalString(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value.trim();
+}
+
+export function parseOpenAiTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_OPENAI_TIMEOUT_MS;
+  if (!/^\d+$/.test(value))
+    throw new Error("SLIDE_MAKER_OPENAI_TIMEOUT_MS must be an integer in milliseconds");
+  const timeout = Number(value);
+  if (
+    !Number.isSafeInteger(timeout) ||
+    timeout < MIN_OPENAI_TIMEOUT_MS ||
+    timeout > MAX_OPENAI_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `SLIDE_MAKER_OPENAI_TIMEOUT_MS must be between ${MIN_OPENAI_TIMEOUT_MS} and ${MAX_OPENAI_TIMEOUT_MS}`,
+    );
+  }
+  return timeout;
+}
+
+/** 引擎選擇（codex 預設 | openai），非法值 throw。 */
+export function parseAiEngine(name: string, value: string | undefined): AiEngine {
+  if (value === undefined || value.trim() === "") return "codex";
+  if (!(AI_ENGINES as readonly string[]).includes(value))
+    throw new Error(`${name} must be one of: ${AI_ENGINES.join(", ")}`);
+  return value as AiEngine;
+}
+
 export function parseCodexMaxConcurrency(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_CODEX_MAX_CONCURRENCY;
   if (!/^\d+$/.test(value)) throw new Error("SLIDE_MAKER_CODEX_MAX_CONCURRENCY must be an integer");

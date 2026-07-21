@@ -1,7 +1,12 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
+import { createProject } from "@slide-maker/core";
 import { describe, expect, it } from "vitest";
 import { compositeMaskedEdit } from "../src/jobs.js";
-import { boxesFromOcr, textMask, textOverlaySvg } from "../src/text-layers.js";
+import { boxesFromOcr, renderComposite, textMask, textOverlaySvg } from "../src/text-layers.js";
+import { FileProjectRepository } from "../src/repository.js";
 
 describe("masked image editing", () => {
   it("uses the edited pixels only inside the painted alpha mask", async () => {
@@ -85,7 +90,7 @@ describe("OCR text masks", () => {
     expect(pixel(100, 50)).toEqual([255, 255, 255, 255]);
   });
 
-  it("starts the first rendered line at the OCR box origin without adding one font-size offset", () => {
+  it("places the first baseline to match CSS line-height layout (half-leading + ascent)", () => {
     const box = {
       id: "box",
       text: "Position",
@@ -107,9 +112,75 @@ describe("OCR text masks", () => {
       role: "presentation" as const,
     };
     const svg = textOverlaySvg([box], 1920, 1080).toString("utf8");
-    expect(svg).toContain('y="80"');
-    expect(svg).toContain('dominant-baseline="text-before-edge"');
+    // 首行 baseline = y + half-leading + ascent，重現編輯器 CSS line-height 的排版：
+    // half-leading = (40*1.2 - 40*(0.905+0.212))/2 = 1.66，baseline = 80 + 1.66 + 36.2 = 117.86
+    const match = svg.match(/<text x="[\d.-]+" y="([\d.-]+)"/);
+    expect(match).not.toBeNull();
+    expect(Number(match?.[1])).toBeCloseTo(117.86, 2);
+    // baseline 定位不再依賴 librsvg 支援度不一的 dominant-baseline
+    expect(svg).not.toContain("dominant-baseline");
     expect(svg).toContain('<tspan x="100" dy="0">Position</tspan>');
     expect(svg).not.toContain('dy="40"');
+  });
+});
+
+describe("renderComposite asset paths", () => {
+  // assets 由 server 以 immutable + max-age=1yr 提供，前端 cache key 只用檔名。
+  // 重新抽離同一版本時 renderRevision 重設為 0；若 composite 檔名沿用
+  // composite-0.png，瀏覽器會持續顯示舊合成圖（簡報模式字疊在一起的元凶）。
+  // 因此每次渲染都要產生獨一無二的檔名。
+  it("renders a unique composite path per call even with the same renderRevision", async () => {
+    const repository = new FileProjectRepository(
+      await mkdtemp(join(tmpdir(), "slide-maker-composite-cache-")),
+    );
+    await repository.initialize();
+    const project = createProject({ topic: "快取測試", brief: { desiredSlideCount: 1 } });
+    const now = new Date().toISOString();
+    const background = await sharp({
+      create: { width: 4, height: 3, channels: 4, background: "#202020" },
+    })
+      .png()
+      .toBuffer();
+    const backgroundPath = await repository.saveAsset(
+      project.id,
+      `slide/background-${now.replace(/[:.]/g, "")}.png`,
+      new Uint8Array(background),
+    );
+    const layer = {
+      originalVersionId: "original",
+      backgroundPath,
+      compositePath: backgroundPath,
+      threshold: 0.75,
+      renderRevision: 0,
+      extractedAt: now,
+      updatedAt: now,
+      boxes: [
+        {
+          id: "box",
+          text: "重渲染測試",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 40,
+          fontFamily: "Arial",
+          fontSize: 32,
+          fontWeight: 700,
+          color: "#ffffff",
+          opacity: 1,
+          lineHeight: 1.2,
+          letterSpacing: 0,
+          align: "left" as const,
+          verticalAlign: "top" as const,
+          rotation: 0,
+          confidence: 1,
+          role: "presentation" as const,
+        },
+      ],
+    };
+    const first = await renderComposite(repository, project, layer);
+    const second = await renderComposite(repository, project, layer);
+    expect(first).toMatch(/composite-0-[0-9a-f-]+\.png$/);
+    expect(second).toMatch(/composite-0-[0-9a-f-]+\.png$/);
+    expect(first).not.toBe(second);
   });
 });

@@ -9,8 +9,8 @@ import {
   type ImageProvider,
   type SlideOutlineSnapshot,
   type SlideSpec,
-  ProviderRegistry,
 } from "@slide-maker/core";
+import type { ImageProviderSource } from "./readiness.js";
 import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite } from "./text-layers.js";
@@ -61,9 +61,16 @@ function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean 
 function safeFailure(
   error: unknown,
   aborted: boolean,
+  persisting = false,
 ): { code: string; message: string; phase: "failed" | "cancelled" } {
   if (aborted || (error instanceof DOMException && error.name === "AbortError"))
     return { code: "CANCELLED", message: "生成工作已取消。", phase: "cancelled" };
+  if (persisting)
+    return {
+      code: "PERSIST_FAILED",
+      message: "圖片已生成，但結果儲存失敗（資料驗證或寫入錯誤），請重試。",
+      phase: "failed",
+    };
   if (error instanceof SafeProviderError && Object.hasOwn(PROVIDER_ERROR_MESSAGES, error.code)) {
     return { code: error.code, message: PROVIDER_ERROR_MESSAGES[error.code]!, phase: "failed" };
   }
@@ -180,7 +187,7 @@ export class JobRunner {
 
   constructor(
     private readonly repository: FileProjectRepository,
-    private readonly providers: ProviderRegistry<ImageProvider>,
+    private readonly providers: ImageProviderSource,
     private readonly styles?: FileStyleRepository,
   ) {}
 
@@ -280,10 +287,19 @@ export class JobRunner {
     return result;
   }
 
+  async cancelProject(projectId: string): Promise<void> {
+    const project = await this.repository.loadProject(projectId);
+    if (!project) return;
+    const active = project.jobs.filter(
+      (job) => job.status === "queued" || job.status === "running",
+    );
+    await Promise.all(active.map((job) => this.cancel(projectId, job.id).catch(() => undefined)));
+  }
+
   async recoverInterruptedJobs(): Promise<void> {
     for (const project of await this.repository.listProjects()) {
-      const queued: string[] = [];
-      await this.repository.updateProject(project.id, (current) => {
+      const queued = await this.repository.updateProject(project.id, (current) => {
+        const queued: Array<{ jobId: string; providerId: string }> = [];
         for (const job of current.jobs) {
           if (job.status === "running") {
             job.status = "failed";
@@ -299,15 +315,15 @@ export class JobRunner {
               delete job.childLifecycle.exitClass;
             }
             current.updatedAt = job.updatedAt;
-          } else if (job.status === "queued") queued.push(job.id);
+          } else if (job.status === "queued")
+            queued.push({ jobId: job.id, providerId: job.providerId });
         }
+        return queued;
       });
-      for (const jobId of queued) {
-        const job = project.jobs.find((candidate) => candidate.id === jobId);
-        if (job)
-          setTimeout(() => {
-            this.schedule(project.id, jobId, job.providerId);
-          }, 0);
+      for (const { jobId, providerId } of queued) {
+        setTimeout(() => {
+          this.schedule(project.id, jobId, providerId);
+        }, 0);
       }
     }
   }
@@ -600,6 +616,9 @@ export class JobRunner {
       this.#controllers.delete(this.controllerKey(projectId, jobId));
       return;
     }
+    let persisting = false;
+    let resultPersisted = false;
+    const generatedAssets = new Set<string>();
     try {
       const { project, slide, job } = context;
       const provider = this.providers.get(job.providerId);
@@ -624,7 +643,11 @@ export class JobRunner {
         .map((source) => ({
           path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
           mediaType: source.mediaType,
-          role: (source.usage === "style-reference" ? "style" : "content") as "style" | "content",
+          role: (source.usage === "style-reference"
+            ? "style"
+            : source.usage === "direct-asset"
+              ? "direct-asset"
+              : "content") as "style" | "content" | "direct-asset",
           name: source.name,
         }));
       const references = [...styleReferences, ...contentReferences];
@@ -659,11 +682,19 @@ export class JobRunner {
           instruction: job.editInstruction,
           baseImageIndex,
           ...(maskImageIndex === undefined ? {} : { maskImageIndex }),
+          ...(job.operation === "extract-text" ? { purpose: "text-removal" as const } : {}),
         };
       }
-      if (references.length && !provider.capabilities.referenceImages)
+      // Base/mask images are intrinsic edit inputs, not optional reference-image
+      // capability. Only gate supplemental style/content references here.
+      const supplementalReferences = edit
+        ? references.filter(
+            (_reference, index) => index !== edit.baseImageIndex && index !== edit.maskImageIndex,
+          )
+        : references;
+      if (supplementalReferences.length && !provider.capabilities.referenceImages)
         throw new Error("STYLE_REFERENCES_UNSUPPORTED");
-      if (references.length > 1 && !provider.capabilities.multipleReferenceImages)
+      if (supplementalReferences.length > 1 && !provider.capabilities.multipleReferenceImages)
         throw new Error("MULTIPLE_REFERENCES_UNSUPPORTED");
       const result = await provider.generate(
         {
@@ -711,10 +742,14 @@ export class JobRunner {
           parameters: { ...safe.parameters, maskedEdit: true },
         };
       }
+      persisting = true;
       await this.setPhase(projectId, jobId, "persisting");
       const versionId = job.textExtraction?.replaceVersionId ?? randomUUID();
-      const filename = `${slide.id}/${versionId}.${safe.extension}`;
+      // 在 replaceVersionId 流程中 versionId 不變、檔名重複，會覆蓋同一張背景圖；
+      // 加上 randomUUID 後每次生成都是獨立 URL，避免 immutable cache 顯示舊背景。
+      const filename = `${slide.id}/${versionId}-${randomUUID()}.${safe.extension}`;
       const backgroundPath = await this.repository.saveAsset(projectId, filename, safe.bytes);
+      generatedAssets.add(backgroundPath);
       const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
       let imagePath = backgroundPath;
       let textLayer =
@@ -740,28 +775,38 @@ export class JobRunner {
             : undefined;
       if (textLayer) {
         textLayer.compositePath = await renderComposite(this.repository, project, textLayer);
+        generatedAssets.add(textLayer.compositePath);
         imagePath = textLayer.compositePath;
       }
-      const baseOutline =
-        job.operation !== "generate"
-          ? slide.versions.find((version) => version.id === job.baseVersionId)?.outlineSnapshot
-          : undefined;
-      const generatedOutline = structuredClone(baseOutline ?? outlineSnapshot(slide));
-      await this.repository.updateProject(projectId, (current) => {
+      // 編輯／抽字是在既有版本上動刀，大綱沿用被編輯的那一版；重新生成才用當下的大綱。
+      const outlineBase = job.operation !== "generate" ? baseVersion : undefined;
+      const generatedOutline = structuredClone(
+        outlineBase?.outlineSnapshot ?? outlineSnapshot(slide),
+      );
+      // 指定清單與 outlineSnapshot 同源，兩者要指向同一個時間點。記下來，還原版本時才有辦法
+      // 把當時生效的指定一起帶回去，而不是讓它在還原後無聲消失。
+      const generatedPins = [
+        ...(outlineBase?.outlineSnapshot
+          ? (outlineBase.pinnedSourceIds ?? [])
+          : slide.pinnedSourceIds),
+      ];
+      const staleAssets = await this.repository.updateProject(projectId, (current) => {
         const currentJob = current.jobs.find((candidate) => candidate.id === jobId);
         const currentSlide = current.slides.find((candidate) => candidate.id === slide.id);
         if (!currentJob || !currentSlide)
           throw new Error("Project changed while generation was running");
-        if (currentJob.status !== "running") return;
+        if (currentJob.status !== "running") return undefined;
         const nextVersion = {
           id: versionId,
           imagePath,
           prompt: job.operation !== "generate" ? job.editInstruction! : currentSlide.imagePrompt,
           providerId: provider.id,
           model: result.model,
+          ...(current.combinationId ? { combinationId: current.combinationId } : {}),
           parameters: safe.parameters,
           styleVersion: current.styleSnapshot.version,
           outlineSnapshot: generatedOutline,
+          pinnedSourceIds: generatedPins,
           sources: selectedSources.map((source) => ({
             sourceId: source.id,
             title: source.name,
@@ -783,12 +828,19 @@ export class JobRunner {
                 (version) => version.id === job.textExtraction!.replaceVersionId,
               )
             : -1;
-        if (replaceIndex >= 0)
+        const staleCandidates = new Set<string>();
+        if (replaceIndex >= 0) {
+          const previous = currentSlide.versions[replaceIndex]!;
+          staleCandidates.add(previous.imagePath);
+          if (previous.textLayer) {
+            staleCandidates.add(previous.textLayer.backgroundPath);
+            staleCandidates.add(previous.textLayer.compositePath);
+          }
           currentSlide.versions[replaceIndex] = {
             ...nextVersion,
-            createdAt: currentSlide.versions[replaceIndex]!.createdAt,
+            createdAt: previous.createdAt,
           };
-        else currentSlide.versions.push(nextVersion);
+        } else currentSlide.versions.push(nextVersion);
         currentSlide.currentVersionId = versionId;
         currentSlide.outlineDirty =
           job.operation !== "generate"
@@ -803,8 +855,32 @@ export class JobRunner {
         currentJob.finishedAt = currentJob.updatedAt;
         current.updatedAt = currentJob.updatedAt;
         queueMicrotask(() => this.logPhase(structuredClone(currentJob)));
+        const referencedAssets = new Set(
+          current.slides.flatMap((candidate) =>
+            candidate.versions.flatMap((version) => [
+              version.imagePath,
+              ...(version.textLayer
+                ? [version.textLayer.backgroundPath, version.textLayer.compositePath]
+                : []),
+            ]),
+          ),
+        );
+        return [...staleCandidates].filter((assetPath) => !referencedAssets.has(assetPath));
       });
+      const completed = staleAssets !== undefined;
+      resultPersisted = completed;
+      await Promise.allSettled(
+        (completed ? staleAssets : [...generatedAssets]).map((assetPath) =>
+          this.repository.deleteAsset(projectId, assetPath),
+        ),
+      );
     } catch (error) {
+      if (!resultPersisted)
+        await Promise.allSettled(
+          [...generatedAssets].map((assetPath) =>
+            this.repository.deleteAsset(projectId, assetPath),
+          ),
+        );
       const shutdownRequested = this.#shutdownKeys.has(this.controllerKey(projectId, jobId));
       const failure = shutdownRequested
         ? {
@@ -812,7 +888,7 @@ export class JobRunner {
             message: "Server 正在關閉，生成工作已停止。",
             phase: "failed" as const,
           }
-        : safeFailure(error, controller.signal.aborted);
+        : safeFailure(error, controller.signal.aborted, persisting);
       await this.repository.updateProject(projectId, (project) => {
         const job = project.jobs.find((candidate) => candidate.id === jobId);
         if (!job || job.status !== "running") return;

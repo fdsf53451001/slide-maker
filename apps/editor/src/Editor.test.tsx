@@ -71,6 +71,8 @@ describe("Editor MVP navigation", () => {
     );
     const textarea = screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement;
     expect(textarea.readOnly).toBe(true);
+    // 非編輯狀態顯示區放大，模擬 SVG 匯出不裁字的行為
+    expect(textarea.style.width).toBe("400%");
 
     const boxElement = textarea.closest(".editable-text-box") as HTMLElement;
     fireEvent.pointerDown(boxElement);
@@ -79,9 +81,38 @@ describe("Editor MVP navigation", () => {
 
     fireEvent.doubleClick(boxElement);
     expect(textarea.readOnly).toBe(false);
+    // 編輯中恢復框尺寸，避免放大的透明區攔截畫布點擊
+    expect(textarea.style.width).toBe("");
 
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(textarea.readOnly).toBe(true);
+  });
+
+  it("still selects a text box when pointer capture is unavailable", () => {
+    const onSelect = vi.fn();
+    render(
+      <TextLayerCanvas
+        background="/clean.png"
+        boxes={[makeBox()]}
+        canvasWidth={1920}
+        canvasHeight={1080}
+        selectedId={undefined}
+        onSelect={onSelect}
+        onChange={vi.fn()}
+      />,
+    );
+    const boxElement = screen
+      .getByLabelText("可編輯簡報文字")
+      .closest(".editable-text-box") as HTMLElement;
+    Object.defineProperty(boxElement, "setPointerCapture", {
+      configurable: true,
+      value: () => {
+        throw new DOMException("No active pointer", "NotFoundError");
+      },
+    });
+
+    expect(() => fireEvent.pointerDown(boxElement)).not.toThrow();
+    expect(onSelect).toHaveBeenCalledWith("text-1");
   });
 
   it("commits a drag as a single onChange when the pointer is released", () => {
@@ -205,10 +236,11 @@ describe("Editor MVP navigation", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("asks for a page purpose and calls the AI single-slide outline flow", async () => {
-    let project = createProject({ topic: "AI 新增頁面", brief: { desiredSlideCount: 2 } });
+  it("creates a blank page so the slide panel drives purpose, outline and generation", async () => {
+    let project = createProject({ topic: "空白頁插入", brief: { desiredSlideCount: 2 } });
     project.workflowStage = "editing";
     const now = new Date().toISOString();
+    let addSlideBody: Record<string, unknown> | undefined;
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path =
         typeof input === "string"
@@ -237,17 +269,22 @@ describe("Editor MVP navigation", () => {
           checkedAt: now,
           expiresAt: now,
         });
-      if (path.endsWith("/slides/ai") && init?.method === "POST") {
-        const generated = {
+      if (path.endsWith("/slides") && init?.method === "POST") {
+        addSlideBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const created = {
           ...structuredClone(project.slides[0]!),
-          id: "ai-generated-slide",
+          id: "blank-slide",
           order: 1,
-          purpose: "比較導入前後成效",
+          purpose: "",
+          content: "",
+          narrative: "",
+          layoutHint: "",
+          imagePrompt: "",
           versions: [],
         };
         project = {
           ...project,
-          slides: [project.slides[0]!, generated, { ...project.slides[1]!, order: 2 }],
+          slides: [project.slides[0]!, created, { ...project.slides[1]!, order: 2 }],
         };
         return Response.json(project, { status: 201 });
       }
@@ -256,33 +293,18 @@ describe("Editor MVP navigation", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Editor />);
-    fireEvent.click(await screen.findByText("AI 新增頁面"));
-    fireEvent.click(await screen.findByText("＋ 新增頁面"));
-    expect(await screen.findByRole("dialog", { name: "新增 AI 頁面" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("新增頁面目的"), {
-      target: { value: "比較導入前後成效，包含交付時間與失敗率" },
-    });
-    fireEvent.click(screen.getByText("用 AI 產生頁面架構 →"));
+    fireEvent.click(await screen.findByText("空白頁插入"));
+    fireEvent.click(await screen.findByRole("button", { name: "新增頁面" }));
 
+    // 新增頁面不再彈對話框問目的，而是直接建空白頁並選中它。
+    await waitFor(() => expect(addSlideBody).toEqual({ afterSlideId: project.slides[0]!.id }));
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/api\/projects\/[^/]+\/slides\/ai$/),
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            purpose: "比較導入前後成效，包含交付時間與失敗率",
-            afterSlideId: project.slides[0]!.id,
-          }),
-        }),
-      ),
+      expect((screen.getByLabelText("頁面目的") as HTMLTextAreaElement).value).toBe(""),
     );
-    expect(await screen.findByDisplayValue("比較導入前後成效")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "SM ↗" }));
-    expect(await screen.findByText(/3 頁 ·/)).toBeTruthy();
-    fireEvent.click(screen.getByText("AI 新增頁面"));
-    fireEvent.click(screen.getByText("比較導入前後成效"));
-    expect(await screen.findByDisplayValue("比較導入前後成效")).toBeTruthy();
+    // 目的還空著時，大綱按鈕顯示「生成大綱」且不可按——先填目的才有意義。
+    const outlineButton = screen.getByRole("button", { name: "生成大綱" });
+    expect(outlineButton).toHaveProperty("disabled", true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/slides/ai"))).toBe(false);
   });
 
   it("shows a named style picker instead of asking for an internal style id", async () => {
@@ -663,12 +685,310 @@ describe("Editor MVP navigation", () => {
     const updatedContent = await screen.findByDisplayValue("加入來源證據後的高密度內容");
     expect(screen.getByDisplayValue(originalPurpose)).toBeTruthy();
     expect(updatedContent.closest("label")?.classList.contains("outline-dirty")).toBe(true);
-    expect(screen.getByRole("checkbox", { name: "允許來源.md" })).toHaveProperty("checked", true);
-    expect(screen.getByRole("checkbox", { name: "禁止來源.md" })).toHaveProperty("checked", false);
+    // 模型挑的來源標成「AI 選用」而不是「我指定」：勾選框代表使用者的指定，模型不得代勞。
+    const aiChosen = screen.getByRole("checkbox", { name: "允許來源.md", description: /^AI 選用/ });
+    expect(aiChosen).toHaveProperty("checked", false);
+    expect(aiChosen).toHaveProperty("indeterminate", true);
+    const untouched = screen.getByRole("checkbox", { name: "禁止來源.md", description: /^沒用到/ });
+    expect(untouched).toHaveProperty("checked", false);
+    expect(untouched).toHaveProperty("indeterminate", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/\/outline$/),
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("toggles a slide source between AI-chosen, user-pinned and unused, and saves the pins", async () => {
+    let project = createProject({ topic: "來源三態", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    const slide = project.slides[0]!;
+    // AI 選了甲，乙完全沒用到——這是重生成大綱之後最常見的起點。
+    slide.sourceIds = ["source-a"];
+    slide.pinnedSourceIds = [];
+    project.sources = ["a", "b"].map((suffix) => ({
+      id: `source-${suffix}`,
+      name: `來源${suffix}.md`,
+      mediaType: "text/markdown",
+      usage: "content" as const,
+      allowModelAccess: true,
+      status: "indexed" as const,
+      assetPath: `assets/sources/${suffix}.md`,
+      sizeBytes: 10,
+      extractedText: "內容",
+      chunks: [{ id: `chunk-${suffix}`, text: "內容" }],
+      metadata: {},
+      createdAt: now,
+    }));
+    const patched: Array<{ sourceIds: string[]; pinnedSourceIds: string[] }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.endsWith(`/slides/${slide.id}`) && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as {
+          sourceIds: string[];
+          pinnedSourceIds: string[];
+        };
+        patched.push(body);
+        project = structuredClone(project);
+        Object.assign(project.slides[0]!, body);
+        return Response.json(project);
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("來源三態"));
+
+    // 起點：甲是 AI 選用（mixed），乙沒用到。
+    const aiChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^AI 選用/,
+    });
+    expect(aiChip).toHaveProperty("indeterminate", true);
+    expect(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ })).toBeTruthy();
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
+
+    // 點一下 AI 選的 → 變成我指定；使用清單不變。
+    fireEvent.click(aiChip);
+    const pinnedChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^我指定/,
+    });
+    expect(pinnedChip).toHaveProperty("checked", true);
+    expect(pinnedChip).toHaveProperty("indeterminate", false);
+    expect(pinnedChip.closest("label")?.className).toContain("source-chip-pinned");
+    expect(screen.getByText("來源 · 我指定 1 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 再點一下 → 連使用清單一起移除，變回沒用到。
+    fireEvent.click(pinnedChip);
+    const droppedChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^沒用到/,
+    });
+    expect(droppedChip).toHaveProperty("checked", false);
+    expect(droppedChip).toHaveProperty("indeterminate", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 沒用到的來源被點選時直接成為我指定，並進入使用清單。
+    fireEvent.click(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ }));
+    await screen.findByRole("checkbox", { name: "來源b.md", description: /^我指定/ });
+    expect(screen.getByText("來源 · 我指定 1 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 自動儲存把兩份清單一起送出：只送 sourceIds 的話伺服器就分不出誰是使用者指定的。
+    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    const last = patched.at(-1)!;
+    expect(last.sourceIds).toEqual(["source-b"]);
+    expect(last.pinnedSourceIds).toEqual(["source-b"]);
+  });
+
+  it("saves an AI-chosen source promoted to user-pinned even though the used-source list is unchanged", async () => {
+    // 「把 AI 選的改成我指定」是這個功能最常見的一次操作，而它只動 pinnedSourceIds，
+    // sourceIds 一個字都沒變。自動儲存的 dirty 判斷若只看 sourceIds，這個動作就永遠不會送出，
+    // 使用者重新整理後指定全部不見，畫面上卻沒有任何失敗提示。
+    let project = createProject({ topic: "只改指定", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    const slide = project.slides[0]!;
+    slide.sourceIds = ["source-a"];
+    slide.pinnedSourceIds = [];
+    project.sources = [
+      {
+        id: "source-a",
+        name: "來源a.md",
+        mediaType: "text/markdown",
+        usage: "content" as const,
+        allowModelAccess: true,
+        status: "indexed" as const,
+        assetPath: "assets/sources/a.md",
+        sizeBytes: 10,
+        extractedText: "內容",
+        chunks: [{ id: "chunk-a", text: "內容" }],
+        metadata: {},
+        createdAt: now,
+      },
+    ];
+    const patched: Array<{ sourceIds: string[]; pinnedSourceIds: string[] }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.endsWith(`/slides/${slide.id}`) && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as {
+          sourceIds: string[];
+          pinnedSourceIds: string[];
+        };
+        patched.push(body);
+        project = structuredClone(project);
+        Object.assign(project.slides[0]!, body);
+        return Response.json(project);
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("只改指定"));
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "來源a.md", description: /^AI 選用/ }),
+    );
+    await screen.findByRole("checkbox", { name: "來源a.md", description: /^我指定/ });
+
+    await waitFor(() => expect(patched).toHaveLength(1));
+    expect(patched[0]).toMatchObject({
+      sourceIds: ["source-a"],
+      pinnedSourceIds: ["source-a"],
+    });
+  });
+
+  it("shows the previewed version's own sources read-only, so a later pin cannot be edited or claimed as used", async () => {
+    // 預覽歷史版本時大綱是唯讀的快照。來源晶片若還能點，使用者會以為自己在改這一頁，
+    // 實際上改的是目前草稿，而畫面顯示的卻是舊版本——改完什麼也對不起來。
+    // 另外快照只記 sourceIds，所以生成之後才指定的來源在這個畫面上必須顯示成「沒用到」，
+    // 不能謊稱這張圖用了它。
+    const project = createProject({ topic: "版本來源唯讀", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = "2026-07-16T01:00:00.000Z";
+    const slide = project.slides[0]!;
+    project.sources = ["a", "b"].map((suffix) => ({
+      id: `source-${suffix}`,
+      name: `來源${suffix}.md`,
+      mediaType: "text/markdown",
+      usage: "content" as const,
+      allowModelAccess: true,
+      status: "indexed" as const,
+      assetPath: `assets/sources/${suffix}.md`,
+      sizeBytes: 10,
+      extractedText: "內容",
+      chunks: [{ id: `chunk-${suffix}`, text: "內容" }],
+      metadata: {},
+      createdAt: now,
+    }));
+    slide.versions = [
+      {
+        id: "version-1",
+        imagePath: "assets/generated/version-1.png",
+        prompt: "first",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        outlineSnapshot: {
+          purpose: slide.purpose,
+          content: "第一版大綱內容",
+          narrative: "原始敘事",
+          layoutHint: "原始構圖",
+          imagePrompt: "第一版圖片提示",
+          // 生成當下只用了甲。
+          sourceIds: ["source-a"],
+        },
+        createdAt: now,
+      },
+      {
+        id: "version-2",
+        imagePath: "assets/generated/version-2.png",
+        prompt: "second",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        outlineSnapshot: {
+          purpose: slide.purpose,
+          content: "第二版大綱內容",
+          narrative: "原始敘事",
+          layoutHint: "原始構圖",
+          imagePrompt: "第二版圖片提示",
+          sourceIds: ["source-a", "source-b"],
+        },
+        createdAt: "2026-07-16T02:00:00.000Z",
+      },
+    ];
+    slide.currentVersionId = "version-2";
+    slide.sourceIds = ["source-a", "source-b"];
+    // 第一版生成之後使用者才指定了甲與乙：甲當時就在用、只是沒被指定，乙當時根本沒用到。
+    // 甲這一份是關鍵——快照不記指定，若預覽時拿現在的指定去標，它會被說成「那時候就指定了」。
+    slide.pinnedSourceIds = ["source-a", "source-b"];
+    // init 要進簽章，最後那段「完全沒發出 PATCH」的斷言才讀得到每次呼叫的第二個參數。
+    const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("版本來源唯讀"));
+    fireEvent.click(await screen.findByRole("button", { name: "版本 1" }));
+    expect(await screen.findByText("正在預覽歷史版本")).toBeTruthy();
+
+    // 甲是第一版實際用到的來源，但不是使用者指定的，所以是 AI 選用。
+    const usedChip = screen.getByRole("checkbox", { name: "來源a.md", description: /^AI 選用/ });
+    // 乙雖然目前被指定，第一版沒用到它，所以這個畫面必須顯示成沒用到。
+    const pinnedButUnusedChip = screen.getByRole("checkbox", {
+      name: "來源b.md",
+      description: /^沒用到/,
+    });
+    expect(pinnedButUnusedChip).toHaveProperty("checked", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
+
+    // 兩個晶片都不可操作。
+    expect(usedChip).toHaveProperty("disabled", true);
+    expect(pinnedButUnusedChip).toHaveProperty("disabled", true);
+    fireEvent.click(pinnedButUnusedChip);
+    expect(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ })).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      ),
+    ).toBe(false);
   });
 
   it("previews text and image sources with model access before the title", async () => {
@@ -769,6 +1089,131 @@ describe("Editor MVP navigation", () => {
     expect(await screen.findByRole("img", { name: "流程圖.png" })).toBeTruthy();
   });
 
+  describe("source search", () => {
+    const openSourcesPanel = async () => {
+      const project = createProject({ topic: "來源搜尋", brief: { desiredSlideCount: 1 } });
+      project.workflowStage = "editing";
+      const now = new Date().toISOString();
+      const source = (overrides: Partial<(typeof project.sources)[number]>) => ({
+        id: "source",
+        name: "來源.md",
+        mediaType: "text/markdown",
+        usage: "content" as const,
+        allowModelAccess: true,
+        status: "indexed" as const,
+        assetPath: "assets/sources/source/來源.md",
+        sizeBytes: 1024,
+        extractedText: "",
+        chunks: [],
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      });
+      project.sources = [
+        source({
+          id: "margin-source",
+          name: "財報摘要.md",
+          assetPath: "assets/sources/margin-source/財報摘要.md",
+          extractedText: "2024 年毛利率成長明顯，第二段再次提到毛利率。",
+        }),
+        source({
+          id: "other-source",
+          name: "訪談筆記.md",
+          assetPath: "assets/sources/other-source/訪談筆記.md",
+          extractedText: "受訪者談的是通路策略。",
+        }),
+        source({
+          id: "image-source",
+          name: "毛利率圖表.png",
+          mediaType: "image/png",
+          usage: "visual-reference",
+          assetPath: "assets/sources/image-source/毛利率圖表.png",
+        }),
+      ];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request) => {
+          const path =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.pathname
+                : new URL(input.url).pathname;
+          if (path === "/api/projects") return Response.json([project]);
+          if (path === "/api/providers")
+            return Response.json([
+              {
+                id: "mock-image",
+                name: "Mock",
+                availability: { status: "available" },
+                capabilities: { fullSlideGeneration: true },
+              },
+            ]);
+          if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+          if (path.includes("/readiness"))
+            return Response.json({
+              providerId: "mock-image",
+              status: "ready",
+              blocking: false,
+              requiresAcknowledgement: false,
+              message: "Ready",
+              checkedAt: now,
+              expiresAt: now,
+            });
+          return Response.json(project);
+        }),
+      );
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("來源搜尋"));
+      fireEvent.click(await screen.findByRole("button", { name: "來源 3" }));
+      await screen.findByRole("button", { name: "預覽 財報摘要.md" });
+      return screen.getByLabelText("搜尋來源");
+    };
+
+    it("filters the list to matching sources and reports how many matched", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "毛利率" } });
+
+      expect(screen.getByText("2 / 3 份來源符合")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "預覽 財報摘要.md" })).toBeTruthy();
+      // 圖片沒有擷取文字，只能靠檔名命中。
+      expect(screen.getByRole("button", { name: "預覽 毛利率圖表.png" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "預覽 訪談筆記.md" })).toBeNull();
+    });
+
+    it("shows an empty state that clears the search", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "不存在的字" } });
+
+      expect(screen.getByText("找不到符合的來源")).toBeTruthy();
+      expect(screen.queryByText(/份來源符合/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "清除搜尋" }));
+
+      expect((search as HTMLInputElement).value).toBe("");
+      expect(screen.getByRole("button", { name: "預覽 訪談筆記.md" })).toBeTruthy();
+    });
+
+    it("highlights every hit in the preview, and explains a name-only match", async () => {
+      const search = await openSourcesPanel();
+      fireEvent.change(search, { target: { value: "毛利率" } });
+      fireEvent.click(screen.getByRole("button", { name: "預覽 財報摘要.md" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "預覽來源：財報摘要.md" });
+      const marks = dialog.querySelectorAll("pre mark");
+      expect([...marks].map((mark) => mark.textContent)).toEqual(["毛利率", "毛利率"]);
+      expect(dialog.querySelector("pre")?.textContent).toBe(
+        "2024 年毛利率成長明顯，第二段再次提到毛利率。",
+      );
+      expect(screen.queryByText(/全文中未出現/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "關閉來源預覽" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "預覽 毛利率圖表.png" }));
+      await screen.findByRole("dialog", { name: "預覽來源：毛利率圖表.png" });
+      expect(screen.getByText(/全文中未出現/)).toBeTruthy();
+    });
+  });
+
   it("searches web sources and saves only confirmed results back to the project", async () => {
     let project = createProject({ topic: "搜尋來源", brief: { desiredSlideCount: 1 } });
     project.workflowStage = "editing";
@@ -844,7 +1289,7 @@ describe("Editor MVP navigation", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("搜尋來源"));
     fireEvent.click(await screen.findByRole("button", { name: "來源 0" }));
-    fireEvent.click(await screen.findByText("⌕ 加入搜尋資料"));
+    fireEvent.click(await screen.findByText("＋ 從網路加入資料"));
     fireEvent.change(screen.getByLabelText("搜尋關鍵字"), {
       target: { value: "building AI agents" },
     });
@@ -1005,6 +1450,89 @@ describe("Editor MVP navigation", () => {
     expect(screen.getByText("2 / 3")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(await screen.findByText("3 / 3")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
+  });
+
+  it("shows the previewed historical version in presentation mode for the selected slide", async () => {
+    const project = createProject({ topic: "歷史版本簡報", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    project.slides[0]!.versions = [
+      {
+        id: "old-version",
+        imagePath: "assets/generated/old-version.png",
+        prompt: "old",
+        providerId: "codex-image-spike",
+        model: "codex-imagegen",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: now,
+      },
+      {
+        id: "new-version",
+        imagePath: "assets/generated/new-version.png",
+        prompt: "new",
+        providerId: "codex-image-spike",
+        model: "codex-imagegen",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: now,
+      },
+    ];
+    project.slides[0]!.currentVersionId = "new-version";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.pathname
+              : new URL(input.url).pathname;
+        if (path === "/api/projects") return Response.json([project]);
+        if (path === "/api/providers")
+          return Response.json([
+            {
+              id: "mock-image",
+              name: "Mock",
+              availability: { status: "available" },
+              capabilities: { fullSlideGeneration: true },
+            },
+          ]);
+        if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+        if (path.includes("/readiness"))
+          return Response.json({
+            providerId: "mock-image",
+            status: "ready",
+            blocking: false,
+            requiresAcknowledgement: false,
+            message: "Ready",
+            checkedAt: new Date().toISOString(),
+            expiresAt: new Date().toISOString(),
+          });
+        return Response.json(project);
+      }),
+    );
+    Object.defineProperty(document.documentElement, "requestFullscreen", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(undefined),
+    });
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("歷史版本簡報"));
+    expect(await screen.findByDisplayValue(project.slides[0]!.purpose)).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "版本 1" }));
+    expect(await screen.findByText("正在預覽歷史版本")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+    const slideImage = screen.getByAltText("簡報第 1 頁");
+    expect(slideImage.getAttribute("src")).toContain("old-version.png");
+
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
   });
@@ -1201,6 +1729,15 @@ describe("Editor MVP navigation", () => {
         project = { ...project, workflowStage: "editing" };
         return Response.json(project.slides.map((slide) => ({ id: `job-${slide.id}` })));
       }
+      if (path.endsWith("/api/text-providers") && method === "GET")
+        return Response.json([
+          {
+            id: "openai",
+            name: "OpenAI 相容（Gemini 等）",
+            availability: { status: "available" },
+            isDefault: true,
+          },
+        ]);
       if (/\/api\/projects\/[^/]+$/.test(path) && method === "GET") return Response.json(project);
       return Response.json(project);
     });
@@ -1208,19 +1745,22 @@ describe("Editor MVP navigation", () => {
 
     render(<Editor />);
     fireEvent.click(await screen.findByText("不預設三頁的流程"));
-    expect(await screen.findByText("STEP 1 · 需求到大綱")).toBeTruthy();
+    expect(await screen.findByText("STEP 2 · 需求")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("簡報頁數"), { target: { value: "7" } });
+    fireEvent.click(screen.getByText("下一步：上傳素材"));
+    expect(await screen.findByText("STEP 3 · 上傳素材")).toBeTruthy();
     fireEvent.click(screen.getByText("產生 7 頁大綱"));
     expect(await screen.findByText("確認設定並生成 7 頁簡報")).toBeTruthy();
     expect(screen.getByText(/全部 7 頁/)).toBeTruthy();
     fireEvent.click(screen.getByText("確認設定並生成 7 頁簡報"));
 
+    // 生成流程改為組合驅動：client 不再送 providerId，由 server 依專案組合解析影像模型。
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringMatching(/\/api\/projects\/[^/]+\/generate$/),
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ providerId: "mock-image", acceptUnknownReadiness: false }),
+          body: JSON.stringify({ acceptUnknownReadiness: false }),
         }),
       ),
     );

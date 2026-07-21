@@ -12,6 +12,30 @@ export interface RetrievedChunk {
   score: number;
 }
 
+/**
+ * 把查詢字串拆成 FTS5 詞彙。
+ *
+ * trigram tokenizer 只索引 3 字元片段，因此：
+ *  - 短於 3 字元的詞永遠不會命中（實測 2 字詞回傳 0 列），直接略過而非白白放進查詢。
+ *  - 中文沒有空白分詞，整串當 phrase 等於要求文件含有完全相同的連續子字串——
+ *    「台灣電動車市場分析」對上「台灣電動車市場銷量分析」就是 0 命中。故按 3-gram 展開，
+ *    讓 bm25 以片段的重疊程度排序。
+ *  - 英數詞本來就以空白分隔，維持整詞。
+ */
+export function ftsTerms(query: string): string[] {
+  const terms: string[] = [];
+  for (const token of query.trim().split(/\s+/).filter(Boolean)) {
+    if (token.length < 3) continue;
+    if (/^[\x00-\x7f]+$/.test(token)) {
+      terms.push(token);
+      continue;
+    }
+    for (let start = 0; start + 3 <= token.length; start += 1)
+      terms.push(token.slice(start, start + 3));
+  }
+  return [...new Set(terms)];
+}
+
 export class SqliteFtsRetriever {
   readonly #database: DatabaseSync;
   constructor(path: string) {
@@ -42,13 +66,12 @@ export class SqliteFtsRetriever {
     }
   }
   search(projectId: string, query: string, limit: number): RetrievedChunk[] {
-    const expression = query
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((term) => `"${term.replaceAll('"', '""')}"`)
-      .join(" AND ");
-    if (!expression) return [];
+    const terms = ftsTerms(query);
+    if (!terms.length) return [];
+    // OR 而非 AND：檢索的工作是「排序」而不是「過濾」。用 AND 時只要有一個詞沒出現在
+    // 某個 chunk，整份來源就一列都不回；跨主題的查詢（topic + audience + purpose）幾乎
+    // 不可能全中，於是命中數為 0，呼叫端只好退回「每份來源取前幾塊」的粗糙回退路徑。
+    const expression = terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ");
     const rows = this.#database
       .prepare(
         "SELECT source_id, source_name, chunk_id, locator, text, bm25(source_chunks) AS rank FROM source_chunks WHERE source_chunks MATCH ? AND project_id = ? ORDER BY rank LIMIT ?",

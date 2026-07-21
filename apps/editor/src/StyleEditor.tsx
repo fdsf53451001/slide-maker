@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { StylePreset, StyleReferenceImage } from "@slide-maker/core";
 import { api, styleAssetUrl } from "./api.js";
+import { PdfImportModal } from "./PdfImportModal.js";
 
 type Draft = Pick<
   StylePreset,
@@ -10,6 +11,7 @@ type Draft = Pick<
   | "imageDirection"
   | "avoid"
   | "promptTemplate"
+  | "designSystem"
   | "referenceImages"
 > & { coverImageId: string | undefined };
 
@@ -22,6 +24,7 @@ function fromStyle(style?: StylePreset): Draft {
         imageDirection: style.imageDirection,
         avoid: [...style.avoid],
         promptTemplate: style.promptTemplate,
+        designSystem: style.designSystem,
         referenceImages: [...style.referenceImages],
         coverImageId: style.coverImageId ?? style.referenceImages[0]?.id,
       }
@@ -32,6 +35,7 @@ function fromStyle(style?: StylePreset): Draft {
         imageDirection: "",
         avoid: [],
         promptTemplate: "",
+        designSystem: "",
         referenceImages: [],
         coverImageId: undefined,
       };
@@ -54,6 +58,12 @@ export function StyleEditor({
   const [baseline, setBaseline] = useState(() => JSON.stringify(fromStyle()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [pdfImport, setPdfImport] = useState(false);
+  // 風格分析無專案脈絡，故在此自選模型組合；空字串＝跟隨模型庫預設。
+  const [combinations, setCombinations] = useState<
+    { id: string; name: string; isDefault: boolean }[]
+  >([]);
+  const [analysisCombinationId, setAnalysisCombinationId] = useState("");
   const dirty = JSON.stringify(draft) !== baseline;
   const readOnly = !!historicalVersion || !!style?.system;
 
@@ -100,6 +110,27 @@ export function StyleEditor({
       /* ignore stale session data */
     }
   }, [styleId, style, readOnly]);
+
+  useEffect(() => {
+    let current = true;
+    void api
+      .modelLibrary()
+      .then((library) => {
+        if (!current) return;
+        setCombinations(
+          library.combinations.map((combination) => ({
+            id: combination.id,
+            name: combination.name,
+            isDefault: combination.id === library.defaultCombinationId,
+          })),
+        );
+      })
+      // 組合清單載入失敗不擋編輯：下拉留空，分析仍走預設組合。
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -201,6 +232,19 @@ export function StyleEditor({
             </small>
           </label>
           <label>
+            設計系統
+            <textarea
+              disabled={readOnly}
+              rows={12}
+              value={draft.designSystem}
+              onChange={(event) => setDraft({ ...draft, designSystem: event.target.value })}
+              placeholder="按下方「AI 分析風格」由參考圖產生；也可自行撰寫。色票、字型、版面與頁型規則以此為準。"
+            />
+            <small>
+              生成時，底色、色票、字級、網格、頁型規則以這裡為準；質感、圖片處理、陰影與收邊則以參考圖為準。
+            </small>
+          </label>
+          <label>
             圖片方向
             <textarea
               disabled={readOnly}
@@ -288,42 +332,6 @@ export function StyleEditor({
             <span>{cover ? "封面參考圖" : draft.name || "風格預覽"}</span>
           </div>
           <div className="section-label">REFERENCE IMAGES · {draft.referenceImages.length}/4</div>
-          {!readOnly && draft.referenceImages.length > 0 && (
-            <button
-              className="analyze-style"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                setError(undefined);
-                void api
-                  .analyzeStyle(draft.referenceImages.map((item) => item.id))
-                  .then((suggestion) => {
-                    const shouldMerge =
-                      (!draft.imageDirection &&
-                        !draft.promptTemplate &&
-                        draft.avoid.length === 0) ||
-                      confirm("AI 分析完成。要將建議合併到目前草稿嗎？現有文字會保留並附加建議。");
-                    if (shouldMerge)
-                      setDraft((value) => ({
-                        ...value,
-                        imageDirection: [value.imageDirection, suggestion.imageDirection]
-                          .filter(Boolean)
-                          .join("\n\n"),
-                        promptTemplate: [value.promptTemplate, suggestion.promptTemplate]
-                          .filter(Boolean)
-                          .join("\n\n"),
-                        avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
-                      }));
-                  })
-                  .catch((reason: unknown) =>
-                    setError(reason instanceof Error ? reason.message : "AI 分析失敗"),
-                  )
-                  .finally(() => setBusy(false));
-              }}
-            >
-              {busy ? "AI 分析中…" : "AI 分析風格（不會自動儲存）"}
-            </button>
-          )}
           {!readOnly && (
             <label
               className={`upload-source ${draft.referenceImages.length >= 4 ? "disabled" : ""}`}
@@ -354,6 +362,16 @@ export function StyleEditor({
                 }}
               />
             </label>
+          )}
+          {!readOnly && (
+            <button
+              type="button"
+              className={`upload-source pdf-source ${draft.referenceImages.length >= 4 ? "disabled" : ""}`}
+              disabled={busy || draft.referenceImages.length >= 4}
+              onClick={() => setPdfImport(true)}
+            >
+              ＋ 從 PDF 匯入參考圖
+            </button>
           )}
           <div className="reference-list">
             {draft.referenceImages.map((reference, index) => (
@@ -397,6 +415,62 @@ export function StyleEditor({
               </article>
             ))}
           </div>
+          {!readOnly && draft.referenceImages.length > 0 && (
+            <div className="analyze-style-row">
+              <button
+                className="analyze-style"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  setError(undefined);
+                  void api
+                    .analyzeStyle(
+                      draft.referenceImages.map((item) => item.id),
+                      analysisCombinationId || undefined,
+                    )
+                    .then((suggestion) => {
+                      // 設計系統整包覆寫（兩份疊加會讓模型讀到兩組矛盾色票）；avoid 取聯集；
+                      // imageDirection／promptTemplate 是使用者手寫的補充，分析一律不碰。
+                      const shouldApply =
+                        !draft.designSystem.trim() ||
+                        confirm("AI 分析完成。將取代目前的設計系統內容，確定套用嗎？");
+                      if (shouldApply)
+                        setDraft((value) => ({
+                          ...value,
+                          designSystem: suggestion.designSystem,
+                          avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
+                        }));
+                    })
+                    .catch((reason: unknown) =>
+                      setError(reason instanceof Error ? reason.message : "AI 分析失敗"),
+                    )
+                    .finally(() => setBusy(false));
+                }}
+              >
+                {busy ? "AI 分析中…" : "AI 分析風格"}
+              </button>
+              <select
+                aria-label="分析用模型組合"
+                value={analysisCombinationId}
+                disabled={busy || combinations.length === 0}
+                onChange={(event) => setAnalysisCombinationId(event.target.value)}
+              >
+                <option value="">
+                  {`跟隨預設${
+                    combinations.find((item) => item.isDefault)
+                      ? `（${combinations.find((item) => item.isDefault)!.name}）`
+                      : ""
+                  }`}
+                </option>
+                {combinations.map((combination) => (
+                  <option key={combination.id} value={combination.id}>
+                    {combination.name}
+                    {combination.isDefault ? "（預設）" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {styleId && (
             <div className="version-links">
               <strong>版本歷史</strong>
@@ -409,6 +483,23 @@ export function StyleEditor({
           )}
         </aside>
       </section>
+      {pdfImport && (
+        <PdfImportModal
+          remaining={4 - draft.referenceImages.length}
+          onClose={() => setPdfImport(false)}
+          onImported={(references) => {
+            setDraft((value) => {
+              const added = references.slice(0, 4 - value.referenceImages.length);
+              return {
+                ...value,
+                referenceImages: [...value.referenceImages, ...added],
+                coverImageId: value.coverImageId ?? added[0]?.id,
+              };
+            });
+            setPdfImport(false);
+          }}
+        />
+      )}
       {error && (
         <button className="toast error" onClick={() => setError(undefined)}>
           {error} ×

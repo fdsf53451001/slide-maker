@@ -9,9 +9,19 @@ import {
   MIN_CODEX_TIMEOUT_MS,
   MIN_OCR_DET_SIDE_LEN,
   parseCodexMaxConcurrency,
+  parseCodexModel,
+  parseCodexReasoningEffort,
   parseCodexTimeoutMs,
   parseOcrDetSideLen,
   parseOcrModelTier,
+  DEFAULT_OPENAI_TIMEOUT_MS,
+  MAX_OPENAI_TIMEOUT_MS,
+  MIN_OPENAI_TIMEOUT_MS,
+  parseAiEngine,
+  parseOpenAiBaseUrl,
+  parseOpenAiImageApi,
+  parseOpenAiTimeoutMs,
+  parseOptionalString,
 } from "../src/config.js";
 
 describe("Codex timeout configuration", () => {
@@ -37,6 +47,29 @@ describe("Codex concurrency configuration", () => {
   );
 });
 
+describe("Codex model override configuration", () => {
+  it("defaults to no override", () => {
+    expect(parseCodexModel(undefined)).toBeUndefined();
+    expect(parseCodexModel("")).toBeUndefined();
+    expect(parseCodexModel("  ")).toBeUndefined();
+  });
+  it("trims and passes through any non-empty value", () =>
+    expect(parseCodexModel("  gpt-5.6-terra  ")).toBe("gpt-5.6-terra"));
+});
+
+describe("Codex reasoning effort configuration", () => {
+  it("defaults to no override", () => {
+    expect(parseCodexReasoningEffort(undefined)).toBeUndefined();
+    expect(parseCodexReasoningEffort("")).toBeUndefined();
+  });
+  it.each(["minimal", "low", "medium", "high"])("accepts %s", (value) =>
+    expect(parseCodexReasoningEffort(value)).toBe(value),
+  );
+  it.each(["High", "extreme", "nope"])("rejects %s", (value) =>
+    expect(() => parseCodexReasoningEffort(value)).toThrow(/SLIDE_MAKER_CODEX_REASONING_EFFORT/),
+  );
+});
+
 describe("OCR model tier configuration", () => {
   it("defaults to hybrid", () => expect(parseOcrModelTier(undefined)).toBe(DEFAULT_OCR_MODEL_TIER));
   it.each(["mobile", "hybrid", "server"])("accepts %s", (value) =>
@@ -57,4 +90,46 @@ describe("OCR detection side length configuration", () => {
   it.each(["1920px", "2k", "511", "4097", "-1920", "1.5"])("rejects %s", (value) =>
     expect(() => parseOcrDetSideLen(value)).toThrow(/SLIDE_MAKER_OCR_DET_SIDE_LEN/),
   );
+});
+
+describe("OpenAI-compatible endpoint configuration", () => {
+  it("treats blank base URL as unset", () => {
+    expect(parseOpenAiBaseUrl(undefined)).toBeUndefined();
+    expect(parseOpenAiBaseUrl("  ")).toBeUndefined();
+  });
+  it("accepts http(s) URLs and trims", () =>
+    expect(parseOpenAiBaseUrl(" http://localhost:8317/v1 ")).toBe("http://localhost:8317/v1"));
+  it.each(["ftp://x", "not a url", "ws://host"])("rejects %s", (value) =>
+    expect(() => parseOpenAiBaseUrl(value)).toThrow(/SLIDE_MAKER_OPENAI_BASE_URL/),
+  );
+
+  it("optional strings collapse blanks to undefined", () => {
+    expect(parseOptionalString(undefined)).toBeUndefined();
+    expect(parseOptionalString("  ")).toBeUndefined();
+    expect(parseOptionalString(" gpt-image-1 ")).toBe("gpt-image-1");
+  });
+
+  it("selects and validates the image transport", () => {
+    expect(parseOpenAiImageApi(undefined)).toBe("images");
+    expect(parseOpenAiImageApi("images")).toBe("images");
+    expect(parseOpenAiImageApi("chat")).toBe("chat");
+    expect(() => parseOpenAiImageApi("responses")).toThrow(/SLIDE_MAKER_OPENAI_IMAGE_API/);
+  });
+
+  it("timeout defaults and bounds", () => {
+    expect(parseOpenAiTimeoutMs(undefined)).toBe(DEFAULT_OPENAI_TIMEOUT_MS);
+    expect(parseOpenAiTimeoutMs(String(MIN_OPENAI_TIMEOUT_MS))).toBe(MIN_OPENAI_TIMEOUT_MS);
+    expect(parseOpenAiTimeoutMs(String(MAX_OPENAI_TIMEOUT_MS))).toBe(MAX_OPENAI_TIMEOUT_MS);
+  });
+  it.each(["nope", "4999", "1800001", "1.5"])("rejects timeout %s", (value) =>
+    expect(() => parseOpenAiTimeoutMs(value)).toThrow(/SLIDE_MAKER_OPENAI_TIMEOUT_MS/),
+  );
+
+  it("engine defaults to codex and validates the enum", () => {
+    expect(parseAiEngine("SLIDE_MAKER_TEXT_ENGINE", undefined)).toBe("codex");
+    expect(parseAiEngine("SLIDE_MAKER_TEXT_ENGINE", "openai")).toBe("openai");
+    expect(() => parseAiEngine("SLIDE_MAKER_TEXT_ENGINE", "grok")).toThrow(
+      /SLIDE_MAKER_TEXT_ENGINE/,
+    );
+  });
 });

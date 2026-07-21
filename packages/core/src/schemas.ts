@@ -4,6 +4,13 @@ export const SCHEMA_VERSION = 1 as const;
 
 export const contentModeSchema = z.enum(["creative", "grounded"]);
 export const webSearchModeSchema = z.enum(["cached", "live", "disabled"]);
+
+/** 單筆網路搜尋結果（供 WebSearchProvider 回傳）。 */
+export const webSearchResultSchema = z.object({
+  url: z.string().url(),
+  title: z.string().trim().min(1).max(500),
+  summary: z.string().trim().min(1).max(4_000),
+});
 export const sourceUsageSchema = z.enum([
   "content",
   "visual-reference",
@@ -77,18 +84,30 @@ export const stylePresetSchema = z.object({
   imageDirection: z.string().default(""),
   avoid: z.array(z.string()).default([]),
   promptTemplate: z.string().default(""),
+  /**
+   * AI 分析參考圖後排版成的設計系統 markdown（色票、字型、網格、元件、頁型規則）。
+   * 空字串代表未分析過，生成端行為與加入此欄位前完全一致。
+   */
+  designSystem: z.string().default(""),
   referenceImages: z.array(styleReferenceImageSchema).max(4).default([]),
   coverImageId: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
 
+/**
+ * 生成某張圖時的大綱狀態，用來判定「現在的大綱是否已與畫面上的圖不同步」。
+ * 刻意不含 `pinnedSourceIds`：指定與否只影響「下次重生成大綱時誰優先」，
+ * 不影響已生成的圖；納入的話，使用者把一份 AI 已選用的來源改成指定（實際使用的來源
+ * 一份都沒變）就會被誤判成 outlineDirty，橘框亮起來卻沒有東西需要重生成。
+ * 當時生效的指定改存在 `slideVersionSchema.pinnedSourceIds`（快照的同層欄位）。
+ */
 export const slideOutlineSnapshotSchema = z.object({
-  purpose: z.string().min(1),
-  content: z.string().min(1),
+  purpose: z.string().default(""),
+  content: z.string().default(""),
   narrative: z.string().default(""),
   layoutHint: z.string().default(""),
-  imagePrompt: z.string().min(1),
+  imagePrompt: z.string().default(""),
   sourceIds: z.array(z.string()).default([]),
 });
 
@@ -133,30 +152,71 @@ export const slideVersionSchema = z.object({
   prompt: z.string(),
   providerId: z.string().min(1),
   model: z.string().min(1),
+  /** 產生此版本時專案綁定的模型組合 id（來源溯源）。 */
+  combinationId: z.string().optional(),
   parameters: z.record(z.unknown()),
   styleVersion: z.number().int().positive(),
   sources: z.array(sourceCitationSchema),
   outlineSnapshot: slideOutlineSnapshotSchema.optional(),
+  /**
+   * 生成這一版時生效的使用者指定來源。放在 outlineSnapshot 外面是刻意的：它不參與
+   * `sameOutline` 的比對（否則單純改指定就會誤觸 outlineDirty），只在還原／啟用版本時
+   * 一併復原，讓「指定 → 生成 → 還原舊版」不會把使用者的指定無聲丟掉。
+   * 維持 optional 而不是 `.default([])`：default 會讓這個欄位在推導出的型別裡變成必填，
+   * 逼所有既有的版本 fixture 一起改，卻換不到任何行為差異——讀取端一律 `?? []`，
+   * 兩種寫法對「舊版本記錄沒有這個欄位」的處理完全相同。還原舊版本的行為因此與
+   * 加入這個欄位前一致。
+   */
+  pinnedSourceIds: z.array(z.string()).optional(),
   createdAt: z.string().datetime(),
   label: z.string().optional(),
   textLayer: editableTextLayerSchema.optional(),
 });
 
-export const slideSpecSchema = z.object({
+/**
+ * 頁面的欄位定義。要解析完整頁面請用 {@link slideSpecSchema}——它多了強制不變式的
+ * transform；這個裸物件只給 `.pick()` / `.partial()`（例如 PATCH 的部分欄位）使用，
+ * 因為 transform 過的 schema 沒有那些方法，而部分更新本來也無從檢查跨欄位的關係。
+ */
+export const slideSpecFieldsSchema = z.object({
   id: z.string().min(1),
   order: z.number().int().nonnegative(),
-  purpose: z.string().min(1),
-  content: z.string().min(1),
+  purpose: z.string().default(""),
+  content: z.string().default(""),
   narrative: z.string().default(""),
   layoutHint: z.string().default(""),
   dataBasis: z.array(z.string()).default([]),
-  imagePrompt: z.string().min(1),
+  imagePrompt: z.string().default(""),
   styleOverride: stylePresetSchema.partial().optional(),
+  /** 這一頁實際使用的全部來源（使用者指定的 ∪ 模型挑的）。 */
   sourceIds: z.array(z.string()).default([]),
+  /**
+   * 使用者手動指定要用的來源；`sourceIds` 減去它就是模型自己挑的那些。
+   * 恆為 `sourceIds` 的子集（由 {@link slideSpecSchema} 的 transform 保證）——指定即代表
+   * 這一頁會用它，取消指定即代表這一頁不要它；兩者分開存才能在 UI 上區分「我指定」與
+   * 「AI 選用」，並讓重生成時保護使用者的選擇。
+   * 舊專案檔沒有這個欄位，`.default([])` 讓它載入後等同「全交給模型決定」，行為不變。
+   */
+  pinnedSourceIds: z.array(z.string()).default([]),
   outlineDirty: z.boolean().default(false),
   versions: z.array(slideVersionSchema).default([]),
   currentVersionId: z.string().optional(),
 });
+
+/**
+ * 頁面 schema，附帶唯一一處強制 `pinnedSourceIds ⊆ sourceIds` 的地方。
+ *
+ * 不變式擺在解析層而不是散在各個寫入端點：載入、匯入、每次存檔都會經過這裡，所以
+ * 手改過的 `project.json` 或未來新增的寫入路徑都不可能繞過它。散在 N 個呼叫點的版本
+ * 實測只有 1 個真的有測試蓋到，其餘拿掉都沒人發現——那正是這個不變式最容易破掉的方式。
+ *
+ * 越界的指定不是良性資料：UI 會把它畫成「沒用到」（點不到、刪不掉），檢索卻仍讓它
+ * 吃掉配額，下次重生成還會把它強制併回 `sourceIds`。
+ */
+export const slideSpecSchema = slideSpecFieldsSchema.transform((slide) => ({
+  ...slide,
+  pinnedSourceIds: slide.pinnedSourceIds.filter((id) => slide.sourceIds.includes(id)),
+}));
 
 export const generationJobSchema = z.object({
   id: z.string().min(1),
@@ -232,6 +292,8 @@ export const presentationProjectSchema = z.object({
     height: z.number().int().positive().default(1080),
   }),
   styleSnapshot: stylePresetSchema,
+  /** 綁定的模型組合 id（模型庫）。未設時生成流程回退到庫的 default 組合（lazy 綁定）。 */
+  combinationId: z.string().optional(),
   slides: z.array(slideSpecSchema),
   sources: z.array(sourceAssetSchema),
   jobs: z.array(generationJobSchema),
@@ -261,6 +323,7 @@ export const stylePresetInputSchema = stylePresetSchema
     imageDirection: true,
     avoid: true,
     promptTemplate: true,
+    designSystem: true,
     referenceImages: true,
     coverImageId: true,
   })
@@ -278,3 +341,4 @@ export type GenerationJob = z.infer<typeof generationJobSchema>;
 export type PresentationProject = z.infer<typeof presentationProjectSchema>;
 export type SourceAsset = z.infer<typeof sourceAssetSchema>;
 export type SourceCitation = z.infer<typeof sourceCitationSchema>;
+export type WebSearchResult = z.infer<typeof webSearchResultSchema>;

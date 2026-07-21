@@ -1,8 +1,10 @@
-import {
-  ProviderRegistry,
-  type ImageProvider,
-  type ProviderPreflightStatus,
-} from "@slide-maker/core";
+import { type ImageProvider, type ProviderPreflightStatus } from "@slide-maker/core";
+
+/** 穩定的影像 provider 來源；ModelRuntime 的 registry 熱替換後仍指向當前實例。 */
+export interface ImageProviderSource {
+  get(id: string): ImageProvider;
+  list(): ImageProvider[];
+}
 
 const READINESS_MESSAGES: Record<ProviderPreflightStatus, string> = {
   ready: "Provider 已通過非生成 readiness 檢查。",
@@ -42,7 +44,7 @@ export class ProviderReadinessService {
   #shuttingDown = false;
 
   constructor(
-    private readonly providers: ProviderRegistry<ImageProvider>,
+    private readonly providers: ImageProviderSource,
     private readonly ttlMs = 30_000,
     private readonly checkTimeoutMs = 10_000,
   ) {
@@ -72,6 +74,12 @@ export class ProviderReadinessService {
   beginShutdown(): void {
     this.#shuttingDown = true;
     this.#cache.clear();
+  }
+
+  /** 模型庫熱重建後呼叫：清除快取，讓下次檢查針對新 provider 實例重跑。 */
+  clearCache(): void {
+    this.#cache.clear();
+    this.#inflight.clear();
   }
 
   async assertCanGenerate(

@@ -24,7 +24,7 @@ function wrap(value: string, width = 27): string[] {
 }
 
 export class MockImageProvider implements ImageProvider {
-  readonly id = "mock-image";
+  readonly id: string;
   readonly name = "Mock image (no quota)";
   readonly availability = { status: "available" as const };
   readonly maxConcurrency = 2;
@@ -37,6 +37,10 @@ export class MockImageProvider implements ImageProvider {
     supportedSizes: [{ width: 1920, height: 1080 }],
     reproducibleParameters: ["palette"],
   };
+
+  constructor(id = "mock-image") {
+    this.id = id;
+  }
 
   async generate(
     request: ImageGenerationRequest,

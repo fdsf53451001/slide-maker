@@ -102,5 +102,11 @@ describe("PPTX module interop", () => {
     const xml = Buffer.from(entries["ppt/slides/slide1.xml"]!).toString("utf8");
     expect(xml).toContain("可編輯標題");
     expect(xml).toContain("<a:t>");
+    // 文字框幾何來自貼齊字墨的緊框：必須關閉自動換行與 autofit，
+    // 否則 PowerPoint 的 CJK 字型 advance 略寬就會折行／縮字造成跑版。
+    expect(xml).toContain('wrap="none"');
+    expect(xml).not.toContain("normAutofit");
+    // 行距鎖定為編輯器的 line-height 模型（exact spacing，非字型預設行距）。
+    expect(xml).toContain("<a:spcPts");
   });
 });

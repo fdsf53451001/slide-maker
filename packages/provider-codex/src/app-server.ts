@@ -27,6 +27,8 @@ export interface AppServerArtifactOptions {
   expectedVersion?: string;
   signal?: AbortSignal;
   environment: NodeJS.ProcessEnv;
+  model?: string;
+  reasoningEffort?: string;
   onSpawned?: () => void;
   onAllowedEvent?: (event: "turn_started" | "item_completed" | "turn_completed") => void;
   /** Emits only fixed internal protocol codes; intended for opt-in local diagnostics. */
@@ -245,13 +247,24 @@ function runAppServerArtifactProcess(
 ): Promise<AppServerArtifactResult> {
   return new Promise((resolvePromise, rejectPromise) => {
     const expectedVersion = options.expectedVersion ?? "0.144.4";
-    const child = spawn(options.executable, ["app-server", "--stdio"], {
-      cwd: options.workspace,
-      env: options.environment,
-      shell: false,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      options.executable,
+      [
+        "app-server",
+        ...(options.model ? ["-c", `model=${JSON.stringify(options.model)}`] : []),
+        ...(options.reasoningEffort
+          ? ["-c", `model_reasoning_effort=${JSON.stringify(options.reasoningEffort)}`]
+          : []),
+        "--stdio",
+      ],
+      {
+        cwd: options.workspace,
+        env: options.environment,
+        shell: false,
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     let state: ProtocolState = "initializing";
     let threadId: string | undefined;
     let turnId: string | undefined;

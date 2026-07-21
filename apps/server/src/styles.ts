@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve, sep } from "node:path";
 import {
   SCHEMA_VERSION,
@@ -210,6 +210,7 @@ export class FileStyleRepository {
       imageDirection: source.imageDirection,
       avoid: source.avoid,
       promptTemplate: source.promptTemplate,
+      designSystem: source.designSystem,
       referenceImages: source.referenceImages,
       coverImageId: source.coverImageId,
     });
@@ -251,6 +252,20 @@ export class FileStyleRepository {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+  }
+
+  /**
+   * 刪掉一張參考圖與它的 metadata。
+   *
+   * 給「只有某個專案在用」的參考圖收尾用（PDF 匯入的風格分析每分析一次就寫 4 張，
+   * 被新一批取代的舊圖沒有任何引用，留著就是永久孤兒）。庫裡的風格會在
+   * `assertReferences` 驗證引用，所以呼叫端必須自己確定沒有風格還指著這張圖。
+   */
+  async deleteReference(id: string): Promise<void> {
+    const reference = await this.referenceMetadata(id);
+    if (!reference) return;
+    await rm(this.referenceAssetPath(reference.assetPath), { force: true });
+    await rm(this.metadataPath(id), { force: true });
   }
 
   referenceAssetPath(assetPath: string): string {

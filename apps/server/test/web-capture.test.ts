@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { captureWebPage, readableHtml } from "../src/web-capture.js";
 
 describe("web source capture", () => {
-  it("extracts readable full text and keeps the search summary", async () => {
+  it("extracts readable full text without trusting the model search summary", async () => {
     const captured = await captureWebPage(
       { url: "https://example.com/guide", title: "Guide", summary: "Short summary" },
       "2026-07-15T00:00:00.000Z",
@@ -13,7 +13,7 @@ describe("web source capture", () => {
         ),
     );
     expect(captured.metadata.contentStatus).toBe("full");
-    expect(captured.text).toContain("## 簡介\n\nShort summary");
+    expect(captured.text).not.toContain("Short summary");
     expect(captured.text).toContain(
       "## 全文\n\nFull guide\n\nFirst useful paragraph.\n\nSecond useful paragraph.",
     );
@@ -30,7 +30,43 @@ describe("web source capture", () => {
       },
     );
     expect(captured.metadata.contentStatus).toBe("summary_only");
-    expect(captured.text).toContain("## 全文\n\nFallback");
+    expect(captured.text).toContain("## 未驗證搜尋摘要\n\nFallback");
+  });
+
+  it("does not mistake public hostnames beginning with IPv6 hex digits for private IPs", async () => {
+    const captured = await captureWebPage(
+      { url: "https://fcbarcelona.com/news", title: "News", summary: "Fallback" },
+      undefined,
+      async () => new Response("Public article", { headers: { "content-type": "text/plain" } }),
+    );
+    expect(captured.metadata.contentStatus).toBe("full");
+  });
+
+  it("blocks private IPv4 addresses embedded in IPv6", async () => {
+    await expect(
+      captureWebPage(
+        { url: "http://[::ffff:127.0.0.1]/", title: "Private", summary: "Private" },
+        undefined,
+        async () => new Response("must not fetch"),
+      ),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  });
+
+  it("validates redirects before fetching their destination", async () => {
+    const requested: string[] = [];
+    const captured = await captureWebPage(
+      { url: "https://example.com/redirect", title: "Redirect", summary: "Fallback" },
+      undefined,
+      async (url) => {
+        requested.push(url.toString());
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://169.254.169.254/latest/meta-data" },
+        });
+      },
+    );
+    expect(requested).toEqual(["https://example.com/redirect"]);
+    expect(captured.metadata.contentStatus).toBe("summary_only");
   });
 
   it("does not decode binary downloads as page text", async () => {
@@ -43,7 +79,7 @@ describe("web source capture", () => {
         }),
     );
     expect(captured.metadata.contentStatus).toBe("summary_only");
-    expect(captured.text).toContain("## 全文\n\nPDF summary");
+    expect(captured.text).toContain("## 未驗證搜尋摘要\n\nPDF summary");
     expect(captured.text).not.toContain("�");
   });
 
