@@ -79,12 +79,16 @@ function SlideSourceChips({
   sources,
   selection,
   disabled = false,
+  // 側邊欄只有 330px，晶片橫排會擠成一堆兩三個字的碎片；改成一列一個，
+  // 每顆佔滿欄寬，長檔名才有空間顯示。大綱確認頁的版面寬，維持橫排較省高度。
+  layout = "inline",
   onToggle,
 }: {
   groupId: string;
   sources: readonly SourceAsset[];
   selection: SlideSourceSelection;
   disabled?: boolean;
+  layout?: "inline" | "stack";
   onToggle: (sourceId: string) => void;
 }) {
   const counts = countSourceSelection(
@@ -96,7 +100,7 @@ function SlideSourceChips({
       <span className="outline-sources-label">
         來源 · 我指定 {counts.pinned} · AI 選用 {counts.ai} / 共 {sources.length}
       </span>
-      <div className="outline-source-chips">
+      <div className={`outline-source-chips${layout === "stack" ? " chips-stacked" : ""}`}>
         {sources.map((source) => {
           const state = sourceSelectionState(selection, source.id);
           const stateLabel = SOURCE_SELECTION_LABEL[state];
@@ -2738,6 +2742,7 @@ export function Editor() {
                       sources={project.sources}
                       selection={outlineView}
                       disabled={outlineReadOnly}
+                      layout="stack"
                       // 一律以畫面上顯示的那份選取為準來切換。預覽歷史版本時 outlineView 是
                       // 舊快照、draft 是目前草稿，兩者的 sourceIds 並不一致；雖然唯讀時點不到，
                       // 讀 draft 會讓「看到的」與「改到的」不是同一份，是留給後人的地雷。

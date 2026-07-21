@@ -211,12 +211,29 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.source-chip {
+/* 窄面板：一列一顆並佔滿欄寬，長檔名才留得住字；間距同步收緊以免十筆來源佔掉整個視窗高度。 */
+.outline-source-chips.chips-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.outline-source-chips.chips-stacked .source-chip {
+  max-width: 100%;
+}
+/*
+ * 選擇器必須帶上容器：晶片是 <label>，而它會出現在 .fields 底下，被 `.fields label`
+ * 的 display: block（0,1,1）蓋掉單層 .source-chip 的 inline-flex（0,1,0）。變成 block
+ * 之後名稱是 inline 元素，overflow: hidden 對 inline 不生效，於是長檔名整條溢出——
+ * 實測 477px 的名稱撐在 260px 的晶片外面。SlideSourceChips 一律渲染這個容器，
+ * 兩處使用點都涵蓋得到。
+ */
+.outline-source-chips .source-chip {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  max-width: 260px;
+  /* 容器比 260px 窄時（側邊面板）要跟著縮，否則晶片會橫向溢出而不是換行。 */
+  max-width: min(260px, 100%);
   padding: 5px 12px 5px 8px;
   border: 1px solid #2b3750;
   border-radius: 999px;
@@ -261,6 +278,7 @@
     background 0.12s ease,
     color 0.12s ease;
 }
+/* 截斷後全名仍看得到——晶片的 title 帶著完整名稱與狀態。 */
 .source-chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1766,7 +1784,13 @@ header {
 .panel-content .inspector-heading {
   margin: 0 -18px 16px;
 }
+/*
+ * min-width: 0 是必要的：fieldset 的預設 min-width 是 min-content（HTML 規範層級的怪癖，
+ * 不是繼承來的），所以它不會收縮到內容寬度以下。側邊欄只有 330px，裡面十顆 260px 的
+ * 來源晶片一橫排就把 fieldset 撐到 592px，整個區塊溢出面板。
+ */
 .fields fieldset {
+  min-width: 0;
   border: 1px solid var(--border-1);
   margin: 0 0 17px;
   padding: 10px;
