@@ -17,22 +17,26 @@ export function informationDensityInstruction(
 }
 
 /**
- * 大綱生成時對 content／narrative 的字數上限指引（與資訊密度分離）。
- * 以「上限、盡量更短」表述，避免模型把每頁塞到滿。
- */
-/**
- * 大綱 content 字數預算：軟目標與硬上限（硬上限 = 軟目標 + 30）。
+ * 大綱 content 字數預算：軟目標與硬上限。
  *
  * 字數與 informationDensityInstruction 的版面佔比是一組的：content 太少而版面又要求
  * 填滿時，模型會自行編造數據或從參考圖搬運內容來補足。額度放寬是為了讓實質內容足以
  * 支撐版面，減少那種填充壓力。
+ *
+ * 硬上限只在伺服器端驗證用，不寫進 prompt——模型無法在生成當下用這套自訂單位準確
+ * 心算自己的輸出（重試指令必須回報「你上次實測 N 單位」正是因為它算不出來）。既然算
+ * 不準，告訴它「超過就整頁作廢」只會換來過度保守：實測 51 頁 high 密度大綱平均只寫到
+ * 185 單位，連軟目標都差 23%，而唯一用了表格的那頁立刻頂到 266/270 並砍掉三列資料。
+ *
+ * 緩衝改成軟目標的三成而非固定 30：固定值在 high 密度只有 12% 的容錯，模型的估算誤差
+ * 輕易就超過，於是它只能靠大幅少寫來自保。
  */
 export function outlineContentCharBudget(density: ImageGenerationRequest["style"]["density"]): {
   soft: number;
   hard: number;
 } {
-  const soft = density === "low" ? 85 : density === "medium" ? 150 : 240;
-  return { soft, hard: soft + 30 };
+  const soft = density === "low" ? 110 : density === "medium" ? 190 : 300;
+  return { soft, hard: Math.round(soft * 1.3) };
 }
 
 /**
@@ -58,25 +62,49 @@ export function outlineContentLength(content: string): number {
   return Math.round(width);
 }
 
+/**
+ * 只給軟目標，不提硬上限。
+ *
+ * 「超過就整頁作廢」搭配一套模型算不準的自訂單位，換來的是自保式的少寫，而不是準確。
+ * 長度由伺服器測量、超標時以 outlineOverflowRetryInstruction 帶著實測值要求重寫——那條
+ * 回饋路徑已經存在且有效，這裡再要求模型自行算帳只是讓它分心。
+ */
 export function outlineBrevityInstruction(
   density: ImageGenerationRequest["style"]["density"],
 ): string {
-  const { soft, hard } = outlineContentCharBudget(density);
-  // 表格尺寸必須放得進該密度的字數預算，否則就是一條會被硬上限打回的矛盾指令：
-  // 5 欄 6 列約需 139 單位，超過 low 密度的 115 上限。
+  const { soft } = outlineContentCharBudget(density);
+  // 表格尺寸要放得進該密度的字數目標，否則就是一條自相矛盾的指令。
   const tableSize =
     density === "low"
       ? "at most about 4 columns and 3 body rows"
       : "at most about 5 columns and 6 body rows";
-  return `content is the on-slide copy. Measure its length in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and neither whitespace nor table syntax (the | separators and the |---| divider row) is counted at all — so "Kimi Code CLI" costs 5.5 units, not 13, and a table costs only what its cells actually say. Aim for roughly ${soft} units of real substance; landing somewhat under is fine, but a normal content slide that stops near half of it is too thin. Treat ${hard} units as a hard ceiling — content must never exceed ${hard} units; cut or tighten wording to stay within it. When in doubt, land nearer ${soft} than ${hard}: overshooting the ceiling gets the whole slide rejected, and never pad with filler to hit a number. How to structure that copy — headline, points, sentences, paragraphs, a markdown table, or a mix — is your call based on what the slide needs. When the slide compares options, tracks before/after, or reports several metrics or dimensions, prefer a markdown pipe table: the same character budget carries far more information as a table than as prose, so choosing prose there loses content the slide should have shown. Keep tables legible on a projector — ${tableSize}, with short cell values rather than sentences. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
+  return `content is the on-slide copy. Its length is measured in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and neither whitespace nor table syntax (the | separators and the |---| divider row) is counted at all — so "Kimi Code CLI" costs 5.5 units, not 13, and a table costs only what its cells actually say. Aim for roughly ${soft} units of real substance. You do not need to count precisely — write what the slide genuinely needs at about that scale; the system measures the result and will ask you to trim if it runs long. A normal content slide that stops near half of ${soft} is too thin, and padding with filler to reach a number is worse than landing under. How to structure that copy — headline, points, sentences, paragraphs, a markdown table, or a mix — is your call based on what the slide needs. When the slide compares options, tracks before/after, or reports several metrics or dimensions, prefer a markdown pipe table: the same budget carries far more information as a table than as prose, so choosing prose there loses content the slide should have shown. Keep tables legible on a projector — ${tableSize}, with short cell values rather than sentences. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
 }
 
 /**
- * content 超過硬上限後，重試時追加的指令。
+ * 來源帶有成套數據時的取捨原則。
  *
- * 必須帶上實際測得的單位數：只說「不可超過 270」而不說「你上次寫了 312」，模型無從
- * 判斷該砍多少，於是三次重試常常犯同一個錯，最後以 CODEX_OUTLINE_CONTENT_TOO_LONG
- * 收場。計費規則本身不在這裡重述，避免與 outlineBrevityInstruction 各寫一套而打架。
+ * 模型的預設偏好是「洞察優於原始資料」：實測一頁複盤，來源給了七場比賽的完整戰績表，
+ * 產出卻只留四列，省下的額度拿去寫自己歸納的診斷與下一輪行動建議——而砍掉的三場恰好
+ * 全是敗仗。對複盤、財報、基準測試這類頁面，資料的完整性本身就是可信度，讀者無法從
+ * 一份被挑過的表格判斷結論成不成立。
+ *
+ * 這條只談「同樣空間該先給誰」，不重述長度規則，也不重述表格的渲染要求。
+ */
+export function outlineDataFidelityInstruction(): string {
+  return "When the sources supply a complete dataset — a results table, a metric series, a set of measurements — presenting that data in full outranks adding your own synthesis. Write the interpretation, the diagnosis, and the recommended next steps only with the space left after the data itself is on the slide; when space runs short, cut your own commentary before dropping a single data row, and never quietly present a filtered subset as if it were the whole. Keep the actual figures rather than paraphrasing them as trends: a reader can form their own view from numbers, but cannot check a conclusion drawn from numbers you left out.";
+}
+
+/**
+ * content 超標後，重試時追加的指令。
+ *
+ * 必須帶上實際測得的單位數：只說「太長了」而不說「你上次寫了 312」，模型無從判斷該砍
+ * 多少，於是三次重試常常犯同一個錯，最後以 CODEX_OUTLINE_CONTENT_TOO_LONG 收場。這裡
+ * 是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限，長度回饋全靠這條。
+ *
+ * 砍的順序要指明：表格是版面上最省空間的資訊形態（同樣單位數承載的資料遠多於散文），
+ * 讓模型「隨便砍最弱的一項」時，整齊的表格列永遠是最好切的那一刀，於是資料頁會悄悄
+ * 少掉幾列而讀者無從察覺。
  */
 export function outlineOverflowRetryInstruction(
   density: ImageGenerationRequest["style"]["density"],
@@ -84,7 +112,7 @@ export function outlineOverflowRetryInstruction(
 ): string {
   const { soft, hard } = outlineContentCharBudget(density);
   const excess = Math.max(1, Math.round(measuredUnits - hard));
-  return `A previous attempt was rejected: its content measured ${Math.round(measuredUnits)} full-width units, ${excess} over the ${hard} ceiling. Count units exactly as defined above. Cut at least ${excess} units of real copy this time — drop the weakest information unit or shorten wording; do not merely reformat. Target roughly ${soft} units so the result is not borderline again.`;
+  return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. Cut at least ${excess} units of real copy this time — shorten wording or drop the weakest information unit; do not merely reformat. Cut prose, bullets, and closing lines before touching a table: if the slide carries a markdown table, keep every one of its rows and columns, and if it still will not fit, say in the copy that the table is a partial view (for example "4 of 7 shown") rather than silently dropping rows.`;
 }
 
 export function imageGenerationInput(request: ImageGenerationRequest): Record<string, unknown> {

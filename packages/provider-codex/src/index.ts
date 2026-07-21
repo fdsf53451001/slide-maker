@@ -10,6 +10,7 @@ import {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineDataFidelityInstruction,
   outlineOverflowRetryInstruction,
   SafeProviderError,
   serializeImageGenerationInput,
@@ -39,6 +40,7 @@ export {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineDataFidelityInstruction,
   outlineOverflowRetryInstruction,
 };
 

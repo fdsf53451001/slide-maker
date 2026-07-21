@@ -211,12 +211,29 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.source-chip {
+/* 窄面板：一列一顆並佔滿欄寬，長檔名才留得住字；間距同步收緊以免十筆來源佔掉整個視窗高度。 */
+.outline-source-chips.chips-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.outline-source-chips.chips-stacked .source-chip {
+  max-width: 100%;
+}
+/*
+ * 選擇器必須帶上容器：晶片是 <label>，而它會出現在 .fields 底下，被 `.fields label`
+ * 的 display: block（0,1,1）蓋掉單層 .source-chip 的 inline-flex（0,1,0）。變成 block
+ * 之後名稱是 inline 元素，overflow: hidden 對 inline 不生效，於是長檔名整條溢出——
+ * 實測 477px 的名稱撐在 260px 的晶片外面。SlideSourceChips 一律渲染這個容器，
+ * 兩處使用點都涵蓋得到。
+ */
+.outline-source-chips .source-chip {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  max-width: 260px;
+  /* 容器比 260px 窄時（側邊面板）要跟著縮，否則晶片會橫向溢出而不是換行。 */
+  max-width: min(260px, 100%);
   padding: 5px 12px 5px 8px;
   border: 1px solid #2b3750;
   border-radius: 999px;
@@ -229,9 +246,15 @@
     background 0.12s ease,
     color 0.12s ease;
 }
-.source-chip:hover {
-  border-color: #3a4c6e;
-  color: var(--text-3);
+/*
+ * hover 刻意只加內陰影，不碰 border-color／color——那兩個屬性是三態的訊號。
+ * 兩邊都設同一組屬性時，誰贏就要靠特異性與順序的平衡，而那個平衡很脆：
+ * 這條規則加上 :not(:has(input:disabled)) 之後特異性就從 (0,2,0) 變成 (0,3,1)，
+ * 反過來蓋掉狀態色，滑過去就看不出這一份是不是自己指定的。改成設定不重疊的屬性後，
+ * 兩者結構上不再競爭。停用（預覽歷史版本）時不給回饋，否則與 cursor: default 矛盾。
+ */
+.source-chip:hover:not(:has(input:disabled)) {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 .source-chip input {
   position: absolute;
@@ -255,20 +278,62 @@
     background 0.12s ease,
     color 0.12s ease;
 }
+/* 截斷後全名仍看得到——晶片的 title 帶著完整名稱與狀態。 */
 .source-chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.source-chip.selected {
+/*
+ * 三態的差異不只在顏色：實心框＋實心 ✓＝我指定，虛線框＋空心 ✦＝AI 選用，中性框無圖示＝沒用到。
+ * 顏色以外的訊號是必要的——只靠顏色的話色覺障礙與高對比模式下三態會糊成一片。
+ */
+.source-chip.source-chip-pinned {
+  border-style: solid;
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.13);
   color: #ffd9c9;
 }
-.source-chip.selected .source-chip-check {
+.source-chip.source-chip-pinned .source-chip-check {
   border-color: var(--accent);
   background: var(--accent);
   color: #180a05;
+}
+.source-chip.source-chip-ai {
+  border-style: dashed;
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.06);
+  color: #c9d3e4;
+}
+.source-chip.source-chip-ai .source-chip-check {
+  border-style: dashed;
+  border-color: rgba(var(--accent-rgb), 0.7);
+  color: var(--accent);
+}
+/*
+ * 「沒用到」已經由「沒有圖示」與中性邊框表達，不需要再靠壓暗；11px 的文字再降透明度會把
+ * 對比壓到 AA 的邊緣（約 4.5:1）而毫無餘裕。
+ */
+.source-chip.source-chip-unused {
+  opacity: 0.85;
+}
+/* 只給螢幕閱讀器的狀態說明；視覺上的狀態由框線與圖示表達。 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.source-chip input:disabled + .source-chip-check {
+  opacity: 0.5;
+}
+.source-chip:has(input:disabled) {
+  cursor: default;
 }
 .source-chip input:focus-visible + .source-chip-check {
   outline: 2px solid var(--accent);
@@ -1729,7 +1794,13 @@ header {
 .panel-content .inspector-heading {
   margin: 0 -18px 16px;
 }
+/*
+ * min-width: 0 是必要的：fieldset 的預設 min-width 是 min-content（HTML 規範層級的怪癖，
+ * 不是繼承來的），所以它不會收縮到內容寬度以下。側邊欄只有 330px，裡面十顆 260px 的
+ * 來源晶片一橫排就把 fieldset 撐到 592px，整個區塊溢出面板。
+ */
 .fields fieldset {
+  min-width: 0;
   border: 1px solid var(--border-1);
   margin: 0 0 17px;
   padding: 10px;

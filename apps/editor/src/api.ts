@@ -182,7 +182,13 @@ export const api = {
     slideId: string,
     patch: Pick<
       SlideSpec,
-      "purpose" | "content" | "narrative" | "layoutHint" | "imagePrompt" | "sourceIds"
+      | "purpose"
+      | "content"
+      | "narrative"
+      | "layoutHint"
+      | "imagePrompt"
+      | "sourceIds"
+      | "pinnedSourceIds"
     >,
   ) =>
     request<PresentationProject>(

@@ -22,6 +22,7 @@ const slide = (id: string, content: string, order: number): SlideSpec => ({
   dataBasis: [],
   imagePrompt: "",
   sourceIds: [],
+  pinnedSourceIds: [],
   outlineDirty: false,
   versions: [],
 });

@@ -115,15 +115,11 @@ export function parseLooseJson(content: string): unknown {
 export async function listModelIds(config: OpenAiClientConfig): Promise<string[]> {
   const raw = await requestJson(config, { method: "GET", path: "/models" });
   const data =
-    typeof raw === "object" && raw && "data" in raw
-      ? (raw as { data?: unknown }).data
-      : undefined;
+    typeof raw === "object" && raw && "data" in raw ? (raw as { data?: unknown }).data : undefined;
   if (!Array.isArray(data)) return [];
   const ids = data
     .map((item) =>
-      typeof item === "object" && item && "id" in item
-        ? (item as { id?: unknown }).id
-        : undefined,
+      typeof item === "object" && item && "id" in item ? (item as { id?: unknown }).id : undefined,
     )
     .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b));

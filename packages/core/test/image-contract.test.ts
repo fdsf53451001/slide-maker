@@ -6,6 +6,7 @@ import {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineDataFidelityInstruction,
   outlineOverflowRetryInstruction,
   type ImageGenerationRequest,
 } from "../src/index.js";
@@ -23,6 +24,7 @@ function request(): ImageGenerationRequest {
       dataBasis: ["採用率 80%"],
       imagePrompt: "明亮企業攝影",
       sourceIds: ["source-1"],
+      pinnedSourceIds: [],
       outlineDirty: false,
       versions: [],
     },
@@ -84,24 +86,39 @@ describe("outlineContentLength", () => {
 });
 
 describe("outline overflow retry", () => {
-  it("tells the model how far over it went, not just the ceiling", () => {
-    // 只說「不可超過 270」時，三次重試常犯同一個錯，最後以 CONTENT_TOO_LONG 收場。
-    const instruction = outlineOverflowRetryInstruction("high", 312);
-    expect(instruction).toContain("312");
-    expect(instruction).toContain("42 over the 270 ceiling");
+  it("tells the model its measured length and how much to cut, not just that it was too long", () => {
+    // 只說「太長了」時，三次重試常犯同一個錯，最後以 CONTENT_TOO_LONG 收場。
+    // 這是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限。
+    const { soft, hard } = outlineContentCharBudget("high");
+    const instruction = outlineOverflowRetryInstruction("high", hard + 42);
+    expect(instruction).toContain(String(hard + 42));
+    expect(instruction).toContain(`target of roughly ${soft}`);
     expect(instruction).toContain("Cut at least 42 units");
   });
 
+  it("orders the cuts so a table is not the first thing sacrificed", () => {
+    // 表格是版面上最省空間的資訊形態，卻也是最好切的一刀：整齊的列刪掉不留痕跡。
+    // 實測一頁 7 場比賽的戰績表被砍成 4 列且未加註，讀者無從察覺少了三場敗仗。
+    const instruction = outlineOverflowRetryInstruction("high", 400);
+    expect(instruction).toMatch(/prose, bullets, and closing lines before touching a table/);
+    expect(instruction).toMatch(/keep every one of its rows and columns/);
+    // 真的放不下時要明講是節選，不能無聲刪列。
+    expect(instruction).toMatch(/partial view/);
+  });
+
   it("never asks for a non-positive cut when the overflow rounds to zero", () => {
-    const instruction = outlineOverflowRetryInstruction("high", 270.4);
+    const instruction = outlineOverflowRetryInstruction(
+      "high",
+      outlineContentCharBudget("high").hard + 0.4,
+    );
     expect(instruction).toContain("Cut at least 1 units");
   });
 
   it("does not restate the counting rules that brevity already owns", () => {
     // 兩處各寫一套計費規則正是先前 whitespace/表格計法不一致的來源。
-    const instruction = outlineOverflowRetryInstruction("high", 300);
+    const instruction = outlineOverflowRetryInstruction("high", 500);
     expect(instruction).not.toMatch(/counts as 0\.5/);
-    expect(instruction).toContain("exactly as defined above");
+    expect(instruction).not.toMatch(/full-width units:/);
   });
 });
 
@@ -127,12 +144,16 @@ describe("density and length instructions", () => {
     expect(informationDensityInstruction("high")).toContain("never overrides it");
   });
 
-  it("states the character budget in exactly one place", () => {
+  it("gives the model only the soft target, never the hard ceiling", () => {
+    // 硬上限是伺服器端的驗證門檻。模型無法用這套自訂單位準確心算自己的輸出（重試指令
+    // 得回報實測值正是因為如此），告訴它「超過就整頁作廢」只會換來自保式的少寫：
+    // 實測 51 頁 high 密度平均僅 185 單位，連軟目標都差 23%。
     for (const density of densities) {
       const { soft, hard } = outlineContentCharBudget(density);
       const brevity = outlineBrevityInstruction(density);
       expect(brevity).toContain(String(soft));
-      expect(brevity).toContain(String(hard));
+      expect(brevity).not.toContain(String(hard));
+      expect(brevity).not.toMatch(/ceiling|must never exceed|rejected/);
       expect(informationDensityInstruction(density)).not.toContain(String(soft));
     }
   });
@@ -161,29 +182,32 @@ describe("density and length instructions", () => {
       ].join("\n");
       return outlineContentLength(text);
     };
-    // low 密度不能沿用 5×6：即使骨架免計費仍要 108 單位，硬上限只有 115，
+    // low 密度不能沿用 5×6：即使骨架免計費仍要 108 單位，佔掉軟目標 110 的幾乎全部，
     // 塞完表格就沒有空間放標題與結論了。
-    expect(tableWidth(5, 6)).toBeGreaterThan(outlineContentCharBudget("low").hard - 30);
+    expect(tableWidth(5, 6)).toBeGreaterThan(outlineContentCharBudget("low").soft * 0.75);
     const suggested = { low: [4, 3], medium: [5, 6], high: [5, 6] } as const;
     for (const density of densities) {
       const [columns, rows] = suggested[density];
       expect(outlineBrevityInstruction(density)).toContain(
         `about ${columns} columns and ${rows} body rows`,
       );
-      // 留 30 單位給標題與結論，表格仍須放得下。
+      // 建議的表格要在軟目標內就放得下，且留有空間給標題與結論——否則這條建議
+      // 一被採納就注定超標，等於逼模型在「照建議做」與「不超標」之間二選一。
       expect(tableWidth(columns, rows)).toBeLessThanOrEqual(
-        outlineContentCharBudget(density).hard - 30,
+        outlineContentCharBudget(density).soft * 0.75,
       );
     }
   });
 
-  it("gives the soft target direction without pushing the model into the ceiling", () => {
-    // 措辭太弱模型只寫到 182/270；太強又會頂到 270 被 CONTENT_TOO_LONG 打回。
-    // 兩邊都要說：寫太少是問題，但拿不準時要靠向 soft 而非 hard。
+  it("tells the model not to count precisely, because it cannot", () => {
+    // 這套自訂單位模型算不準，硬要它算只會換來自保式的少寫。長度由伺服器測量、
+    // 超標時由 outlineOverflowRetryInstruction 帶著實測值要求重寫。
     const brevity = outlineBrevityInstruction("high");
+    expect(brevity).toMatch(/do not need to count precisely/);
+    expect(brevity).toMatch(/the system measures the result/);
+    // 下限方向仍要說：寫太少會讓模型為了填版面而編造內容。
     expect(brevity).toMatch(/too thin/);
-    expect(brevity).toMatch(/land nearer 240 than 270/);
-    expect(brevity).toContain("hard ceiling");
+    expect(brevity).toMatch(/padding with filler/);
   });
 });
 
@@ -372,5 +396,32 @@ describe("shared image-generation contract", () => {
     expect(prompt).not.toContain("slide.content field is the authoritative visible copy");
     // 文字移除不渲染任何字，接地合約在此無意義且會與「不要重畫文字」相衝。
     expect(prompt).not.toContain("FACTUAL GROUNDING CONTRACT");
+  });
+});
+
+describe("資料完整性優先於自己的歸納", () => {
+  const densities = ["low", "medium", "high"] as const;
+
+  it("明講空間不足時先砍評論、不砍資料列", () => {
+    // 實測一頁複盤：來源給了七場戰績，產出只留四列，省下的額度拿去寫診斷與行動建議，
+    // 而砍掉的三場全是敗仗。模型的預設偏好是「洞察優於原始資料」，得明確反轉過來。
+    const instruction = outlineDataFidelityInstruction();
+    expect(instruction).toMatch(/presenting that data in full outranks adding your own synthesis/);
+    expect(instruction).toMatch(/cut your own commentary before dropping a single data row/);
+    expect(instruction).toMatch(/never quietly present a filtered subset/);
+  });
+
+  it("要求保留實際數值而不是改寫成趨勢描述", () => {
+    // 「延遲明顯上升」讀者無從查證，「2ms → 1479ms → 14,363ms」才可以。
+    expect(outlineDataFidelityInstruction()).toMatch(/Keep the actual figures/);
+  });
+
+  it("不重述長度規則與表格渲染要求，避免兩處指令打架", () => {
+    // 這個 codebase 有過同一份 prompt 裡兩條指令互相矛盾的紀錄（916f47）。
+    const instruction = outlineDataFidelityInstruction();
+    expect(instruction).not.toMatch(/full-width units|counts as 0\.5/);
+    expect(instruction).not.toMatch(/pipe table|columns and \d+ body rows/);
+    for (const density of densities)
+      expect(instruction).not.toContain(String(outlineContentCharBudget(density).soft));
   });
 });

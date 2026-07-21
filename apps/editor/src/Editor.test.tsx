@@ -685,12 +685,310 @@ describe("Editor MVP navigation", () => {
     const updatedContent = await screen.findByDisplayValue("加入來源證據後的高密度內容");
     expect(screen.getByDisplayValue(originalPurpose)).toBeTruthy();
     expect(updatedContent.closest("label")?.classList.contains("outline-dirty")).toBe(true);
-    expect(screen.getByRole("checkbox", { name: "允許來源.md" })).toHaveProperty("checked", true);
-    expect(screen.getByRole("checkbox", { name: "禁止來源.md" })).toHaveProperty("checked", false);
+    // 模型挑的來源標成「AI 選用」而不是「我指定」：勾選框代表使用者的指定，模型不得代勞。
+    const aiChosen = screen.getByRole("checkbox", { name: "允許來源.md", description: /^AI 選用/ });
+    expect(aiChosen).toHaveProperty("checked", false);
+    expect(aiChosen).toHaveProperty("indeterminate", true);
+    const untouched = screen.getByRole("checkbox", { name: "禁止來源.md", description: /^沒用到/ });
+    expect(untouched).toHaveProperty("checked", false);
+    expect(untouched).toHaveProperty("indeterminate", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/\/outline$/),
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("toggles a slide source between AI-chosen, user-pinned and unused, and saves the pins", async () => {
+    let project = createProject({ topic: "來源三態", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    const slide = project.slides[0]!;
+    // AI 選了甲，乙完全沒用到——這是重生成大綱之後最常見的起點。
+    slide.sourceIds = ["source-a"];
+    slide.pinnedSourceIds = [];
+    project.sources = ["a", "b"].map((suffix) => ({
+      id: `source-${suffix}`,
+      name: `來源${suffix}.md`,
+      mediaType: "text/markdown",
+      usage: "content" as const,
+      allowModelAccess: true,
+      status: "indexed" as const,
+      assetPath: `assets/sources/${suffix}.md`,
+      sizeBytes: 10,
+      extractedText: "內容",
+      chunks: [{ id: `chunk-${suffix}`, text: "內容" }],
+      metadata: {},
+      createdAt: now,
+    }));
+    const patched: Array<{ sourceIds: string[]; pinnedSourceIds: string[] }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.endsWith(`/slides/${slide.id}`) && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as {
+          sourceIds: string[];
+          pinnedSourceIds: string[];
+        };
+        patched.push(body);
+        project = structuredClone(project);
+        Object.assign(project.slides[0]!, body);
+        return Response.json(project);
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("來源三態"));
+
+    // 起點：甲是 AI 選用（mixed），乙沒用到。
+    const aiChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^AI 選用/,
+    });
+    expect(aiChip).toHaveProperty("indeterminate", true);
+    expect(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ })).toBeTruthy();
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
+
+    // 點一下 AI 選的 → 變成我指定；使用清單不變。
+    fireEvent.click(aiChip);
+    const pinnedChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^我指定/,
+    });
+    expect(pinnedChip).toHaveProperty("checked", true);
+    expect(pinnedChip).toHaveProperty("indeterminate", false);
+    expect(pinnedChip.closest("label")?.className).toContain("source-chip-pinned");
+    expect(screen.getByText("來源 · 我指定 1 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 再點一下 → 連使用清單一起移除，變回沒用到。
+    fireEvent.click(pinnedChip);
+    const droppedChip = await screen.findByRole("checkbox", {
+      name: "來源a.md",
+      description: /^沒用到/,
+    });
+    expect(droppedChip).toHaveProperty("checked", false);
+    expect(droppedChip).toHaveProperty("indeterminate", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 沒用到的來源被點選時直接成為我指定，並進入使用清單。
+    fireEvent.click(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ }));
+    await screen.findByRole("checkbox", { name: "來源b.md", description: /^我指定/ });
+    expect(screen.getByText("來源 · 我指定 1 · AI 選用 0 / 共 2")).toBeTruthy();
+
+    // 自動儲存把兩份清單一起送出：只送 sourceIds 的話伺服器就分不出誰是使用者指定的。
+    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    const last = patched.at(-1)!;
+    expect(last.sourceIds).toEqual(["source-b"]);
+    expect(last.pinnedSourceIds).toEqual(["source-b"]);
+  });
+
+  it("saves an AI-chosen source promoted to user-pinned even though the used-source list is unchanged", async () => {
+    // 「把 AI 選的改成我指定」是這個功能最常見的一次操作，而它只動 pinnedSourceIds，
+    // sourceIds 一個字都沒變。自動儲存的 dirty 判斷若只看 sourceIds，這個動作就永遠不會送出，
+    // 使用者重新整理後指定全部不見，畫面上卻沒有任何失敗提示。
+    let project = createProject({ topic: "只改指定", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    const slide = project.slides[0]!;
+    slide.sourceIds = ["source-a"];
+    slide.pinnedSourceIds = [];
+    project.sources = [
+      {
+        id: "source-a",
+        name: "來源a.md",
+        mediaType: "text/markdown",
+        usage: "content" as const,
+        allowModelAccess: true,
+        status: "indexed" as const,
+        assetPath: "assets/sources/a.md",
+        sizeBytes: 10,
+        extractedText: "內容",
+        chunks: [{ id: "chunk-a", text: "內容" }],
+        metadata: {},
+        createdAt: now,
+      },
+    ];
+    const patched: Array<{ sourceIds: string[]; pinnedSourceIds: string[] }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.endsWith(`/slides/${slide.id}`) && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as {
+          sourceIds: string[];
+          pinnedSourceIds: string[];
+        };
+        patched.push(body);
+        project = structuredClone(project);
+        Object.assign(project.slides[0]!, body);
+        return Response.json(project);
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("只改指定"));
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "來源a.md", description: /^AI 選用/ }),
+    );
+    await screen.findByRole("checkbox", { name: "來源a.md", description: /^我指定/ });
+
+    await waitFor(() => expect(patched).toHaveLength(1));
+    expect(patched[0]).toMatchObject({
+      sourceIds: ["source-a"],
+      pinnedSourceIds: ["source-a"],
+    });
+  });
+
+  it("shows the previewed version's own sources read-only, so a later pin cannot be edited or claimed as used", async () => {
+    // 預覽歷史版本時大綱是唯讀的快照。來源晶片若還能點，使用者會以為自己在改這一頁，
+    // 實際上改的是目前草稿，而畫面顯示的卻是舊版本——改完什麼也對不起來。
+    // 另外快照只記 sourceIds，所以生成之後才指定的來源在這個畫面上必須顯示成「沒用到」，
+    // 不能謊稱這張圖用了它。
+    const project = createProject({ topic: "版本來源唯讀", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = "2026-07-16T01:00:00.000Z";
+    const slide = project.slides[0]!;
+    project.sources = ["a", "b"].map((suffix) => ({
+      id: `source-${suffix}`,
+      name: `來源${suffix}.md`,
+      mediaType: "text/markdown",
+      usage: "content" as const,
+      allowModelAccess: true,
+      status: "indexed" as const,
+      assetPath: `assets/sources/${suffix}.md`,
+      sizeBytes: 10,
+      extractedText: "內容",
+      chunks: [{ id: `chunk-${suffix}`, text: "內容" }],
+      metadata: {},
+      createdAt: now,
+    }));
+    slide.versions = [
+      {
+        id: "version-1",
+        imagePath: "assets/generated/version-1.png",
+        prompt: "first",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        outlineSnapshot: {
+          purpose: slide.purpose,
+          content: "第一版大綱內容",
+          narrative: "原始敘事",
+          layoutHint: "原始構圖",
+          imagePrompt: "第一版圖片提示",
+          // 生成當下只用了甲。
+          sourceIds: ["source-a"],
+        },
+        createdAt: now,
+      },
+      {
+        id: "version-2",
+        imagePath: "assets/generated/version-2.png",
+        prompt: "second",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        outlineSnapshot: {
+          purpose: slide.purpose,
+          content: "第二版大綱內容",
+          narrative: "原始敘事",
+          layoutHint: "原始構圖",
+          imagePrompt: "第二版圖片提示",
+          sourceIds: ["source-a", "source-b"],
+        },
+        createdAt: "2026-07-16T02:00:00.000Z",
+      },
+    ];
+    slide.currentVersionId = "version-2";
+    slide.sourceIds = ["source-a", "source-b"];
+    // 第一版生成之後使用者才指定了甲與乙：甲當時就在用、只是沒被指定，乙當時根本沒用到。
+    // 甲這一份是關鍵——快照不記指定，若預覽時拿現在的指定去標，它會被說成「那時候就指定了」。
+    slide.pinnedSourceIds = ["source-a", "source-b"];
+    // init 要進簽章，最後那段「完全沒發出 PATCH」的斷言才讀得到每次呼叫的第二個參數。
+    const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("版本來源唯讀"));
+    fireEvent.click(await screen.findByRole("button", { name: "版本 1" }));
+    expect(await screen.findByText("正在預覽歷史版本")).toBeTruthy();
+
+    // 甲是第一版實際用到的來源，但不是使用者指定的，所以是 AI 選用。
+    const usedChip = screen.getByRole("checkbox", { name: "來源a.md", description: /^AI 選用/ });
+    // 乙雖然目前被指定，第一版沒用到它，所以這個畫面必須顯示成沒用到。
+    const pinnedButUnusedChip = screen.getByRole("checkbox", {
+      name: "來源b.md",
+      description: /^沒用到/,
+    });
+    expect(pinnedButUnusedChip).toHaveProperty("checked", false);
+    expect(screen.getByText("來源 · 我指定 0 · AI 選用 1 / 共 2")).toBeTruthy();
+
+    // 兩個晶片都不可操作。
+    expect(usedChip).toHaveProperty("disabled", true);
+    expect(pinnedButUnusedChip).toHaveProperty("disabled", true);
+    fireEvent.click(pinnedButUnusedChip);
+    expect(screen.getByRole("checkbox", { name: "來源b.md", description: /^沒用到/ })).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      ),
+    ).toBe(false);
   });
 
   it("previews text and image sources with model access before the title", async () => {
