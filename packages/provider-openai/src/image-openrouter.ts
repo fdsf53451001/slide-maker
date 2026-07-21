@@ -38,7 +38,9 @@ function openRouterPrompt(request: ImageGenerationRequest): string {
 /** 從 OpenRouter `/images` 回應取出第一張圖的 { mediaType, bytes }。 */
 export function extractOpenRouterImage(payload: unknown): { mediaType: string; bytes: Uint8Array } {
   const data = (payload as { data?: unknown })?.data;
-  const first = Array.isArray(data) ? (data[0] as { b64_json?: unknown; media_type?: unknown }) : undefined;
+  const first = Array.isArray(data)
+    ? (data[0] as { b64_json?: unknown; media_type?: unknown })
+    : undefined;
   const b64 = typeof first?.b64_json === "string" ? first.b64_json : undefined;
   if (!b64)
     throw new SafeProviderError("OPENAI_IMAGE_MISSING", "OpenRouter 回應缺少 b64_json 圖片資料。");
