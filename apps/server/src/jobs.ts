@@ -778,11 +778,18 @@ export class JobRunner {
         generatedAssets.add(textLayer.compositePath);
         imagePath = textLayer.compositePath;
       }
-      const baseOutline =
-        job.operation !== "generate"
-          ? slide.versions.find((version) => version.id === job.baseVersionId)?.outlineSnapshot
-          : undefined;
-      const generatedOutline = structuredClone(baseOutline ?? outlineSnapshot(slide));
+      // 編輯／抽字是在既有版本上動刀，大綱沿用被編輯的那一版；重新生成才用當下的大綱。
+      const outlineBase = job.operation !== "generate" ? baseVersion : undefined;
+      const generatedOutline = structuredClone(
+        outlineBase?.outlineSnapshot ?? outlineSnapshot(slide),
+      );
+      // 指定清單與 outlineSnapshot 同源，兩者要指向同一個時間點。記下來，還原版本時才有辦法
+      // 把當時生效的指定一起帶回去，而不是讓它在還原後無聲消失。
+      const generatedPins = [
+        ...(outlineBase?.outlineSnapshot
+          ? (outlineBase.pinnedSourceIds ?? [])
+          : slide.pinnedSourceIds),
+      ];
       const staleAssets = await this.repository.updateProject(projectId, (current) => {
         const currentJob = current.jobs.find((candidate) => candidate.id === jobId);
         const currentSlide = current.slides.find((candidate) => candidate.id === slide.id);
@@ -799,6 +806,7 @@ export class JobRunner {
           parameters: safe.parameters,
           styleVersion: current.styleSnapshot.version,
           outlineSnapshot: generatedOutline,
+          pinnedSourceIds: generatedPins,
           sources: selectedSources.map((source) => ({
             sourceId: source.id,
             title: source.name,

@@ -23,6 +23,7 @@ function request(): ImageGenerationRequest {
       dataBasis: ["採用率 80%"],
       imagePrompt: "明亮企業攝影",
       sourceIds: ["source-1"],
+      pinnedSourceIds: [],
       outlineDirty: false,
       versions: [],
     },

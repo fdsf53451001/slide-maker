@@ -29,6 +29,15 @@ import { SourcePanel } from "./SourcePanel.js";
 import { ModelLibrary } from "./ModelLibrary.js";
 import { LibraryHeader } from "./LibraryHeader.js";
 import { useSystemSettings, type SystemSettings } from "./systemSettings.js";
+import {
+  countSourceSelection,
+  sourceSelectionState,
+  toggleSourcePin,
+  SOURCE_SELECTION_ACTION,
+  SOURCE_SELECTION_ICON,
+  SOURCE_SELECTION_LABEL,
+  type SlideSourceSelection,
+} from "./sourceSelection.js";
 
 type CombinationSummary = { id: string; name: string; isDefault: boolean; imageModelRef?: string };
 
@@ -52,6 +61,77 @@ function duration(ms: number): string {
 function currentImage(project: PresentationProject, slide: SlideSpec): string | undefined {
   const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
   return version ? imageUrl(project.id, version.imagePath) : undefined;
+}
+
+/**
+ * 單頁來源的三態選取列。勾選代表「我指定」，AI 自己挑進來的另以虛線框與 ✦ 呈現。
+ *
+ * 狀態不只靠顏色：實心／虛線框線、✓／✦ 圖示，以及描述文字各自都說得清楚。
+ * 狀態放在 aria-describedby 而不是 aria-label：可及名稱要穩定（它是使用者用來指稱這個
+ * 控制項的詞），會變的狀態屬於描述。checkbox 在「AI 選用」時設 indeterminate
+ * （對應 aria-checked="mixed"），讓螢幕閱讀器也讀得出「有在用，但不是我指定的」。
+ *
+ * groupId 用來把描述元素的 id 綁在所在頁面上——大綱步驟會為每一頁各畫一組同樣的晶片，
+ * 只用 source.id 當 id 會在同一份文件裡重複。
+ */
+function SlideSourceChips({
+  groupId,
+  sources,
+  selection,
+  disabled = false,
+  onToggle,
+}: {
+  groupId: string;
+  sources: readonly SourceAsset[];
+  selection: SlideSourceSelection;
+  disabled?: boolean;
+  onToggle: (sourceId: string) => void;
+}) {
+  const counts = countSourceSelection(
+    selection,
+    sources.map((source) => source.id),
+  );
+  return (
+    <div className="outline-sources">
+      <span className="outline-sources-label">
+        來源 · 我指定 {counts.pinned} · AI 選用 {counts.ai} / 共 {sources.length}
+      </span>
+      <div className="outline-source-chips">
+        {sources.map((source) => {
+          const state = sourceSelectionState(selection, source.id);
+          const stateLabel = SOURCE_SELECTION_LABEL[state];
+          const action = SOURCE_SELECTION_ACTION[state];
+          const descriptionId = `source-chip-state-${groupId}-${source.id}`;
+          return (
+            <label
+              key={source.id}
+              className={`source-chip source-chip-${state}`}
+              title={`${source.name}（${stateLabel}）— ${action}`}
+            >
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={state === "pinned"}
+                ref={(node) => {
+                  if (node) node.indeterminate = state === "ai";
+                }}
+                aria-label={source.name}
+                aria-describedby={descriptionId}
+                onChange={() => onToggle(source.id)}
+              />
+              <span className="source-chip-check" aria-hidden="true">
+                {SOURCE_SELECTION_ICON[state]}
+              </span>
+              <span className="source-chip-name">{source.name}</span>
+              <span className="visually-hidden" id={descriptionId}>
+                {stateLabel}，{action}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
@@ -941,6 +1021,7 @@ function SetupFlow({
           layoutHint: slide.layoutHint,
           imagePrompt: slide.imagePrompt,
           sourceIds: slide.sourceIds,
+          pinnedSourceIds: slide.pinnedSourceIds,
         });
       }
       onProject(updated);
@@ -1345,46 +1426,18 @@ function SetupFlow({
                     />
                   </label>
                   {project.sources.length > 0 && (
-                    <div className="outline-sources">
-                      <span className="outline-sources-label">
-                        來源 · 已選 {slide.sourceIds.length}/{project.sources.length}
-                      </span>
-                      <div className="outline-source-chips">
-                        {project.sources.map((source) => {
-                          const checked = slide.sourceIds.includes(source.id);
-                          return (
-                            <label
-                              key={source.id}
-                              className={`source-chip${checked ? " selected" : ""}`}
-                              title={source.name}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(event) =>
-                                  setOutline(
-                                    outline.map((item) =>
-                                      item.id === slide.id
-                                        ? {
-                                            ...item,
-                                            sourceIds: event.target.checked
-                                              ? [...item.sourceIds, source.id]
-                                              : item.sourceIds.filter((id) => id !== source.id),
-                                          }
-                                        : item,
-                                    ),
-                                  )
-                                }
-                              />
-                              <span className="source-chip-check" aria-hidden="true">
-                                ✓
-                              </span>
-                              <span className="source-chip-name">{source.name}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
+                    <SlideSourceChips
+                      groupId={slide.id}
+                      sources={project.sources}
+                      selection={slide}
+                      onToggle={(sourceId) =>
+                        setOutline(
+                          outline.map((item) =>
+                            item.id === slide.id ? toggleSourcePin(item, sourceId) : item,
+                          ),
+                        )
+                      }
+                    />
                   )}
                 </div>
               </article>
@@ -1694,7 +1747,8 @@ export function Editor() {
     const fields = ["purpose", "content", "narrative", "layoutHint", "imagePrompt"] as const;
     const changed =
       fields.some((field) => draft[field] !== selected[field]) ||
-      JSON.stringify(draft.sourceIds) !== JSON.stringify(selected.sourceIds);
+      JSON.stringify(draft.sourceIds) !== JSON.stringify(selected.sourceIds) ||
+      JSON.stringify(draft.pinnedSourceIds) !== JSON.stringify(selected.pinnedSourceIds);
     if (!changed) return;
     const timer = setTimeout(() => {
       setSaving(true);
@@ -1706,6 +1760,7 @@ export function Editor() {
           layoutHint: draft.layoutHint,
           imagePrompt: draft.imagePrompt,
           sourceIds: draft.sourceIds,
+          pinnedSourceIds: draft.pinnedSourceIds,
         })
         .then(setProject)
         .catch((reason: unknown) =>
@@ -1975,6 +2030,7 @@ export function Editor() {
         layoutHint: draft.layoutHint,
         imagePrompt: draft.imagePrompt,
         sourceIds: draft.sourceIds,
+        pinnedSourceIds: draft.pinnedSourceIds,
       });
       setProject(updated);
       return true;
@@ -2033,7 +2089,14 @@ export function Editor() {
   const image = previewVersion ? imageUrl(project.id, previewVersion.imagePath) : activeImage;
   const outlineView = previewVersion
     ? draft && previewVersion.outlineSnapshot
-      ? { ...draft, ...previewVersion.outlineSnapshot }
+      ? // 指定的來源刻意不在 outlineSnapshot 裡（它只描述「圖是照什麼大綱畫的」），
+        // 但版本本身有記錄當時生效的指定。少了這一行，預覽舊版時會拿現在的指定去標，
+        // 於是顯示成「那時候就指定了」——一個當下並不成立的狀態。
+        {
+          ...draft,
+          ...previewVersion.outlineSnapshot,
+          pinnedSourceIds: previewVersion.pinnedSourceIds ?? [],
+        }
       : undefined
     : draft;
   const outlineReadOnly = !!previewVersion;
@@ -2670,24 +2733,16 @@ export function Editor() {
                   {project.sources.length === 0 ? (
                     <small>請先在「來源」上傳資料。</small>
                   ) : (
-                    project.sources.map((source) => (
-                      <label className="check-row" key={source.id}>
-                        <input
-                          type="checkbox"
-                          disabled={outlineReadOnly}
-                          checked={outlineView.sourceIds.includes(source.id)}
-                          onChange={(event) =>
-                            setDraft({
-                              ...draft,
-                              sourceIds: event.target.checked
-                                ? [...draft.sourceIds, source.id]
-                                : draft.sourceIds.filter((id) => id !== source.id),
-                            })
-                          }
-                        />
-                        {source.name}
-                      </label>
-                    ))
+                    <SlideSourceChips
+                      groupId={outlineView.id}
+                      sources={project.sources}
+                      selection={outlineView}
+                      disabled={outlineReadOnly}
+                      // 一律以畫面上顯示的那份選取為準來切換。預覽歷史版本時 outlineView 是
+                      // 舊快照、draft 是目前草稿，兩者的 sourceIds 並不一致；雖然唯讀時點不到，
+                      // 讀 draft 會讓「看到的」與「改到的」不是同一份，是留給後人的地雷。
+                      onToggle={(sourceId) => setDraft(toggleSourcePin(outlineView, sourceId))}
+                    />
                   )}
                 </fieldset>
                 {provider?.availability.status === "unavailable" && (
@@ -3014,7 +3069,9 @@ export function Editor() {
               </button>
               <button
                 onClick={() => {
-                  if (confirm("重新產生大綱會取代目前頁面，確定繼續？"))
+                  // 指定的來源是使用者最不預期會失去的東西：頁面整批換成新的，指定自然
+                  // 跟著消失，所以確認視窗要講明白，而不是只說「取代目前頁面」。
+                  if (confirm("重新產生大綱會取代目前頁面（包含你指定的來源），確定繼續？"))
                     void run(() => api.regenerateOutline(project.id, true));
                 }}
               >

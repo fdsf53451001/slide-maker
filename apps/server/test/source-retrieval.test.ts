@@ -259,3 +259,252 @@ describe("來源上下文配額", () => {
     expect(knownSourceContext(retriever, projectId, [], "電動車市場", 10)).toEqual([]);
   });
 });
+
+describe("使用者指定來源的名額分配", () => {
+  const projectId = "project-pinned";
+
+  /** 每份來源都有足夠多的片段，才問得出「名額怎麼分」而不是「片段夠不夠」。 */
+  function bulk(name: string, count: number): SourceAsset {
+    return source(
+      name,
+      Array.from(
+        { length: count },
+        (_, index) => `台灣電動車市場銷量分析｜${name}｜第 ${index} 段`,
+      ),
+    );
+  }
+
+  it("指定的來源拿七成名額，其餘三成留給沒指定的來源", () => {
+    const pinnedOne = bulk("電動車年報", 30);
+    const pinnedTwo = bulk("充電樁調查", 30);
+    const otherOne = bulk("電池成本報告", 30);
+    const otherTwo = bulk("政策白皮書", 30);
+    const sources = [pinnedOne, pinnedTwo, otherOne, otherTwo];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 20, [
+      pinnedOne.id,
+      pinnedTwo.id,
+    ]);
+
+    expect(context).toHaveLength(20);
+    const fromPinned = context.filter(
+      (chunk) => chunk.id === pinnedOne.id || chunk.id === pinnedTwo.id,
+    );
+    // 兩側份數相同時，2.3 倍的每份權重正好還原成七比三：
+    // 指定的每份 round(20 × 2.3 / 6.6) = 7，未指定的每份 round(20 × 1 / 6.6) = 3。
+    expect(fromPinned).toHaveLength(14);
+    expect(context.filter((chunk) => chunk.id === otherOne.id)).toHaveLength(3);
+    expect(context.filter((chunk) => chunk.id === otherTwo.id)).toHaveLength(3);
+  });
+
+  it("只指定 1 份、另有 30 份沒指定時，31 份來源全部都進得了 prompt", () => {
+    // 把七成整包給「指定的那一側」的話：pinnedBudget = round(40 × 0.7) = 28 全歸那 1 份，
+    // 剩 12 個名額分不完 30 份來源，有 18 份連一塊都拿不到——正是 eeddf9d 修掉的症狀。
+    // 權重套在每份來源上就不會這樣：每份先保底 1 塊，指定的那份再多拿。
+    const pinnedSource = bulk("使用者指定", 30);
+    const others = Array.from({ length: 30 }, (_, index) => bulk(`其他來源 ${index}`, 30));
+    const sources = [pinnedSource, ...others];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 40, [
+      pinnedSource.id,
+    ]);
+
+    expect(context).toHaveLength(40);
+    // 31 份來源一份都不能缺席。
+    expect(new Set(context.map((chunk) => chunk.id)).size).toBe(31);
+    const pinnedChunks = context.filter((chunk) => chunk.id === pinnedSource.id).length;
+    const mostFromOthers = Math.max(
+      ...others.map((item) => context.filter((chunk) => chunk.id === item.id).length),
+    );
+    // 指定的那份明顯多拿：保底 1 + 加權配額，再加上剩餘名額優先補給它。
+    expect(pinnedChunks).toBe(10);
+    expect(mostFromOthers).toBe(1);
+  });
+
+  it("沒指定任何來源時分配邏輯完全不變（既有專案的行為基準）", () => {
+    const sources = [bulk("電動車年報", 30), bulk("充電樁調查", 30), bulk("電池成本報告", 30)];
+    const retriever = retrieverFor(projectId, sources);
+    const baseline = knownSourceContext(retriever, projectId, sources, "電動車市場", 15);
+    const withEmptyPins = knownSourceContext(retriever, projectId, sources, "電動車市場", 15, []);
+
+    expect(withEmptyPins).toEqual(baseline);
+  });
+
+  it("配額都發完後剩下的名額先補給指定的來源，而不是給相關度最高的那一份", () => {
+    // 有來源填不滿自己的配額（這裡是只有一塊的那份）就會空出名額。那些名額該往哪裡去，
+    // 決定了「指定」在最後一輪還算不算數；純按相關度補的話，指定的優勢到這裡就消失了。
+    const pinnedSource = bulk("使用者指定", 20);
+    const rival = source(
+      "相關度更高",
+      Array.from({ length: 20 }, (_, index) => `台灣電動車市場銷量分析第 ${index} 節`),
+    );
+    const tiny = source("只有一塊", ["台灣電動車市場銷量分析的單一段落"]);
+    const sources = [pinnedSource, rival, tiny];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(
+      retriever,
+      projectId,
+      sources,
+      "台灣電動車市場銷量分析",
+      10,
+      [pinnedSource.id],
+    );
+
+    expect(context).toHaveLength(10);
+    // 配額是 5 / 2 / 2，只有一塊的那份用不完，空出的 2 個名額補給指定的來源。
+    expect(context.filter((chunk) => chunk.id === pinnedSource.id)).toHaveLength(7);
+    expect(context.filter((chunk) => chunk.id === rival.id)).toHaveLength(2);
+    expect(context.filter((chunk) => chunk.id === tiny.id)).toHaveLength(1);
+  });
+
+  it("名額不夠時先淘汰沒指定的來源，指定的即使相關度較低也留得下來", () => {
+    // 保底那一輪是照順序發的，發完就沒了。順序若只看相關度，使用者指定的冷門來源會被
+    // 兩份熱門來源擠掉——明明是他自己說「這一頁要用這份」。
+    const pinnedSource = source("冷門指定", ["電動車的一般介紹"]);
+    const hotOne = source(
+      "熱門甲",
+      Array.from({ length: 5 }, (_, index) => `台灣電動車市場銷量分析第 ${index} 節`),
+    );
+    const hotTwo = source(
+      "熱門乙",
+      Array.from({ length: 5 }, (_, index) => `台灣電動車市場銷量趨勢第 ${index} 節`),
+    );
+    const sources = [hotOne, hotTwo, pinnedSource];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "台灣電動車市場銷量分析", 2, [
+      pinnedSource.id,
+    ]);
+
+    expect(context.map((chunk) => chunk.name)).toEqual(["冷門指定", "熱門甲"]);
+  });
+
+  it("加權配額總和超出 limit 時，仍然每份來源都拿得到保底", () => {
+    // 1 份指定 + 9 份未指定、limit 10：四捨五入後配額是 2 + 9×1 = 11，比 limit 還多。
+    // 若直接照配額發，前面的人會把名額吃完，排最後的那份來源一塊都拿不到、整份從 prompt 消失。
+    // 先發保底再補配額就不會——這一輪不是裝飾。
+    const pinnedSource = bulk("使用者指定", 20);
+    const others = Array.from({ length: 9 }, (_, index) => bulk(`其他來源 ${index}`, 20));
+    const sources = [pinnedSource, ...others];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 10, [
+      pinnedSource.id,
+    ]);
+
+    expect(context).toHaveLength(10);
+    expect(new Set(context.map((chunk) => chunk.id)).size).toBe(10);
+    for (const item of sources)
+      expect(context.filter((chunk) => chunk.id === item.id)).toHaveLength(1);
+  });
+
+  it("指定的份數逼近 limit 時每份仍至少拿到一塊，總數不超過 limit", () => {
+    // 10 份來源搶 10 個名額：加權配額全被壓到下限 1，保底那一輪就發完了。
+    // 沒有下限的話，加權算出來不足一塊的來源會直接掛零。
+    const pinnedSources = Array.from({ length: 9 }, (_, index) => bulk(`指定來源 ${index}`, 4));
+    const other = bulk("未指定來源", 20);
+    const sources = [...pinnedSources, other];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(
+      retriever,
+      projectId,
+      sources,
+      "電動車市場",
+      10,
+      pinnedSources.map((item) => item.id),
+    );
+
+    expect(context).toHaveLength(10);
+    for (const pinnedSource of pinnedSources)
+      expect(context.filter((chunk) => chunk.id === pinnedSource.id)).toHaveLength(1);
+    // 指定的 9 份先各拿 1 塊，最後 1 個名額才輪到未指定的來源。
+    expect(context.filter((chunk) => chunk.id === other.id)).toHaveLength(1);
+  });
+
+  it("指定的份數多於 limit 時只留最相關的那幾份，不會超額", () => {
+    const relevant = source("電動車年報", ["台灣電動車市場銷量分析"]);
+    const noise = Array.from({ length: 5 }, (_, index) =>
+      source(`無關指定 ${index}`, [`完全不相干的內部行政公告第 ${index} 號`]),
+    );
+    const sources = [...noise, relevant];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(
+      retriever,
+      projectId,
+      sources,
+      "台灣電動車市場",
+      2,
+      sources.map((item) => item.id),
+    );
+
+    expect(context).toHaveLength(2);
+    expect(context.map((chunk) => chunk.name)).toContain("電動車年報");
+  });
+
+  it("指定的來源片段不足時名額不會被浪費，仍舊填滿 limit", () => {
+    // 指定的那份只有一塊，加權配額分到的名額用不完。剩下的要真的發下去——否則 prompt
+    // 明明還有一半預算沒用，模型手上的資料卻平白少一截。
+    const pinnedSource = source("短來源", ["台灣電動車市場的一句話"]);
+    const relevant = bulk("充電樁調查", 30);
+    const unrelated = source(
+      "行政公告",
+      Array.from({ length: 6 }, (_, index) => `完全不相干的內部行政公告第 ${index} 號`),
+    );
+    const sources = [pinnedSource, relevant, unrelated];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 10, [
+      pinnedSource.id,
+    ]);
+
+    expect(context).toHaveLength(10);
+    // 指定的那份只拿得到它僅有的一塊，其餘名額回到相關度補位那一輪。
+    expect(context.filter((chunk) => chunk.id === pinnedSource.id)).toHaveLength(1);
+    // 一塊都沒命中的來源仍拿得到加權配額 round(10 × 1 / 4.3) = 2。
+    expect(context.filter((chunk) => chunk.id === unrelated.id)).toHaveLength(2);
+    expect(context.filter((chunk) => chunk.id === relevant.id)).toHaveLength(7);
+  });
+
+  it("已刪除或不可存取的指定 id 不會白白占掉加權後的名額", () => {
+    const blocked = { ...bulk("不可存取", 30), allowModelAccess: false };
+    const usable = bulk("電動車年報", 30);
+    const another = bulk("充電樁調查", 30);
+    const sources = [blocked, usable, another];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 10, [
+      blocked.id,
+      "不存在的來源 id",
+    ]);
+    const baseline = knownSourceContext(retriever, projectId, sources, "電動車市場", 10);
+
+    // 指定的 id 全部無效，等同沒有指定。
+    expect(context).toEqual(baseline);
+    expect(context.some((chunk) => chunk.id === blocked.id)).toBe(false);
+  });
+
+  it("全部來源都被指定時等同一般分配：權重一致，沒有人被優待也沒有人被餓死", () => {
+    const first = bulk("電動車年報", 30);
+    const second = bulk("充電樁調查", 30);
+    const sources = [first, second];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 10, [
+      first.id,
+      second.id,
+    ]);
+
+    expect(context).toHaveLength(10);
+    expect(new Set(context.map((chunk) => chunk.id))).toEqual(new Set([first.id, second.id]));
+  });
+
+  it("limit 為 1 時唯一的名額給指定的來源，而不是給相關度最高的那一份", () => {
+    // 名額只有一個時七成與三成無法並存，總得有人拿到。指定是使用者明確的要求，
+    // 相關度只是估計值，所以名額歸指定的來源；記下這個取捨，之後才看得出是不是被改掉了。
+    const pinnedSource = source("使用者指定", ["電動車市場的一小段補充"]);
+    const mostRelevant = bulk("最相關但沒指定", 30);
+    const sources = [mostRelevant, pinnedSource];
+    const retriever = retrieverFor(projectId, sources);
+    const context = knownSourceContext(retriever, projectId, sources, "電動車市場", 1, [
+      pinnedSource.id,
+    ]);
+
+    expect(context).toHaveLength(1);
+    expect(context[0]?.id).toBe(pinnedSource.id);
+  });
+});
