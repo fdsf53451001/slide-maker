@@ -1359,7 +1359,8 @@ header {
   gap: 10px;
   margin-top: 10px;
   min-height: 68px;
-  max-height: 80px;
+  /* 一列的高度：縮圖 + 版本名稱 + 時間戳，有 label 的版本才會用到滿。 */
+  max-height: 100px;
   overflow-y: auto;
 }
 .version-list button {
@@ -1386,6 +1387,15 @@ header {
   font: 9px "DM Mono";
   color: var(--text-muted);
   padding: 4px;
+}
+/* 版本名稱（如 PDF 匯入的「原始頁面」／「可編輯文字」）：比時間戳顯眼一級。 */
+.version-list span.version-label {
+  color: var(--text);
+  padding-bottom: 0;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .empty-inline {
   color: #5e6b80;
@@ -3853,6 +3863,16 @@ header {
   color: #ffc0b4;
   font-size: 12px;
 }
+.pdf-modal-progress {
+  margin: 0 20px 12px;
+  padding: 9px 14px;
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
+  border-radius: 7px;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
 
 /* === Interaction base ===
    Smooth every plain interactive element's hover/focus/active state. Element
@@ -3920,4 +3940,127 @@ textarea:focus-visible,
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* === PDF 匯入簡報 ===
+   首頁的匯入入口、選頁對話框的補充樣式，以及匯入後的風格分析頁。
+   選頁網格沿用既有的 .pdf-page* 樣式（同一種 16:9 縮圖挑選介面）。 */
+.import-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 26px;
+  border: 1px solid #2b3850;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #111828, #0c1220);
+}
+.import-panel h2 {
+  margin: 7px 0 6px;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+.import-panel p {
+  margin: 0;
+  color: #8d9ab0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.import-panel button {
+  flex: none;
+  min-width: 132px;
+}
+/*
+  匯入報告是資訊性的 toast，不是錯誤：沿用 `.toast` 的定位與陰影，但換成中性配色。
+  用 `.toast.import-report` 而不是單一 class，覆蓋才不依賴檔案裡的先後順序。
+*/
+.toast.import-report {
+  padding: 10px 14px;
+  border: 1px solid #35435c;
+  background: #0d1421;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.pdf-deck-name {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.pdf-deck-name label {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.pdf-deck-name input {
+  padding: 9px 11px;
+  border: 1px solid #35435c;
+  border-radius: 7px;
+  background: #090f1a;
+  color: #f2f5f9;
+  outline: none;
+}
+.pdf-modal-note div + div {
+  margin-top: 4px;
+}
+.pdf-analysis .pdf-analysis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.pdf-analysis-actions {
+  display: flex;
+  flex: none;
+  gap: 9px;
+}
+.pdf-analysis-status {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #2b3850;
+  border-radius: 8px;
+  background: #0d1421;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.pdf-analysis .pdf-modal-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 0;
+}
+.pdf-analysis-grid {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  padding: 0;
+  max-height: 46vh;
+}
+/* 切到 PDF 匯入的「可編輯文字」版本時的一次性字型提示（見 oneTimeNotice.ts）。 */
+.pdf-font-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid #3a4a2f;
+  border-radius: 7px;
+  background: #161c10;
+  color: #d5e4c4;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.pdf-font-notice button {
+  flex: none;
+  border: 1px solid #4c6039;
+  border-radius: 4px;
+  padding: 6px 10px;
+  background: #202a15;
+  color: #e6f0da;
+  cursor: pointer;
+  font-size: 10px;
 }

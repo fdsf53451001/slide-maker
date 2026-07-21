@@ -19,12 +19,15 @@ import {
   SafeProviderError,
   sourceUsageSchema,
   slideSpecSchema,
+  stylePresetSchema,
   type ModelLibrary,
   type PresentationBrief,
   type PresentationProject,
   type SlideSpec,
+  type SlideVersion,
   type SourceAsset,
   type StructuredTextProvider,
+  type StyleReferenceImage,
 } from "@slide-maker/core";
 import {
   informationDensityInstruction,
@@ -59,10 +62,19 @@ import { FileStyleRepository } from "./styles.js";
 import {
   renderDesignSystem,
   STYLE_ANALYSIS_PROMPT,
+  StyleAnalysisError,
   styleAnalysisJsonSchema,
   styleAnalysisSchema,
 } from "./style-analysis.js";
 import { renderPdfPages } from "./pdf-pages.js";
+import {
+  DECK_PAGE_HEIGHT,
+  DECK_PAGE_WIDTH,
+  MAX_DECK_PAGES,
+  inspectPdfDeck,
+  renderDeckPages,
+  renderDeckPreviews,
+} from "./pdf-deck.js";
 import { ingestSource, safeFilename, searchSources } from "./sources.js";
 import {
   exportFilename,
@@ -79,6 +91,40 @@ import { refineOcrBoxes } from "./ocr-refine.js";
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
 const OUTLINE_MAX_ATTEMPTS = 3;
+
+/**
+ * PDF 相關錯誤碼 → 使用者看得懂的原因。
+ *
+ * 這些碼從光柵化管線深處以具名 Error 拋出（跨 worker 執行緒也只剩字串），沒有辦法
+ * 在拋出點帶訊息；統一在對外邊界翻譯。匯入對話框是新使用者看到的第一個畫面，
+ * 在那裡顯示 `PDF_ASPECT_UNSUPPORTED` 等於什麼都沒說。
+ */
+const PDF_MESSAGES: Record<string, string> = {
+  // 預設文字引擎（codex）的風格分析逾時：`provider-codex` 只丟得出裸的碼字串
+  // （不是 StyleAnalysisError），沒有這一條的話分析頁會直接顯示
+  // `CODEX_STRUCTURED_TIMEOUT`。openai 引擎走 SafeProviderError，不經過這裡。
+  CODEX_STRUCTURED_TIMEOUT:
+    "分析這幾頁花太久已中止。可以直接重試，或少挑幾頁再分析一次；也可以先用預設風格進編輯器。",
+  PDF_SIZE_INVALID: "檔案是空的或超過 100MB 上限。",
+  PDF_INVALID: "這不是一份 PDF 檔。",
+  PDF_EMPTY: "這份 PDF 沒有任何頁面。",
+  PDF_RENDER_FAILED: "無法讀取這份 PDF，可能已加密或損壞。",
+  PDF_ASPECT_UNSUPPORTED:
+    "只能匯入 16:9 的簡報：這份 PDF 第一頁不是 16:9。若原檔是 PowerPoint／Keynote，請把版面設成 16:9 再另存為 PDF。",
+  PDF_PAGE_SELECTION_INVALID: "選取的頁面沒有一頁可以匯入，請重新挑選。",
+  PDF_PAGE_NOT_FOUND: "這一頁不在 PDF 裡。",
+  PDF_IMPORT_TIMEOUT: "這份 PDF 處理太久已中止。請減少選取的頁數再試一次。",
+  PDF_RENDER_WORKER_FAILED: "PDF 轉檔程序中途結束，沒有完成匯入。請再試一次。",
+};
+
+/**
+ * 伺服器端失敗的 PDF 錯誤碼 → HTTP 狀態。
+ * 這兩個不是壞輸入：回 4xx 的話，log 裡分不出使用者送了怪檔案還是 worker 掛了。
+ */
+const PDF_SERVER_FAILURE_STATUS: Record<string, number> = {
+  PDF_IMPORT_TIMEOUT: 504,
+  PDF_RENDER_WORKER_FAILED: 500,
+};
 /** 前端「選擇模型」步驟可覆寫文字／搜尋引擎；未指定時回退環境變數預設。 */
 const textEngineSchema = z.enum(["codex", "openai"]).optional();
 const aiOutlineSchema = z.object({
@@ -818,17 +864,228 @@ export async function createApp(
       response.json(await renderPdfPages(bytes));
     },
   );
-  app.post("/api/style-analysis", async (request, response) => {
-    const { referenceIds, combinationId } = z
-      .object({
-        referenceIds: z.array(idSchema).min(1).max(4),
-        combinationId: idSchema.optional(),
-      })
-      .parse(request.body);
+  // ── 從 PDF 匯入簡報 ────────────────────────────────────────────────────────
+  // 與「從 PDF 建立風格」（/api/pdf-pages）完全分開：那條是 1024px 縮圖、上限 24 頁、
+  // 無狀態；這條是 1920×1080、上限 150 頁、確認後專案立刻落地並保留 PDF 原檔。
+  app.post(
+    "/api/pdf-deck/inspect",
+    express.raw({ type: () => true, limit: "100mb" }),
+    async (request, response) => {
+      const bytes =
+        request.body instanceof Buffer ? new Uint8Array(request.body) : new Uint8Array();
+      const inspection = await inspectPdfDeck(bytes);
+      const { previews, failedPages } = await renderDeckPreviews(bytes, inspection.acceptedPages);
+      response.json({
+        totalPages: inspection.totalPages,
+        truncated: inspection.truncated,
+        maxPages: MAX_DECK_PAGES,
+        acceptedPages: inspection.acceptedPages,
+        skippedPages: inspection.skippedPages,
+        failedPages,
+        previews,
+      });
+    },
+  );
+
+  app.post(
+    "/api/pdf-deck/import",
+    express.raw({ type: () => true, limit: "100mb" }),
+    async (request, response) => {
+      const input = z
+        .object({
+          name: z.string().trim().min(1).max(200),
+          pages: z.string().trim().min(1).max(2_000),
+        })
+        .parse(request.query);
+      const requested = [
+        ...new Set(
+          input.pages
+            .split(",")
+            .map((value) => Number.parseInt(value, 10))
+            .filter((value) => Number.isInteger(value) && value >= 1),
+        ),
+      ].sort((left, right) => left - right);
+      if (!requested.length || requested.length > MAX_DECK_PAGES)
+        throw new Error("PDF_PAGE_SELECTION_INVALID");
+      const bytes =
+        request.body instanceof Buffer ? new Uint8Array(request.body) : new Uint8Array();
+      // 選檔階段已驗過比例，這裡重驗一次：請求可以被改，不能相信客戶端送來的頁碼。
+      const inspection = await inspectPdfDeck(bytes);
+      const accepted = new Set(inspection.acceptedPages);
+      const pageNumbers = requested.filter((pageNumber) => accepted.has(pageNumber));
+      if (!pageNumbers.length) throw new Error("PDF_PAGE_SELECTION_INVALID");
+      // 原圖與可編輯文字層一次做完：兩個 version 在匯入當下就都建好，之後只靠既有的
+      // 版本切換 UI 存取，沒有「按一顆按鈕才即時抽字」的延後路徑。
+      const rendered = await renderDeckPages(bytes, pageNumbers, {}, { textLayer: true });
+      if (!rendered.pages.length) throw new Error("PDF_RENDER_FAILED");
+      const now = new Date().toISOString();
+      const project = createProject({
+        topic: input.name,
+        name: input.name,
+        // desiredSlideCount 的 schema 上限是 100；此欄位只在生成大綱時用，匯入專案不走那條路。
+        brief: { desiredSlideCount: Math.min(rendered.pages.length, 100) },
+        now,
+      });
+      project.canvas = { width: DECK_PAGE_WIDTH, height: DECK_PAGE_HEIGHT };
+      // 分析頁是專案的一個狀態（不是前端暫存）：重新整理會回到同一頁。
+      project.workflowStage = "settings";
+      // 原檔與每頁 PNG 都寫在 `saveProject` 之前，中途 throw 的話 `project.json`
+      // 不會存在 → 專案不在 `listProjects()` 裡，但目錄下已經躺著 100MB 的 PDF
+      // 與一堆 PNG，UI 看不到也刪不掉。任一步失敗就把整個專案目錄清掉。
+      try {
+        const sourcePath = await repository.saveAsset(project.id, "pdf-import/source.pdf", bytes);
+        // 刻意逐頁序列處理：每頁的合成要 sharp 解出兩張 1920×1080 的原始像素，
+        // 150 頁一起併發會把記憶體推到 GB 等級，而寫檔本來就是瓶頸。
+        const slides = [];
+        for (const [order, page] of rendered.pages.entries()) {
+          const slideId = randomUUID();
+          const originalVersionId = randomUUID();
+          const imagePath = await repository.saveAsset(
+            project.id,
+            `${slideId}/${originalVersionId}.png`,
+            page.png,
+          );
+          const outlineSnapshot = {
+            purpose: page.title,
+            content: page.content,
+            narrative: "",
+            layoutHint: "",
+            imagePrompt: "",
+            sourceIds: [],
+          };
+          const originalVersion: SlideVersion = {
+            id: originalVersionId,
+            imagePath,
+            prompt: "",
+            providerId: "pdf-import",
+            model: "pdf-import",
+            // 保留 PDF 原檔與頁碼：日後要重抽這一頁的文字層還回得去。
+            parameters: {
+              pdfImport: true,
+              pdfPage: page.pageNumber,
+              pdfSourcePath: sourcePath,
+            },
+            styleVersion: project.styleSnapshot.version,
+            sources: [],
+            outlineSnapshot,
+            createdAt: now,
+            label: "原始頁面",
+          };
+          const versions: SlideVersion[] = [originalVersion];
+          // 掃描頁沒有原生文字層，就只有原圖版本——不報錯，也不對使用者提示。
+          // 其他原因抽不出來的頁同樣只有原圖，但會列進 report.textLayerFailedPages。
+          if (page.textLayer) {
+            const textVersionId = randomUUID();
+            const backgroundPath = await repository.saveAsset(
+              project.id,
+              `text-layers/${originalVersionId}/background-${textVersionId}.png`,
+              page.textLayer.background,
+            );
+            const textLayer = {
+              originalVersionId,
+              backgroundPath,
+              compositePath: backgroundPath,
+              threshold: 0.75,
+              renderRevision: 0,
+              boxes: page.textLayer.boxes,
+              extractedAt: now,
+              updatedAt: now,
+            };
+            textLayer.compositePath = await renderComposite(repository, project, textLayer);
+            versions.push({
+              ...originalVersion,
+              id: textVersionId,
+              imagePath: textLayer.compositePath,
+              label: "可編輯文字",
+              textLayer,
+            });
+          }
+          slides.push(
+            slideSpecSchema.parse({
+              id: slideId,
+              order,
+              ...outlineSnapshot,
+              dataBasis: [],
+              sourceIds: [],
+              // 預設顯示原圖：匯出保真，要編輯文字再從版本歷史切到「可編輯文字」。
+              currentVersionId: originalVersionId,
+              versions,
+            }),
+          );
+        }
+        project.slides = slides;
+        await repository.saveProject(project);
+      } catch (error) {
+        // 這個 id 是剛剛才生出來的，目錄下只有這次匯入寫的東西，整個移除是安全的。
+        await repository.deleteProject(project.id).catch(() => undefined);
+        throw error;
+      }
+      response.status(201).json({
+        project,
+        report: {
+          totalPages: inspection.totalPages,
+          importedPages: rendered.pages.map((page) => page.pageNumber),
+          skippedPages: inspection.skippedPages,
+          failedPages: rendered.failedPages,
+          // 掃描頁本來就沒有原生文字（不列出）；這裡只有非預期失敗的頁。
+          textLayerFailedPages: rendered.pages
+            .filter((page) => page.textLayerError)
+            .map((page) => page.pageNumber),
+          truncated: inspection.truncated,
+        },
+      });
+    },
+  );
+
+  // ── 風格分析 ──────────────────────────────────────────────────────────────
+
+  /** 專案本地風格 fork 的 id：只有這個 id 的 snapshot 擁有自己的參考圖。 */
+  const projectStyleId = (projectId: string) => `pdf-style-${projectId}`;
+
+  /**
+   * 這個專案自己擁有、換掉之後可以安全刪除的參考圖 id。
+   *
+   * 只有 fork 成 `pdf-style-<projectId>` 的本地 snapshot 才是專案自己建的那一批；
+   * 套用風格庫的風格之後 snapshot 是庫裡風格的複本，那些參考圖歸風格庫所有，
+   * 刪掉會讓庫裡的風格指到不存在的檔案。
+   */
+  function ownedStyleReferences(project: PresentationProject): string[] {
+    if (project.styleSnapshot.id !== projectStyleId(project.id)) return [];
+    return project.styleSnapshot.referenceImages.map((image) => image.id);
+  }
+
+  /**
+   * 把某個 slide version 的圖另存成一張 style asset。
+   * 風格庫列表只掃 `*.vN.json`，這些資產不會污染列表（已確認）。
+   */
+  async function saveVersionStyleReference(
+    project: PresentationProject,
+    slideId: string,
+    versionId: string,
+  ): Promise<StyleReferenceImage> {
+    const slideIndex = project.slides.findIndex((slide) => slide.id === slideId);
+    const version = project.slides[slideIndex]?.versions.find((item) => item.id === versionId);
+    if (!version) throw new Error("Version not found");
+    const relative = version.imagePath.replace(/^assets\//, "");
+    const mediaType = relative.endsWith(".png")
+      ? ("image/png" as const)
+      : relative.match(/\.jpe?g$/)
+        ? ("image/jpeg" as const)
+        : undefined;
+    if (!mediaType) throw new Error("STYLE_REFERENCE_CONTENT_INVALID");
+    const bytes = new Uint8Array(await readFile(repository.assetPath(project.id, relative)));
+    return styles.saveReference(`${project.name} - Slide ${slideIndex + 1}`, mediaType, bytes);
+  }
+
+  /** 跑一次參考圖風格分析，輸出可直接寫進 StylePreset 的 designSystem。 */
+  async function analyzeStyleReferences(
+    referenceIds: readonly string[],
+    combinationId: string | undefined,
+  ): Promise<{ designSystem: string; avoid: string[] }> {
     // 風格分析無專案脈絡：由呼叫端指定組合，未指定時退回模型庫預設組合。
     const structuredText = runtime.resolveTextProvider(combinationId);
     if (structuredText.availability.status !== "available")
-      throw new Error("CODEX_STYLE_ANALYSIS_DISABLED");
+      throw new StyleAnalysisError("CODEX_STYLE_ANALYSIS_DISABLED");
     const imagePaths = [];
     for (const id of referenceIds) {
       const reference = await styles.referenceMetadata(id);
@@ -843,7 +1100,111 @@ export async function createApp(
         prompt: STYLE_ANALYSIS_PROMPT,
       }),
     );
-    response.json({ designSystem: renderDesignSystem(result), avoid: result.avoid });
+    return { designSystem: renderDesignSystem(result), avoid: result.avoid };
+  }
+
+  /**
+   * 把風格分析結果寫回專案自己的 styleSnapshot。
+   * 一律 fork 成專案本地風格 id：風格庫沒有這個 id，`refreshStyleForGeneration`
+   * 就不會在生成前用庫裡的版本把分析結果蓋掉，也不會污染風格庫列表。
+   *
+   * 帶了 `referenceImages` 就會一起換掉 snapshot 的參考圖，並刪掉被取代的上一批。
+   */
+  async function writeProjectStyleSnapshot(
+    projectId: string,
+    patch: {
+      designSystem?: string;
+      avoid?: string[];
+      name?: string;
+      referenceImages?: StyleReferenceImage[];
+    },
+  ): Promise<PresentationProject> {
+    const superseded: string[] = [];
+    const project = await repository.updateProject(projectId, (current) => {
+      if (patch.referenceImages) {
+        const keep = new Set(patch.referenceImages.map((image) => image.id));
+        superseded.push(...ownedStyleReferences(current).filter((id) => !keep.has(id)));
+      }
+      current.styleSnapshot = stylePresetSchema.parse({
+        ...current.styleSnapshot,
+        id: projectStyleId(current.id),
+        version: 1,
+        system: false,
+        ...(patch.name ? { name: patch.name } : {}),
+        ...(patch.designSystem === undefined ? {} : { designSystem: patch.designSystem }),
+        ...(patch.avoid ? { avoid: patch.avoid } : {}),
+        // 副作用（刻意保留）：寫進 referenceImages 的頁面不只是這一次分析的輸入，
+        // 它們會成為這個專案**後續每一次生圖**的 style reference——`jobs.ts` 的
+        // `styleReferences` 直接由 `project.styleSnapshot.referenceImages` 展開，
+        // 每次生成都會多送這幾張全頁圖給模型。讓新生成的頁與原簡報視覺一致正是
+        // 自動跑風格分析的目的，所以這是要的效果；分析頁上會告訴使用者附了幾張。
+        ...(patch.referenceImages ? { referenceImages: patch.referenceImages } : {}),
+        updatedAt: new Date().toISOString(),
+      });
+      current.updatedAt = new Date().toISOString();
+      return structuredClone(current);
+    });
+    // 被這一批取代掉的上一批分析圖：只有這個 snapshot 引用過，可以直接刪。
+    // 已經寫完新的 snapshot 才刪，刪失敗最多是留下孤兒，不會弄丟正在用的圖。
+    await Promise.allSettled(superseded.map((id) => styles.deleteReference(id)));
+    return project;
+  }
+
+  app.post("/api/style-analysis", async (request, response) => {
+    const { referenceIds, combinationId } = z
+      .object({
+        referenceIds: z.array(idSchema).min(1).max(4),
+        combinationId: idSchema.optional(),
+      })
+      .parse(request.body);
+    response.json(await analyzeStyleReferences(referenceIds, combinationId));
+  });
+
+  /**
+   * PDF 匯入分析頁專用：建立分析用參考圖 → 跑分析 → 寫回 styleSnapshot，一筆交易。
+   *
+   * 由前端串三支端點的話，中間任何一步失敗（分析被停用、模型交出空殼、逾時——
+   * 全都是規格明文要求「明確顯示錯誤、可重試」的正常路徑）都會留下剛寫進
+   * `styles/assets` 的參考圖：沒有任何 snapshot 引用、風格庫列表看不到、也不在專案
+   * 目錄底下（刪專案帶不走）。按三次重試就是 24 個孤兒檔。這裡失敗就把這一輪自己
+   * 建的那批刪掉，重試幾次都不會累積。
+   */
+  app.post("/api/projects/:projectId/style-analysis", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const input = z
+      .object({
+        slideIds: z.array(idSchema).min(1).max(4),
+        combinationId: idSchema.optional(),
+        name: z.string().trim().min(1).max(120).optional(),
+      })
+      .parse(request.body ?? {});
+    const project = await repository.loadProject(projectId);
+    if (!project) throw new Error("Project not found");
+    const created: StyleReferenceImage[] = [];
+    const analysed = await (async () => {
+      try {
+        for (const slideId of input.slideIds) {
+          const slide = project.slides.find((candidate) => candidate.id === slideId);
+          const versionId = slide?.currentVersionId;
+          if (!slide || !versionId) throw new Error("Version not found");
+          created.push(await saveVersionStyleReference(project, slide.id, versionId));
+        }
+        const analysis = await analyzeStyleReferences(
+          created.map((image) => image.id),
+          input.combinationId,
+        );
+        return await writeProjectStyleSnapshot(projectId, {
+          designSystem: analysis.designSystem,
+          avoid: analysis.avoid,
+          ...(input.name ? { name: input.name } : {}),
+          referenceImages: created,
+        });
+      } catch (error) {
+        await Promise.allSettled(created.map((image) => styles.deleteReference(image.id)));
+        throw error;
+      }
+    })();
+    response.json(analysed);
   });
   app.get("/api/projects", async (_request, response) =>
     response.json(await repository.listProjects()),
@@ -1060,8 +1421,60 @@ export async function createApp(
       .parse(request.body);
     const style = await styles.get(input.styleId, input.version);
     if (!style) throw new Error("Style not found");
+    const superseded: string[] = [];
     const project = await repository.updateProject(projectId, (current) => {
+      // 整包換掉 styleSnapshot：本地 fork 自己建的那批分析圖從此沒有任何引用，
+      // 留著就是 styles/assets 下的孤兒（不在專案目錄裡，刪專案也帶不走）。
+      const keep = new Set(style.referenceImages.map((image) => image.id));
+      superseded.push(...ownedStyleReferences(current).filter((id) => !keep.has(id)));
       current.styleSnapshot = structuredClone(style);
+      current.updatedAt = new Date().toISOString();
+      return structuredClone(current);
+    });
+    await Promise.allSettled(superseded.map((id) => styles.deleteReference(id)));
+    response.json(project);
+  });
+
+  /**
+   * 把風格分析結果寫回專案自己的 styleSnapshot（PDF 匯入的分析頁用）。
+   * 建參考圖 → 分析 → 寫回的整段交易在 `/api/projects/:projectId/style-analysis`；
+   * 這一支只負責寫，給已經有結果（或只想改名／改 avoid）的呼叫端用。
+   */
+  app.patch("/api/projects/:projectId/style-snapshot", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const patch = z
+      .object({
+        designSystem: z.string().max(20_000).optional(),
+        avoid: z.array(z.string().trim().min(1).max(200)).max(40).optional(),
+        name: z.string().trim().min(1).max(120).optional(),
+        // 分析用的那幾張頁面圖。存進 snapshot 才有主：否則每按一次「重新分析」
+        // 就有 4 張 1920×1080 PNG 躺在 styles/assets 下面，沒有引用、沒有清理路徑，
+        // 連刪專案都帶不走（它們不在 project root 底下）。
+        referenceIds: z.array(idSchema).max(4).optional(),
+      })
+      .parse(request.body ?? {});
+    const referenceImages = patch.referenceIds
+      ? (await Promise.all(patch.referenceIds.map((id) => styles.referenceMetadata(id)))).filter(
+          (image) => image !== undefined,
+        )
+      : undefined;
+    response.json(
+      await writeProjectStyleSnapshot(projectId, {
+        ...(patch.designSystem === undefined ? {} : { designSystem: patch.designSystem }),
+        ...(patch.avoid ? { avoid: patch.avoid } : {}),
+        ...(patch.name ? { name: patch.name } : {}),
+        ...(referenceImages ? { referenceImages } : {}),
+      }),
+    );
+  });
+
+  app.patch("/api/projects/:projectId/workflow-stage", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const { workflowStage } = z
+      .object({ workflowStage: z.enum(["requirements", "settings", "editing"]) })
+      .parse(request.body);
+    const project = await repository.updateProject(projectId, (current) => {
+      current.workflowStage = workflowStage;
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });
@@ -1726,27 +2139,7 @@ export async function createApp(
       const versionId = idSchema.parse(request.params.versionId);
       const project = await repository.loadProject(projectId);
       if (!project) throw new Error("Project not found");
-      const version = project.slides
-        .find((slide) => slide.id === slideId)
-        ?.versions.find((item) => item.id === versionId);
-      if (!version) throw new Error("Version not found");
-      const relative = version.imagePath.replace(/^assets\//, "");
-      const mediaType = relative.endsWith(".png")
-        ? ("image/png" as const)
-        : relative.match(/\.jpe?g$/)
-          ? ("image/jpeg" as const)
-          : undefined;
-      if (!mediaType) throw new Error("STYLE_REFERENCE_CONTENT_INVALID");
-      const bytes = new Uint8Array(await readFile(repository.assetPath(projectId, relative)));
-      response
-        .status(201)
-        .json(
-          await styles.saveReference(
-            `${project.name} - Slide ${project.slides.findIndex((slide) => slide.id === slideId) + 1}`,
-            mediaType,
-            bytes,
-          ),
-        );
+      response.status(201).json(await saveVersionStyleReference(project, slideId, versionId));
     },
   );
 
@@ -2007,13 +2400,27 @@ export async function createApp(
     ) {
       return response.status(409).json({ error: error.message });
     }
+    if (error instanceof StyleAnalysisError)
+      // 風格分析的具名失敗：`message` 是要直接顯示給使用者的中文說明。
+      return response.status(400).json({ error: error.code, message: error.message });
+    if (error instanceof Error && error.message in PDF_SERVER_FAILURE_STATUS) {
+      // worker 崩潰與整批逾時是伺服器端的失敗，不是壞輸入：回 4xx 的話，log 裡
+      // 分不出「使用者送了怪 PDF」與「render worker 掛了」。
+      console.error("PDF import failed", { code: error.message });
+      return response
+        .status(PDF_SERVER_FAILURE_STATUS[error.message]!)
+        .json({ error: error.message, message: PDF_MESSAGES[error.message]! });
+    }
     if (
       error instanceof Error &&
       /^(SOURCE_|PROJECT_BUNDLE_|EXPORT_|SLIDE_VERSION_MISSING|STYLE_REFERENCE_|STYLE_COVER_|PDF_|CODEX_OUTLINE_|CODEX_STRUCTURED_|CODEX_STYLE_ANALYSIS_)/.test(
         error.message,
       )
-    )
-      return response.status(400).json({ error: error.message });
+    ) {
+      const message = PDF_MESSAGES[error.message];
+      // PDF 匯入是新使用者看到的第一個畫面：裸錯誤碼在那裡沒有任何意義。
+      return response.status(400).json({ error: error.message, ...(message ? { message } : {}) });
+    }
     if (error instanceof SafeProviderError) {
       // Provider 對外安全錯誤：回傳 code 與安全訊息，讓前端能顯示可行動的原因。
       console.error("Request failed", { name: error.name, code: error.code });

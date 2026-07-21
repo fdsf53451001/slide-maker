@@ -54,6 +54,32 @@ export interface WebSearchResult {
   summary: string;
 }
 
+export interface PdfDeckInspection {
+  totalPages: number;
+  truncated: boolean;
+  maxPages: number;
+  /** 比例符合第一頁、可匯入的頁碼。 */
+  acceptedPages: number[];
+  /** 比例不符而略過的頁碼（選檔階段就列出）。 */
+  skippedPages: number[];
+  /** 連縮圖都 render 不出來的頁碼。 */
+  failedPages: number[];
+  previews: { pageNumber: number; dataUrl: string }[];
+}
+
+export interface PdfDeckImportReport {
+  totalPages: number;
+  importedPages: number[];
+  skippedPages: number[];
+  failedPages: number[];
+  /**
+   * 頁面匯入了，但「可編輯文字」版本沒建起來的頁。掃描頁本來就沒有原生文字，
+   * 不算失敗、不列在這裡。
+   */
+  textLayerFailedPages: number[];
+  truncated: boolean;
+}
+
 export interface TextProviderSummary {
   id: string;
   name: string;
@@ -64,11 +90,16 @@ export interface TextProviderSummary {
 
 type ApiFailure = {
   error?: string;
+  message?: string;
   issues?: { path?: (string | number)[]; message?: string }[];
 };
 
 // 伺服器對 zod 驗證失敗只回 `INVALID_REQUEST` 這個代碼，細節在 `issues` 裡；
 // 一併攤平成訊息，使用者才知道是哪個欄位不合法（例如 purpose 超過上限）。
+// provider／模型庫／PDF 匯入／風格分析的失敗則是 `{ error: code, message }`，
+// `message` 就是寫給使用者的那一句；有它就只顯示它，不要在前面掛一串錯誤碼——
+// 裸的 `CODEX_STYLE_ANALYSIS_DISABLED`、`PDF_ASPECT_UNSUPPORTED` 對使用者沒有意義，
+// 而 PDF 匯入對話框正是新使用者看到的第一個畫面。沒有 `message` 才退回代碼。
 function failureMessage(body: unknown, fallback: string): string {
   if (typeof body !== "object" || body === null) return fallback;
   const failure = body as ApiFailure;
@@ -79,7 +110,7 @@ function failureMessage(body: unknown, fallback: string): string {
     })
     .filter(Boolean)
     .join("；");
-  return [failure.error ?? fallback, detail].filter(Boolean).join(" — ");
+  return [failure.message || failure.error || fallback, detail].filter(Boolean).join(" — ");
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -339,6 +370,47 @@ export const api = {
       throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
     return body as { pages: string[]; totalPages: number; truncated: boolean };
   },
+  // ── 從 PDF 匯入簡報 ──────────────────────────────────────────────────────
+  // 與「從 PDF 建立風格」的 renderPdfPages 完全分開（不同解析度、頁數上限與落地方式）。
+  inspectPdfDeck: async (file: File): Promise<PdfDeckInspection> => {
+    const response = await fetch("/api/pdf-deck/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: file,
+    });
+    const body = (await response.json()) as PdfDeckInspection | ApiFailure;
+    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    return body as PdfDeckInspection;
+  },
+  importPdfDeck: async (
+    file: File,
+    name: string,
+    pages: number[],
+  ): Promise<{ project: PresentationProject; report: PdfDeckImportReport }> => {
+    const query = new URLSearchParams({ name, pages: pages.join(",") });
+    const response = await fetch(`/api/pdf-deck/import?${query}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: file,
+    });
+    const body = (await response.json()) as
+      { project: PresentationProject; report: PdfDeckImportReport } | ApiFailure;
+    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    return body as { project: PresentationProject; report: PdfDeckImportReport };
+  },
+  updateStyleSnapshot: (
+    projectId: string,
+    patch: { designSystem?: string; avoid?: string[]; name?: string; referenceIds?: string[] },
+  ) =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/style-snapshot`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  setWorkflowStage: (projectId: string, workflowStage: "requirements" | "settings" | "editing") =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/workflow-stage`, {
+      method: "PATCH",
+      body: JSON.stringify({ workflowStage }),
+    }),
   versionToStyleReference: (projectId: string, slideId: string, versionId: string) =>
     request<StyleReferenceImage>(
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/style-reference`,
@@ -348,6 +420,24 @@ export const api = {
     request<{ designSystem: string; avoid: string[] }>("/api/style-analysis", {
       method: "POST",
       body: JSON.stringify({ referenceIds, ...(combinationId ? { combinationId } : {}) }),
+    }),
+  /**
+   * PDF 匯入分析頁用：建參考圖 → 分析 → 寫回 styleSnapshot 一次做完。
+   * 刻意不在前端串三支端點——中途失敗會留下沒有主的參考圖，重試幾次就在
+   * `styles/assets` 下堆孤兒檔（伺服器端的交易會在失敗時清掉自己建的那批）。
+   */
+  analyseProjectStyle: (
+    projectId: string,
+    slideIds: string[],
+    options: { combinationId?: string; name?: string } = {},
+  ) =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/style-analysis`, {
+      method: "POST",
+      body: JSON.stringify({
+        slideIds,
+        ...(options.combinationId ? { combinationId: options.combinationId } : {}),
+        ...(options.name ? { name: options.name } : {}),
+      }),
     }),
   cancel: (projectId: string, jobId: string) =>
     request<GenerationJob>(

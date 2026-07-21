@@ -8,6 +8,30 @@ import { z } from "zod";
  */
 export const styleArchetypeKinds = ["cover", "section", "content"] as const;
 
+/**
+ * 風格分析的具名失敗。
+ *
+ * `message` 是要直接顯示給使用者的中文句子：這兩個碼會落到分析頁上，只回
+ * `CODEX_STYLE_ANALYSIS_DISABLED` 這種字串等於沒說明能做什麼。`code` 仍然保留，
+ * 由 `app.ts` 的錯誤處理一起回給前端（`{ error: code, message }`）。
+ */
+export class StyleAnalysisError extends Error {
+  readonly code: string;
+
+  constructor(code: keyof typeof STYLE_ANALYSIS_MESSAGES) {
+    super(STYLE_ANALYSIS_MESSAGES[code]);
+    this.name = "StyleAnalysisError";
+    this.code = code;
+  }
+}
+
+const STYLE_ANALYSIS_MESSAGES = {
+  CODEX_STYLE_ANALYSIS_DISABLED:
+    "目前選定的模型組合沒有可用的文字模型，無法分析風格。請到模型庫確認組合裡的文字模型設定與連線狀態，或先用預設風格進編輯器。",
+  CODEX_STYLE_ANALYSIS_INCOMPLETE:
+    "模型這次沒有交出完整的設計系統（缺少設計思路或色票），分析結果不予採用。可以直接重試，或改挑幾頁版面差異更明顯的頁面再分析一次。",
+} as const;
+
 const archetypeLabels: Record<(typeof styleArchetypeKinds)[number], string> = {
   cover: "封面",
   section: "段落頁",
@@ -99,7 +123,7 @@ export const STYLE_ANALYSIS_PROMPT = [
  */
 export function renderDesignSystem(analysis: StyleAnalysis): string {
   if (!analysis.designRationale.trim() || analysis.palette.length === 0)
-    throw new Error("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    throw new StyleAnalysisError("CODEX_STYLE_ANALYSIS_INCOMPLETE");
   const sections: string[] = [];
   const push = (heading: string, body: string) => {
     if (body.trim()) sections.push(`## ${heading}\n${body.trim()}`);
