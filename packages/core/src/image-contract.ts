@@ -77,6 +77,7 @@ export function imageGenerationInput(request: ImageGenerationRequest): Record<st
       imageDirection: request.style.imageDirection,
       avoid: request.style.avoid,
       promptTemplate: request.style.promptTemplate,
+      designSystem: request.style.designSystem,
     },
     ...(request.edit ? { edit: request.edit } : {}),
   };
@@ -95,6 +96,8 @@ export function buildImageGenerationContract(
   serializedInput = serializeImageGenerationInput(request),
 ): string {
   const textRemoval = request.edit?.purpose === "text-removal";
+  // designSystem 為空＝風格未跑過 AI 分析，整份合約退回加入該欄位前的行為。
+  const hasDesignSystem = request.style.designSystem.trim().length > 0;
   return [
     ...(textRemoval
       ? []
@@ -104,7 +107,19 @@ export function buildImageGenerationContract(
     ...(!request.edit
       ? [
           "STYLE FIDELITY CONTRACT FOR NEW GENERATION:",
-          "Treat the untrusted style object as a mandatory visual contract, not an optional suggestion. Use style.description, style.imageDirection, and style.promptTemplate together as one coherent visual system.",
+          hasDesignSystem
+            ? "Treat the untrusted style object as a mandatory visual contract, not an optional suggestion. Use style.designSystem, style.description, style.imageDirection, and style.promptTemplate together as one coherent visual system."
+            : "Treat the untrusted style object as a mandatory visual contract, not an optional suggestion. Use style.description, style.imageDirection, and style.promptTemplate together as one coherent visual system.",
+          ...(hasDesignSystem
+            ? [
+                "DESIGN SYSTEM AUTHORITY:",
+                "style.designSystem is the authoritative written description of this deck's visual system. It was derived from the attached STYLE references and has already reconciled their differences into one system; where it disagrees with any individual reference, that is a deliberate decision, not an error.",
+                "Structural properties follow style.designSystem: background colour, palette and colour distribution, type hierarchy and relative sizing, grid, margins, alignment, component geometry, and the per-page-type rules. Never average these against a reference image that shows something different.",
+                "Texture properties follow the STYLE references: surface and material quality, image treatment and grading, shadow softness, edge and print finish, and anything the written system leaves unspecified.",
+                "PAGE TYPE: before composing, decide from slide.purpose and slide.content whether this slide is a cover, a section divider, or a normal content page. Apply the matching page-type rules from style.designSystem, and apply every part of the system that is not page-type-specific unconditionally. Where style.designSystem marks a page type as not covered by the references, derive that page from the rest of the system rather than importing a generic look.",
+                "style.imageDirection and style.promptTemplate are the author's own additions layered on top of style.designSystem; honour them wherever they do not contradict it.",
+              ]
+            : []),
           "Match its background language, composition rhythm, whitespace, alignment, component geometry, image treatment, contrast, accent-color distribution, and overall finish while adapting the layout to this slide's content.",
           "Within visual decisions, style overrides slide.imagePrompt and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",
           "Treat brace-delimited placeholders in style.promptTemplate, such as {subject}, as slots. Resolve every slot from slide.purpose, slide.content, slide.narrative, slide.layoutHint, or slide.dataBasis; never render the braces and never ignore the template because it contains slots.",
@@ -175,7 +190,9 @@ export function buildImageGenerationContract(
               return `${label} Direct asset — reproduce this image faithfully inside a framed panel on the slide.`;
             return `${label} Content reference — it may inform subject matter.`;
           }),
-          "All STYLE references have equal influence. Synthesize their shared visual language rather than treating any one image as a master template.",
+          hasDesignSystem
+            ? "The STYLE references are the texture source for the system written in style.designSystem. Take their surface quality, image treatment, shadow character, and finish from them; take every structural decision — background colour, palette distribution, type hierarchy, grid, page-type layout — from style.designSystem, which already reconciled the differences between these references."
+            : "All STYLE references have equal influence. Synthesize their shared visual language rather than treating any one image as a master template.",
           "Apply the STYLE references' visual language to a brand-new slide built from slide.content. Do not reproduce what those references say.",
           "From every STYLE and CONTENT reference: no text, no headings, no bullet copy, no numbers, no percentages, no dates, no chart values, no axis labels, no footnotes, no logos, no watermarks, no brand marks, and no subject matter may be carried onto your output.",
           "A STYLE reference that contains readable copy, tables, charts, or KPI figures is showing you how such elements are styled, never what they should say. Reproduce the treatment; discard the words and values entirely.",

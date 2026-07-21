@@ -36,6 +36,7 @@ function request(): ImageGenerationRequest {
       imageDirection: "模組化資訊卡",
       avoid: ["深色漸層"],
       promptTemplate: "以 {subject} 為主體",
+      designSystem: "",
       referenceImages: [],
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
@@ -128,6 +129,45 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain('"layoutHint": "左文右圖"');
     expect(prompt).toContain('"description": "大量白色留白"');
     expect(prompt).toContain('"promptTemplate": "以 {subject} 為主體"');
+  });
+
+  it("leaves the contract untouched for styles that were never analyzed", () => {
+    const prompt = buildImageGenerationContract(request());
+    // designSystem 為空的舊風格必須完全走原本那條路，含 equal-influence 那句。
+    expect(prompt).toContain("All STYLE references have equal influence");
+    expect(prompt).not.toContain("DESIGN SYSTEM AUTHORITY");
+    expect(prompt).not.toContain("PAGE TYPE:");
+  });
+
+  it("splits structural and texture authority once a design system exists", () => {
+    const input = request();
+    input.style.designSystem = "## 色票\n- #F7F5F0 — 內頁畫布底色";
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("DESIGN SYSTEM AUTHORITY");
+    // 結構屬性歸文字：這正是四張參考圖互相矛盾、需要裁決的部分。
+    expect(prompt).toContain("Structural properties follow style.designSystem");
+    expect(prompt).toContain("Never average these against a reference image");
+    // 質感歸圖：文字載不動的部分不能被文字的沉默抹掉。
+    expect(prompt).toContain("Texture properties follow the STYLE references");
+    // equal influence 會讓模型把裁決結果重新平均回去，必須消失。
+    expect(prompt).not.toContain("All STYLE references have equal influence");
+    expect(prompt).toContain('"designSystem": "## 色票');
+  });
+
+  it("makes the model resolve page type itself, since no field carries it", () => {
+    const input = request();
+    input.style.designSystem = "## 頁型規則\n- 封面：主色滿版";
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("decide from slide.purpose and slide.content");
+    // 參考圖沒涵蓋的頁型要由系統推導，不能退回通用簡報長相。
+    expect(prompt).toContain("derive that page from the rest of the system");
+  });
+
+  it("keeps the design system out of edits, which must preserve the current look", () => {
+    const input = request();
+    input.style.designSystem = "## 色票\n- #F7F5F0 — 內頁畫布底色";
+    input.edit = { instruction: "Make the accent colour warmer", baseImageIndex: 0 };
+    expect(buildImageGenerationContract(input)).not.toContain("DESIGN SYSTEM AUTHORITY");
   });
 
   it("forbids fabricated figures and verification claims on generated slides", () => {

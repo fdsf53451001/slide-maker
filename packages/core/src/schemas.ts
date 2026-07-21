@@ -84,6 +84,11 @@ export const stylePresetSchema = z.object({
   imageDirection: z.string().default(""),
   avoid: z.array(z.string()).default([]),
   promptTemplate: z.string().default(""),
+  /**
+   * AI 分析參考圖後排版成的設計系統 markdown（色票、字型、網格、元件、頁型規則）。
+   * 空字串代表未分析過，生成端行為與加入此欄位前完全一致。
+   */
+  designSystem: z.string().default(""),
   referenceImages: z.array(styleReferenceImageSchema).max(4).default([]),
   coverImageId: z.string().optional(),
   createdAt: z.string().datetime(),
@@ -272,6 +277,7 @@ export const stylePresetInputSchema = stylePresetSchema
     imageDirection: true,
     avoid: true,
     promptTemplate: true,
+    designSystem: true,
     referenceImages: true,
     coverImageId: true,
   })

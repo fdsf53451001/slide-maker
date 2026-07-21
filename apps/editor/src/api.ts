@@ -334,14 +334,11 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/style-reference`,
       { method: "POST" },
     ),
-  analyzeStyle: (referenceIds: string[], textEngine?: string) =>
-    request<{ imageDirection: string; promptTemplate: string; avoid: string[] }>(
-      "/api/style-analysis",
-      {
-        method: "POST",
-        body: JSON.stringify({ referenceIds, ...(textEngine ? { textEngine } : {}) }),
-      },
-    ),
+  analyzeStyle: (referenceIds: string[], combinationId?: string) =>
+    request<{ designSystem: string; avoid: string[] }>("/api/style-analysis", {
+      method: "POST",
+      body: JSON.stringify({ referenceIds, ...(combinationId ? { combinationId } : {}) }),
+    }),
   cancel: (projectId: string, jobId: string) =>
     request<GenerationJob>(
       `/api/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobId)}/cancel`,

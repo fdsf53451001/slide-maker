@@ -210,6 +210,7 @@ export class FileStyleRepository {
       imageDirection: source.imageDirection,
       avoid: source.avoid,
       promptTemplate: source.promptTemplate,
+      designSystem: source.designSystem,
       referenceImages: source.referenceImages,
       coverImageId: source.coverImageId,
     });

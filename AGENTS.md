@@ -26,3 +26,8 @@ pnpm monorepo（`apps/*`、`packages/*`，內部相依用 `workspace:*`）：`ap
 ## Git 慣例
 
 - Commit 訊息採用 Conventional Commits 格式（`feat:`、`fix:`、`chore:` 等）。
+
+## 開發規範
+
+重大修改要起feature branch，完成功能在merge回去
+一般任務，要起dev agent作開發，review agent檢查，qa agent作測試

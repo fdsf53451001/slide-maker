@@ -131,6 +131,7 @@ function imageRequest(): ImageGenerationRequest {
       imageDirection: "簡潔",
       avoid: ["雜亂"],
       promptTemplate: "以 {subject} 為主體",
+      designSystem: "",
     },
     width: 1920,
     height: 1080,
