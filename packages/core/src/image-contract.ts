@@ -42,10 +42,18 @@ export function outlineContentCharBudget(density: ImageGenerationRequest["style"
  * 版面上一個中文字約等於兩個英文字母寬，等重計數會讓術語密集的技術投影片被過度
  * 懲罰——而且模型讀到的是「中文字數」，它不會把 Kimi Code CLI 算成 13 個字，於是
  * 每次都以為自己遠低於上限。單位必須與 outlineBrevityInstruction 的說明一致。
+ *
+ * 表格語法（管線與分隔列）比照空白不計費：影像合約明文禁止把這些字元畫到投影片上，
+ * 它們是版面語法而非可見文案。一個 5 欄 6 列的表格骨架約 28 單位，佔 high 密度僅有
+ * 30 單位的軟硬上限緩衝將近全部——照字面計費等於對「用表格」這個選擇課重稅。
  */
 export function outlineContentLength(content: string): number {
+  const visible = content
+    // 分隔列整行都是版面語法（|---|:--:|），連同換行一起去掉。
+    .replace(/^[ \t]*\|?[ \t:|-]*\|[ \t:|-]*$/gm, "")
+    .replace(/\|/g, "");
   let width = 0;
-  for (const character of content.replace(/\s+/g, ""))
+  for (const character of visible.replace(/\s+/g, ""))
     width += character.charCodeAt(0) < 128 ? 0.5 : 1;
   return Math.round(width);
 }
@@ -54,7 +62,29 @@ export function outlineBrevityInstruction(
   density: ImageGenerationRequest["style"]["density"],
 ): string {
   const { soft, hard } = outlineContentCharBudget(density);
-  return `content is the on-slide copy. Measure its length in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and whitespace is not counted at all — so "Kimi Code CLI" costs 5.5 units, not 13. Aim for roughly ${soft} units as a soft target and never pad just to reach it. Treat ${hard} units as a hard ceiling — content must never exceed ${hard} units; cut or tighten wording to stay within it. How to structure that copy — headline, points, sentences, paragraphs, or a mix — is your call based on what the slide needs. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
+  // 表格尺寸必須放得進該密度的字數預算，否則就是一條會被硬上限打回的矛盾指令：
+  // 5 欄 6 列約需 139 單位，超過 low 密度的 115 上限。
+  const tableSize =
+    density === "low"
+      ? "at most about 4 columns and 3 body rows"
+      : "at most about 5 columns and 6 body rows";
+  return `content is the on-slide copy. Measure its length in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and neither whitespace nor table syntax (the | separators and the |---| divider row) is counted at all — so "Kimi Code CLI" costs 5.5 units, not 13, and a table costs only what its cells actually say. Aim for roughly ${soft} units of real substance; landing somewhat under is fine, but a normal content slide that stops near half of it is too thin. Treat ${hard} units as a hard ceiling — content must never exceed ${hard} units; cut or tighten wording to stay within it. When in doubt, land nearer ${soft} than ${hard}: overshooting the ceiling gets the whole slide rejected, and never pad with filler to hit a number. How to structure that copy — headline, points, sentences, paragraphs, a markdown table, or a mix — is your call based on what the slide needs. When the slide compares options, tracks before/after, or reports several metrics or dimensions, prefer a markdown pipe table: the same character budget carries far more information as a table than as prose, so choosing prose there loses content the slide should have shown. Keep tables legible on a projector — ${tableSize}, with short cell values rather than sentences. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
+}
+
+/**
+ * content 超過硬上限後，重試時追加的指令。
+ *
+ * 必須帶上實際測得的單位數：只說「不可超過 270」而不說「你上次寫了 312」，模型無從
+ * 判斷該砍多少，於是三次重試常常犯同一個錯，最後以 CODEX_OUTLINE_CONTENT_TOO_LONG
+ * 收場。計費規則本身不在這裡重述，避免與 outlineBrevityInstruction 各寫一套而打架。
+ */
+export function outlineOverflowRetryInstruction(
+  density: ImageGenerationRequest["style"]["density"],
+  measuredUnits: number,
+): string {
+  const { soft, hard } = outlineContentCharBudget(density);
+  const excess = Math.max(1, Math.round(measuredUnits - hard));
+  return `A previous attempt was rejected: its content measured ${Math.round(measuredUnits)} full-width units, ${excess} over the ${hard} ceiling. Count units exactly as defined above. Cut at least ${excess} units of real copy this time — drop the weakest information unit or shorten wording; do not merely reformat. Target roughly ${soft} units so the result is not borderline again.`;
 }
 
 export function imageGenerationInput(request: ImageGenerationRequest): Record<string, unknown> {
@@ -165,7 +195,9 @@ export function buildImageGenerationContract(
           "Every figure rendered anywhere on the slide — statistics, percentages, multipliers, currency amounts, dates, counts, chart values, axis ticks, KPI numbers, and figures inside decorative panels — must already appear in slide.content, slide.narrative, or slide.dataBasis. Never invent, extrapolate, round, or illustrate a number that is not there, even when the layout looks like it needs one.",
           "Never add wording that asserts measurement, verification, or provenance — such as 'measured', 'benchmark', 'real-world results', 'actual test', 'case study data', or a source attribution — unless that exact claim already appears in the untrusted slide fields.",
           "When slide.imagePrompt or the style contract calls for a data visual but no figures are supplied, express the idea qualitatively: use unlabelled shapes, relative proportions, icons, or process steps, and leave axes, ticks, and values unlabelled. An honest unlabelled visual is always preferable to a plausible-looking fabricated one.",
-          "slide.content may use lightweight markdown markers such as #/##/### for headings, * or - for bullets, **bold**, and `code`. Interpret these as visual hierarchy and emphasis; render the heading text, bullet text, and emphasized words as designed typography, and never draw the raw #, *, -, or backtick characters as literal glyphs on the slide.",
+          "slide.content may use lightweight markdown markers such as #/##/### for headings, * or - for bullets, **bold**, `code`, and pipe tables. Interpret these as visual hierarchy and emphasis; render the heading text, bullet text, and emphasized words as designed typography, and never draw the raw #, *, -, backtick, or pipe characters as literal glyphs on the slide.",
+          "A pipe table in slide.content is a real table: render it as a designed table with aligned columns, a distinct header row, and consistent row rhythm, styled by the same visual system as the rest of the slide. Keep every cell value exactly as written — never drop rows or columns to save space, and never flatten the table back into bullets or prose. The separator row of dashes is layout syntax, not content; never render it as a visible row.",
+          "If a table cannot fit legibly at the typography floor below, keep the table and reduce what surrounds it — shrink or drop decorative imagery, supporting panels, or secondary copy — rather than dropping the table itself.",
           `TYPOGRAPHY FLOOR: this slide is read from a distance on a projector. On this ${request.width}x${request.height} canvas, render the headline at ${Math.round(request.height * 0.055)}px or larger, body copy at ${Math.round(request.height * 0.026)}px or larger, and never render any glyph — including captions, labels, footnotes, axis text, and annotations — smaller than ${Math.round(request.height * 0.02)}px.`,
           "If the copy will not fit at those sizes, cut information units, shorten wording, or drop decorative panels. Never shrink type below the floor to fit more onto the slide; fewer legible words always beat more unreadable ones.",
         ]),

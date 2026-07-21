@@ -6,6 +6,7 @@ import {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineOverflowRetryInstruction,
   type ImageGenerationRequest,
 } from "../src/index.js";
 
@@ -82,6 +83,28 @@ describe("outlineContentLength", () => {
   });
 });
 
+describe("outline overflow retry", () => {
+  it("tells the model how far over it went, not just the ceiling", () => {
+    // 只說「不可超過 270」時，三次重試常犯同一個錯，最後以 CONTENT_TOO_LONG 收場。
+    const instruction = outlineOverflowRetryInstruction("high", 312);
+    expect(instruction).toContain("312");
+    expect(instruction).toContain("42 over the 270 ceiling");
+    expect(instruction).toContain("Cut at least 42 units");
+  });
+
+  it("never asks for a non-positive cut when the overflow rounds to zero", () => {
+    const instruction = outlineOverflowRetryInstruction("high", 270.4);
+    expect(instruction).toContain("Cut at least 1 units");
+  });
+
+  it("does not restate the counting rules that brevity already owns", () => {
+    // 兩處各寫一套計費規則正是先前 whitespace/表格計法不一致的來源。
+    const instruction = outlineOverflowRetryInstruction("high", 300);
+    expect(instruction).not.toMatch(/counts as 0\.5/);
+    expect(instruction).toContain("exactly as defined above");
+  });
+});
+
 describe("density and length instructions", () => {
   // app.ts 的大綱 prompt 把這兩條指令放在相鄰兩行，各自寫字數就會互相打架。
   const densities = ["low", "medium", "high"] as const;
@@ -112,6 +135,94 @@ describe("density and length instructions", () => {
       expect(brevity).toContain(String(hard));
       expect(informationDensityInstruction(density)).not.toContain(String(soft));
     }
+  });
+
+  // 實測 63 頁既有大綱：0 頁使用表格，high 密度平均僅寫到 182/270 單位。
+  // 原因是結構選單只列了標題／要點／句子／段落，模型沒有表格這個選項可選。
+  it("offers a table as a structural option for the content field", () => {
+    for (const density of densities) {
+      const brevity = outlineBrevityInstruction(density);
+      expect(brevity).toMatch(/markdown table/);
+      // 比較／前後對照／多指標的頁面應優先用表格，否則同樣字數承載的資訊會少得多。
+      expect(brevity).toMatch(/prefer a markdown pipe table/);
+    }
+  });
+
+  // 建議的表格尺寸若放不進該密度的字數預算，就是一條註定被硬上限打回的矛盾指令。
+  it("suggests a table size that actually fits the density's budget", () => {
+    const tableWidth = (columns: number, rows: number) => {
+      const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
+      const text = [
+        line(Array.from({ length: columns }, (_, i) => `指標名${i}`)),
+        line(Array.from({ length: columns }, () => "---")),
+        ...Array.from({ length: rows }, () =>
+          line(Array.from({ length: columns }, () => "項目值")),
+        ),
+      ].join("\n");
+      return outlineContentLength(text);
+    };
+    // low 密度不能沿用 5×6：即使骨架免計費仍要 108 單位，硬上限只有 115，
+    // 塞完表格就沒有空間放標題與結論了。
+    expect(tableWidth(5, 6)).toBeGreaterThan(outlineContentCharBudget("low").hard - 30);
+    const suggested = { low: [4, 3], medium: [5, 6], high: [5, 6] } as const;
+    for (const density of densities) {
+      const [columns, rows] = suggested[density];
+      expect(outlineBrevityInstruction(density)).toContain(
+        `about ${columns} columns and ${rows} body rows`,
+      );
+      // 留 30 單位給標題與結論，表格仍須放得下。
+      expect(tableWidth(columns, rows)).toBeLessThanOrEqual(
+        outlineContentCharBudget(density).hard - 30,
+      );
+    }
+  });
+
+  it("gives the soft target direction without pushing the model into the ceiling", () => {
+    // 措辭太弱模型只寫到 182/270；太強又會頂到 270 被 CONTENT_TOO_LONG 打回。
+    // 兩邊都要說：寫太少是問題，但拿不準時要靠向 soft 而非 hard。
+    const brevity = outlineBrevityInstruction("high");
+    expect(brevity).toMatch(/too thin/);
+    expect(brevity).toMatch(/land nearer 240 than 270/);
+    expect(brevity).toContain("hard ceiling");
+  });
+});
+
+describe("table syntax is layout, not copy", () => {
+  const table = [
+    "| 指標 | 導入前 | 導入後 |",
+    "| --- | --- | --- |",
+    "| 交付時間 | 14 天 | 3 天 |",
+  ].join("\n");
+
+  it("charges only for what the cells actually say", () => {
+    // 影像合約明文禁止把 | 與 --- 畫到投影片上，它們與空白同性質。
+    const cellsOnly = "指標 導入前 導入後 交付時間 14 天 3 天";
+    expect(outlineContentLength(table)).toBe(outlineContentLength(cellsOnly));
+  });
+
+  it("charges nothing for the skeleton of even a wide table", () => {
+    // 骨架照字面計費時，5 欄 6 列要 28 單位——等於 high 密度 soft→hard 的 30 單位
+    // 緩衝幾乎全部，模型一改用表格就會撞上 CONTENT_TOO_LONG。
+    const cells = Array.from({ length: 6 }, () => ["甲", "乙", "丙", "丁", "戊"]);
+    const wide = [
+      `| ${["a", "b", "c", "d", "e"].join(" | ")} |`,
+      `| ${["---", "---", "---", "---", "---"].join(" | ")} |`,
+      ...cells.map((row) => `| ${row.join(" | ")} |`),
+    ].join("\n");
+    const withoutSkeleton = ["abcde", ...cells.map((row) => row.join(""))].join(" ");
+    expect(outlineContentLength(wide)).toBe(outlineContentLength(withoutSkeleton));
+  });
+
+  it("does not let a stray dash or colon erase a whole line of real copy", () => {
+    // 分隔列的判斷若太寬鬆，「成本 - 效益」這種正常文案會被整行當成版面語法抹掉。
+    // 破折號本身是可見字元，仍照 0.5 計費。
+    expect(outlineContentLength("成本 - 效益分析：三個面向")).toBe(12);
+    expect(outlineContentLength("結論：導入後三項指標同步改善")).toBe(14);
+    expect(outlineContentLength("A|B")).toBe(1);
+  });
+
+  it("announces the table exemption so the model can count itself", () => {
+    expect(outlineBrevityInstruction("high")).toContain("nor table syntax");
   });
 });
 
@@ -194,6 +305,27 @@ describe("shared image-generation contract", () => {
     const input = request();
     input.edit = { instruction: "Make the accent colour warmer", baseImageIndex: 0 };
     expect(buildImageGenerationContract(input)).toContain("FACTUAL GROUNDING CONTRACT");
+  });
+
+  it("renders pipe tables as tables instead of drawing their syntax", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toContain("pipe tables");
+    expect(prompt).toContain("never draw the raw #, *, -, backtick, or pipe characters");
+    expect(prompt).toContain("render it as a designed table with aligned columns");
+    // 表格被壓縮或攤平回條列，等於把大綱好不容易結構化的資訊又丟掉一次。
+    expect(prompt).toContain("never flatten the table back into bullets or prose");
+    expect(prompt).toMatch(/separator row of dashes is layout syntax/);
+  });
+
+  it("makes decoration yield to a table that will not fit, not the other way round", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toMatch(/keep the table and reduce what surrounds it/);
+  });
+
+  it("keeps the table contract out of edits, which must preserve the current image", () => {
+    const input = request();
+    input.edit = { instruction: "Remove masked text", purpose: "text-removal", baseImageIndex: 0 };
+    expect(buildImageGenerationContract(input)).not.toContain("pipe tables");
   });
 
   it("sets a canvas-relative type floor and forbids shrinking to fit", () => {

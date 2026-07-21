@@ -10,6 +10,7 @@ import {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineOverflowRetryInstruction,
   SafeProviderError,
   serializeImageGenerationInput,
   type GeneratedImage,
@@ -38,6 +39,7 @@ export {
   outlineBrevityInstruction,
   outlineContentCharBudget,
   outlineContentLength,
+  outlineOverflowRetryInstruction,
 };
 
 export interface CodexImageSpikeOptions {
