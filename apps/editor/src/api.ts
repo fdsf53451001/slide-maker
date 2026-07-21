@@ -62,18 +62,33 @@ export interface TextProviderSummary {
   isDefault: boolean;
 }
 
+type ApiFailure = {
+  error?: string;
+  issues?: { path?: (string | number)[]; message?: string }[];
+};
+
+// 伺服器對 zod 驗證失敗只回 `INVALID_REQUEST` 這個代碼，細節在 `issues` 裡；
+// 一併攤平成訊息，使用者才知道是哪個欄位不合法（例如 purpose 超過上限）。
+function failureMessage(body: unknown, fallback: string): string {
+  if (typeof body !== "object" || body === null) return fallback;
+  const failure = body as ApiFailure;
+  const detail = (failure.issues ?? [])
+    .map((issue) => {
+      const field = (issue.path ?? []).join(".");
+      return [field, issue.message].filter(Boolean).join(": ");
+    })
+    .filter(Boolean)
+    .join("；");
+  return [failure.error ?? fallback, detail].filter(Boolean).join(" — ");
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  const body = (await response.json()) as T | { error?: string };
-  if (!response.ok)
-    throw new Error(
-      "error" in (body as object)
-        ? ((body as { error?: string }).error ?? response.statusText)
-        : response.statusText,
-    );
+  const body = (await response.json()) as T | ApiFailure;
+  if (!response.ok) throw new Error(failureMessage(body, response.statusText));
   return body as T;
 }
 
@@ -233,11 +248,6 @@ export const api = {
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/slides`, {
       method: "POST",
       body: JSON.stringify(input ?? {}),
-    }),
-  addAiSlide: (projectId: string, purpose: string, afterSlideId?: string, textEngine?: string) =>
-    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/slides/ai`, {
-      method: "POST",
-      body: JSON.stringify({ purpose, afterSlideId, ...(textEngine ? { textEngine } : {}) }),
     }),
   regenerateSlideOutline: (projectId: string, slideId: string, textEngine?: string) =>
     request<PresentationProject>(

@@ -363,75 +363,6 @@ export function TextLayerCanvas({
   );
 }
 
-function NewSlideDialog({
-  busy,
-  onCancel,
-  onSubmit,
-  onSkipOutline,
-}: {
-  busy: boolean;
-  onCancel: () => void;
-  onSubmit: (purpose: string) => void;
-  onSkipOutline?: () => void;
-}) {
-  const [purpose, setPurpose] = useState("");
-  return (
-    <div
-      className="new-slide-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label="新增 AI 頁面"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
-    >
-      <form
-        className="new-slide-dialog"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (purpose.trim()) onSubmit(purpose.trim());
-        }}
-      >
-        <header>
-          <div>
-            <span className="section-label">ADD ONE SLIDE</span>
-            <h2>這一頁要說什麼？</h2>
-            <p>AI 會參考整份簡報、來源與資訊密度，產生這一頁的內容與構圖。</p>
-          </div>
-          <button type="button" aria-label="關閉新增頁面" disabled={busy} onClick={onCancel}>
-            ×
-          </button>
-        </header>
-        <label>
-          新增頁面目的
-          <textarea
-            aria-label="新增頁面目的"
-            autoFocus
-            rows={4}
-            value={purpose}
-            onChange={(event) => setPurpose(event.target.value)}
-            placeholder="例如：比較導入前後的交付時間與失敗率，並提出三個衡量指標"
-          />
-        </label>
-        <div className="new-slide-actions">
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
-          {onSkipOutline && (
-            <button type="button" disabled={busy} onClick={onSkipOutline}>
-              跳過大綱，建立空白頁
-            </button>
-          )}
-          <button className="primary" disabled={busy || !purpose.trim()}>
-            {busy ? "AI 正在產生頁面架構…" : "用 AI 產生頁面架構 →"}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
 function ImageEditDialog({
   image,
   busy,
@@ -902,7 +833,6 @@ function SetupFlow({
   // 素材上傳後才產大綱，讓大綱一開始就被素材 grounding。
   const [materialsSubstep, setMaterialsSubstep] = useState(false);
   const providerRef = useRef<HTMLElement>(null);
-  const [showNewSlide, setShowNewSlide] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const systemSettings = useSystemSettings();
   const [combinations, setCombinations] = useState<
@@ -1460,7 +1390,25 @@ function SetupFlow({
               </article>
             ))}
           </div>
-          <button className="add-outline" disabled={busy} onClick={() => setShowNewSlide(true)}>
+          <button
+            className="add-outline"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              onError("");
+              const last = outline.at(-1)?.id;
+              void api
+                .addSlide(project.id, last ? { afterSlideId: last } : {})
+                .then((updated) => {
+                  onProject(updated);
+                  setOutline(structuredClone(updated.slides));
+                })
+                .catch((reason: unknown) =>
+                  onError(reason instanceof Error ? reason.message : "新增頁面失敗"),
+                )
+                .finally(() => setBusy(false));
+            }}
+          >
             ＋ 新增一頁
           </button>
           <div className="generation-panel">
@@ -1551,27 +1499,6 @@ function SetupFlow({
           </div>
         </section>
       )}
-      {showNewSlide && (
-        <NewSlideDialog
-          busy={busy}
-          onCancel={() => setShowNewSlide(false)}
-          onSubmit={(purpose) => {
-            setBusy(true);
-            onError("");
-            void api
-              .addAiSlide(project.id, purpose, outline.at(-1)?.id)
-              .then((updated) => {
-                onProject(updated);
-                setOutline(structuredClone(updated.slides));
-                setShowNewSlide(false);
-              })
-              .catch((reason: unknown) =>
-                onError(reason instanceof Error ? reason.message : "AI 新增頁面失敗"),
-              )
-              .finally(() => setBusy(false));
-          }}
-        />
-      )}
     </main>
   );
 }
@@ -1608,7 +1535,6 @@ export function Editor() {
     versionId: string;
   }>();
   const [stylePickerBusy, setStylePickerBusy] = useState(false);
-  const [showNewSlide, setShowNewSlide] = useState(false);
   const [newSlideBusy, setNewSlideBusy] = useState(false);
   const [showImageEdit, setShowImageEdit] = useState(false);
   const [imageEditBusy, setImageEditBusy] = useState(false);
@@ -1904,13 +1830,6 @@ export function Editor() {
         }
         return;
       }
-      if (showNewSlide) {
-        if (event.key === "Escape" && !newSlideBusy) {
-          event.preventDefault();
-          setShowNewSlide(false);
-        }
-        return;
-      }
       if (stylePickerVersion) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1955,16 +1874,7 @@ export function Editor() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    imageEditBusy,
-    newSlideBusy,
-    presentationIndex,
-    project,
-    selectedId,
-    showImageEdit,
-    showNewSlide,
-    stylePickerVersion,
-  ]);
+  }, [imageEditBusy, presentationIndex, project, selectedId, showImageEdit, stylePickerVersion]);
   useEffect(() => {
     if (presentationIndex === null) return;
     const onFullscreenChange = () => {
@@ -2073,6 +1983,24 @@ export function Editor() {
       return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 新增頁面一律建空白頁，接著沿用既有的單頁流程：填目的 → 生成大綱 → 生成圖片。
+  // 不再走專用的一次性 AI 端點，新頁與既有頁的操作方式因此完全一致。
+  const addBlankSlide = async () => {
+    setNewSlideBusy(true);
+    setError(undefined);
+    const previousIds = new Set(project.slides.map((slide) => slide.id));
+    try {
+      const updated = await api.addSlide(project.id, selected ? { afterSlideId: selected.id } : {});
+      setProject(updated);
+      setSelectedId(updated.slides.find((slide) => !previousIds.has(slide.id))?.id);
+      setPanel("slide");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "新增頁面失敗");
+    } finally {
+      setNewSlideBusy(false);
     }
   };
 
@@ -2344,8 +2272,9 @@ export function Editor() {
             <button
               className="add-page"
               aria-label="新增頁面"
-              title="新增頁面"
-              onClick={() => setShowNewSlide(true)}
+              title="新增空白頁"
+              disabled={newSlideBusy}
+              onClick={() => void addBlankSlide()}
             >
               ＋
             </button>
@@ -2456,8 +2385,9 @@ export function Editor() {
             ) : (
               <div className="canvas-empty">
                 <div className="orbit" />
-                <strong>{selected?.purpose}</strong>
-                <p>內容會自動儲存，準備好後即可生成此頁。</p>
+                <strong>{selected?.purpose || "尚未設定頁面目的"}</strong>
+                <p>請輸入頁面目的後，點下方生成大綱，再生成圖片。</p>
+                <p>同時可以至來源頁添加素材，生成大綱時會一併引用。</p>
               </div>
             )}
           </div>
@@ -2815,9 +2745,14 @@ export function Editor() {
                     )
                     .finally(() => setOutlineBusy(false));
                 }}
-                disabled={outlineBusy || !!activeJob || !!previewVersion}
+                disabled={outlineBusy || !!activeJob || !!previewVersion || !draft?.purpose.trim()}
+                title={draft?.purpose.trim() ? undefined : "請先填寫頁面目的"}
               >
-                {outlineBusy ? "正在重新檢索來源與生成大綱…" : "重新生成單頁大綱"}
+                {outlineBusy
+                  ? "正在重新檢索來源與生成大綱…"
+                  : draft?.content.trim()
+                    ? "重新生成單頁大綱"
+                    : "生成大綱"}
               </button>
               <button
                 className="primary"
@@ -3143,46 +3078,6 @@ export function Editor() {
           </div>
         )}
       </aside>
-      {showNewSlide && (
-        <NewSlideDialog
-          busy={newSlideBusy}
-          onCancel={() => setShowNewSlide(false)}
-          onSubmit={(purpose) => {
-            setNewSlideBusy(true);
-            setError(undefined);
-            const previousIds = new Set(project.slides.map((slide) => slide.id));
-            void api
-              .addAiSlide(project.id, purpose, selected?.id)
-              .then((updated) => {
-                setProject(updated);
-                setSelectedId(updated.slides.find((slide) => !previousIds.has(slide.id))?.id);
-                setPanel("slide");
-                setShowNewSlide(false);
-              })
-              .catch((reason: unknown) =>
-                setError(reason instanceof Error ? reason.message : "AI 新增頁面失敗"),
-              )
-              .finally(() => setNewSlideBusy(false));
-          }}
-          onSkipOutline={() => {
-            setNewSlideBusy(true);
-            setError(undefined);
-            const previousIds = new Set(project.slides.map((slide) => slide.id));
-            void api
-              .addSlide(project.id, selected ? { afterSlideId: selected.id } : {})
-              .then((updated) => {
-                setProject(updated);
-                setSelectedId(updated.slides.find((slide) => !previousIds.has(slide.id))?.id);
-                setPanel("slide");
-                setShowNewSlide(false);
-              })
-              .catch((reason: unknown) =>
-                setError(reason instanceof Error ? reason.message : "新增空白頁失敗"),
-              )
-              .finally(() => setNewSlideBusy(false));
-          }}
-        />
-      )}
       {showImageEdit && activeImage && selected && (
         <ImageEditDialog
           image={activeImage}

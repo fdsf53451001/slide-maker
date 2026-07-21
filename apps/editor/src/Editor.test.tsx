@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createProject, createDefaultStyle, createSlidesFromBrief } from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
 
@@ -236,87 +236,7 @@ describe("Editor MVP navigation", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("asks for a page purpose and calls the AI single-slide outline flow", async () => {
-    let project = createProject({ topic: "AI 新增頁面", brief: { desiredSlideCount: 2 } });
-    project.workflowStage = "editing";
-    const now = new Date().toISOString();
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.pathname
-            : new URL(input.url).pathname;
-      if (path === "/api/projects") return Response.json([project]);
-      if (path === "/api/providers")
-        return Response.json([
-          {
-            id: "mock-image",
-            name: "Mock",
-            availability: { status: "available" },
-            capabilities: { fullSlideGeneration: true },
-          },
-        ]);
-      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
-      if (path.includes("/readiness"))
-        return Response.json({
-          providerId: "mock-image",
-          status: "ready",
-          blocking: false,
-          requiresAcknowledgement: false,
-          message: "Ready",
-          checkedAt: now,
-          expiresAt: now,
-        });
-      if (path.endsWith("/slides/ai") && init?.method === "POST") {
-        const generated = {
-          ...structuredClone(project.slides[0]!),
-          id: "ai-generated-slide",
-          order: 1,
-          purpose: "比較導入前後成效",
-          versions: [],
-        };
-        project = {
-          ...project,
-          slides: [project.slides[0]!, generated, { ...project.slides[1]!, order: 2 }],
-        };
-        return Response.json(project, { status: 201 });
-      }
-      return Response.json(project);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Editor />);
-    fireEvent.click(await screen.findByText("AI 新增頁面"));
-    fireEvent.click(await screen.findByRole("button", { name: "新增頁面" }));
-    expect(await screen.findByRole("dialog", { name: "新增 AI 頁面" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("新增頁面目的"), {
-      target: { value: "比較導入前後成效，包含交付時間與失敗率" },
-    });
-    fireEvent.click(screen.getByText("用 AI 產生頁面架構 →"));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/api\/projects\/[^/]+\/slides\/ai$/),
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            purpose: "比較導入前後成效，包含交付時間與失敗率",
-            afterSlideId: project.slides[0]!.id,
-          }),
-        }),
-      ),
-    );
-    expect(await screen.findByDisplayValue("比較導入前後成效")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "SM ↗" }));
-    expect(await screen.findByText(/3 頁 ·/)).toBeTruthy();
-    fireEvent.click(screen.getByText("AI 新增頁面"));
-    fireEvent.click(screen.getByText("比較導入前後成效"));
-    expect(await screen.findByDisplayValue("比較導入前後成效")).toBeTruthy();
-  });
-
-  it("skips the outline and creates a blank page for manual setup", async () => {
+  it("creates a blank page so the slide panel drives purpose, outline and generation", async () => {
     let project = createProject({ topic: "空白頁插入", brief: { desiredSlideCount: 2 } });
     project.workflowStage = "editing";
     const now = new Date().toISOString();
@@ -375,13 +295,15 @@ describe("Editor MVP navigation", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("空白頁插入"));
     fireEvent.click(await screen.findByRole("button", { name: "新增頁面" }));
-    const dialog = await screen.findByRole("dialog", { name: "新增 AI 頁面" });
-    fireEvent.click(within(dialog).getByText("跳過大綱，建立空白頁"));
 
+    // 新增頁面不再彈對話框問目的，而是直接建空白頁並選中它。
     await waitFor(() => expect(addSlideBody).toEqual({ afterSlideId: project.slides[0]!.id }));
     await waitFor(() =>
       expect((screen.getByLabelText("頁面目的") as HTMLTextAreaElement).value).toBe(""),
     );
+    // 目的還空著時，大綱按鈕顯示「生成大綱」且不可按——先填目的才有意義。
+    const outlineButton = screen.getByRole("button", { name: "生成大綱" });
+    expect(outlineButton).toHaveProperty("disabled", true);
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/slides/ai"))).toBe(false);
   });
 

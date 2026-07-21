@@ -73,9 +73,18 @@
   background: #1b2435;
   font-weight: 700;
 }
-.analyze-style {
-  width: 100%;
+.analyze-style-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
   margin-top: 12px;
+}
+.analyze-style-row select {
+  flex: 0 1 40%;
+  min-width: 0;
+}
+.analyze-style {
+  flex: 1 1 auto;
   border: 1px solid var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
   color: #ffad8f;
@@ -344,88 +353,6 @@
   padding: 28px;
   background: rgba(3, 6, 11, 0.78);
   backdrop-filter: blur(10px);
-}
-.new-slide-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 920;
-  display: grid;
-  place-items: center;
-  padding: 28px;
-  background: rgba(3, 6, 11, 0.8);
-  backdrop-filter: blur(10px);
-}
-.new-slide-dialog {
-  width: min(620px, calc(100vw - 56px));
-  padding: 28px;
-  border: 1px solid var(--border-3);
-  border-radius: 12px;
-  background: var(--surface-1);
-  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.65);
-}
-.new-slide-dialog > header {
-  height: auto;
-  padding: 0 0 22px;
-  align-items: flex-start;
-  border: 0;
-  background: transparent;
-}
-.new-slide-dialog h2 {
-  margin: 8px 0 6px;
-  font-size: 28px;
-}
-.new-slide-dialog header p {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.new-slide-dialog header button {
-  margin-left: auto;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border-4);
-  border-radius: 50%;
-  background: var(--surface-4);
-  color: var(--text-2);
-  cursor: pointer;
-}
-.new-slide-dialog > label {
-  display: block;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-.new-slide-dialog textarea {
-  display: block;
-  width: 100%;
-  margin-top: 8px;
-  padding: 14px;
-  border: 1px solid var(--border-3);
-  border-radius: 7px;
-  background: var(--surface-3);
-  color: var(--text-bright);
-  resize: vertical;
-  outline: none;
-  line-height: 1.6;
-}
-.new-slide-dialog textarea:focus {
-  border-color: var(--accent);
-}
-.new-slide-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 18px;
-}
-.new-slide-actions button {
-  min-width: 120px;
-  padding: 12px;
-  border: 1px solid var(--border-3);
-  border-radius: 6px;
-  background: var(--surface-4);
-  cursor: pointer;
-}
-.new-slide-actions button.primary {
-  flex: 1;
 }
 .style-picker {
   position: relative;
