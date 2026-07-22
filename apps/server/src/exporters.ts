@@ -124,7 +124,10 @@ async function exportPptx(
         const shiftX =
           box.align === "center" ? extraWidth / 2 : box.align === "right" ? extraWidth : 0;
         slide.addText(box.text, {
-          x: Math.max(0, box.x * scaleX - shiftX),
+          // 不夾到 0：貼著畫布左緣的 center／right 框，往左補回的餘裕會被夾掉，
+          // 錨點整個右移（實測 60px 字級的框偏 41px）。OOXML 的 a:off 允許負值，
+          // 框超出投影片左緣不影響文字落點。
+          x: box.x * scaleX - shiftX,
           y: box.y * scaleY,
           w: box.width * scaleX + extraWidth,
           h: box.height * scaleY,
