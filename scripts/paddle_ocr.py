@@ -8,17 +8,21 @@ import sys
 
 
 def load_engine():
-    # 預設混合模型：mobile 偵測（server 偵測在 CPU 全解析度下過慢）+ server 辨識（漏字主因是辨識精度）。
-    # SLIDE_MAKER_OCR_MODEL_TIER=mobile 可全部換回輕量模型。兩個環境變數皆由
-    # apps/server/src/config.ts 在啟動時驗證後傳入；此處再驗一次以涵蓋直接執行本腳本的情況。
-    tier = os.environ.get("SLIDE_MAKER_OCR_MODEL_TIER", "hybrid")
-    if tier not in ("mobile", "hybrid", "server"):
-        raise SystemExit(f"SLIDE_MAKER_OCR_MODEL_TIER must be mobile, hybrid, or server (got {tier!r})")
+    # PP-OCRv6（paddleocr>=3.7）：層級 tiny/small/medium，偵測與辨識用同一層級。
+    # medium（34.5M 參數）在 CPU 全解析度下實測 6–8 秒/頁，辨識比 v5 server 高 5.1%，
+    # 空格／全形分隔線／繁體輸出顯著改善，故為預設。v5 時代的 mobile/hybrid/server
+    # 舊值映射到對應層級以保持向後相容。兩個環境變數皆由 apps/server/src/config.ts
+    # 在啟動時驗證後傳入；此處再驗一次以涵蓋直接執行本腳本的情況。
+    legacy = {"mobile": "small", "hybrid": "medium", "server": "medium"}
+    tier = os.environ.get("SLIDE_MAKER_OCR_MODEL_TIER", "medium")
+    tier = legacy.get(tier, tier)
+    if tier not in ("tiny", "small", "medium"):
+        raise SystemExit(f"SLIDE_MAKER_OCR_MODEL_TIER must be tiny, small, or medium (got {tier!r})")
     raw_side_len = os.environ.get("SLIDE_MAKER_OCR_DET_SIDE_LEN", "1920")
     if not raw_side_len.isdigit() or not 512 <= int(raw_side_len) <= 4096:
         raise SystemExit(f"SLIDE_MAKER_OCR_DET_SIDE_LEN must be an integer between 512 and 4096 (got {raw_side_len!r})")
-    rec_prefix = "PP-OCRv5_mobile" if tier == "mobile" else "PP-OCRv5_server"
-    det_prefix = "PP-OCRv5_server" if tier == "server" else "PP-OCRv5_mobile"
+    rec_prefix = f"PP-OCRv6_{tier}"
+    det_prefix = f"PP-OCRv6_{tier}"
     with contextlib.redirect_stdout(sys.stderr):
         from paddleocr import PaddleOCR
         return PaddleOCR(

@@ -27,15 +27,27 @@ export function parseCodexTimeoutMs(value: string | undefined): number {
   return timeout;
 }
 
-export const OCR_MODEL_TIERS = ["mobile", "hybrid", "server"] as const;
+// PP-OCRv6 的層級命名（tiny 1.5M／small 7.7M／medium 34.5M 參數）。
+// medium 在 CPU 上實測 6–8 秒/頁（1920 全解析度），且辨識精度比 v5 server 高 5.1%，
+// 空格、全形分隔線與繁體輸出都顯著改善，故為預設。
+export const OCR_MODEL_TIERS = ["tiny", "small", "medium"] as const;
 export type OcrModelTier = (typeof OCR_MODEL_TIERS)[number];
-export const DEFAULT_OCR_MODEL_TIER: OcrModelTier = "hybrid";
+export const DEFAULT_OCR_MODEL_TIER: OcrModelTier = "medium";
+// v5 時代的層級名（mobile／hybrid／server）映射到對應的 v6 層級，
+// 讓已設定舊值的環境升級後照常啟動，而不是直接 throw。
+const LEGACY_OCR_MODEL_TIERS: Record<string, OcrModelTier> = {
+  mobile: "small",
+  hybrid: "medium",
+  server: "medium",
+};
 export const DEFAULT_OCR_DET_SIDE_LEN = 1920;
 export const MIN_OCR_DET_SIDE_LEN = 512;
 export const MAX_OCR_DET_SIDE_LEN = 4096;
 
 export function parseOcrModelTier(value: string | undefined): OcrModelTier {
   if (value === undefined || value.trim() === "") return DEFAULT_OCR_MODEL_TIER;
+  const legacy = LEGACY_OCR_MODEL_TIERS[value];
+  if (legacy) return legacy;
   if (!(OCR_MODEL_TIERS as readonly string[]).includes(value))
     throw new Error(`SLIDE_MAKER_OCR_MODEL_TIER must be one of: ${OCR_MODEL_TIERS.join(", ")}`);
   return value as OcrModelTier;

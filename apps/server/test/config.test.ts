@@ -73,11 +73,17 @@ describe("Codex reasoning effort configuration", () => {
 });
 
 describe("OCR model tier configuration", () => {
-  it("defaults to hybrid", () => expect(parseOcrModelTier(undefined)).toBe(DEFAULT_OCR_MODEL_TIER));
-  it.each(["mobile", "hybrid", "server"])("accepts %s", (value) =>
+  it("defaults to medium", () => expect(parseOcrModelTier(undefined)).toBe(DEFAULT_OCR_MODEL_TIER));
+  it.each(["tiny", "small", "medium"])("accepts %s", (value) =>
     expect(parseOcrModelTier(value)).toBe(value),
   );
-  it.each(["Mobile", "light", "SERVER", "fast"])("rejects %s", (value) =>
+  // v5 時代的層級名映射到對應 v6 層級：已設定舊值的環境升級後要照常啟動。
+  it.each([
+    ["mobile", "small"],
+    ["hybrid", "medium"],
+    ["server", "medium"],
+  ])("maps legacy %s to %s", (legacy, mapped) => expect(parseOcrModelTier(legacy)).toBe(mapped));
+  it.each(["Mobile", "light", "MEDIUM", "fast"])("rejects %s", (value) =>
     expect(() => parseOcrModelTier(value)).toThrow(/SLIDE_MAKER_OCR_MODEL_TIER/),
   );
 });
