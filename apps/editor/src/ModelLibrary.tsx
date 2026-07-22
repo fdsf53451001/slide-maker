@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type {
   CodexReasoningEffort,
+  ConnectionProtocol,
   ModelCapability,
   ModelCombination,
   ModelConnection,
@@ -21,11 +22,29 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   mock: "Mock",
   codex: "Codex",
   openai: "OpenAI 相容",
+  gemini: "Gemini 原生",
+};
+const PROTOCOL_LABEL: Record<ConnectionProtocol, string> = {
+  openai: "OpenAI 相容",
+  gemini: "Gemini 原生",
 };
 const CAPABILITIES: ModelCapability[] = ["image", "text", "search"];
-const KINDS: ProviderKind[] = ["mock", "codex", "openai"];
+const KINDS: ProviderKind[] = ["mock", "codex", "openai", "gemini"];
+const PROTOCOLS: ConnectionProtocol[] = ["openai", "gemini"];
 const REASONING_EFFORTS: CodexReasoningEffort[] = ["minimal", "low", "medium", "high"];
 const OPENAI_IMAGE_APIS: OpenAiImageApi[] = ["images", "chat", "openrouter-image"];
+
+/** 需要連線的 provider kind（HTTP 端點兩家）；mock／codex 在本機跑，沒有連線概念。 */
+function needsConnection(kind: ProviderKind): kind is ConnectionProtocol {
+  return kind === "openai" || kind === "gemini";
+}
+
+/** 只列協定與 entry kind 相符的連線：Gemini entry 指到 OpenAI 端點必然跑不起來。 */
+function connectionsFor(library: ModelLibraryData, kind: ProviderKind): ModelConnection[] {
+  return needsConnection(kind)
+    ? library.connections.filter((connection) => connection.protocol === kind)
+    : [];
+}
 
 function modelsByCapability(library: ModelLibraryData, capability: ModelCapability): ModelEntry[] {
   return library.models.filter((entry) => entry.capability === capability);
@@ -216,6 +235,7 @@ function ConnectionsSection({
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [protocol, setProtocol] = useState<ConnectionProtocol>("openai");
   const create = async () => {
     if (!name.trim()) return;
     const before = new Set(library.connections.map((connection) => connection.id));
@@ -224,6 +244,7 @@ function ConnectionsSection({
         name: name.trim(),
         baseUrl: baseUrl.trim(),
         apiKey,
+        protocol,
       });
       // 建立完連線立刻打 /models，讓模型 entry 能用下拉選單挑模型。
       const created = next.connections.find((connection) => !before.has(connection.id));
@@ -233,12 +254,14 @@ function ConnectionsSection({
     setName("");
     setBaseUrl("");
     setApiKey("");
+    setProtocol("openai");
   };
   return (
     <section className="dashboard-section model-library-section">
-      <SectionHeading icon="connections" label="CONNECTIONS" title="連線（OpenAI 相容端點）" />
+      <SectionHeading icon="connections" label="CONNECTIONS" title="連線（HTTP 模型端點）" />
       <p className="model-library-hint">
-        供 OpenAI 相容模型引用的 base URL 與 API key。金鑰只寫不讀，顯示為佔位符。
+        供 OpenAI 相容／Gemini 原生模型引用的 base URL 與 API key。協定決定請求形狀，選錯了
+        連線測試就會失敗。金鑰只寫不讀，顯示為佔位符。
       </p>
       <div className="model-library-list">
         {library.connections.length === 0 && <p className="model-library-empty">尚無連線。</p>}
@@ -260,9 +283,24 @@ function ConnectionsSection({
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
+        <select
+          aria-label="協定"
+          value={protocol}
+          onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
+        >
+          {PROTOCOLS.map((item) => (
+            <option key={item} value={item}>
+              {PROTOCOL_LABEL[item]}
+            </option>
+          ))}
+        </select>
         <input
           aria-label="Base URL"
-          placeholder="http://localhost:8317/v1"
+          placeholder={
+            protocol === "gemini"
+              ? "https://generativelanguage.googleapis.com/v1beta"
+              : "http://localhost:8317/v1"
+          }
           value={baseUrl}
           onChange={(event) => setBaseUrl(event.target.value)}
         />
@@ -297,8 +335,13 @@ function ConnectionRow({
   const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [protocol, setProtocol] = useState<ConnectionProtocol>(connection.protocol);
   const [testing, setTesting] = useState(false);
-  const dirty = name !== connection.name || baseUrl !== connection.baseUrl || apiKey !== "";
+  const dirty =
+    name !== connection.name ||
+    baseUrl !== connection.baseUrl ||
+    protocol !== connection.protocol ||
+    apiKey !== "";
   const status = models?.status ?? "idle";
   const testLabel =
     testing || status === "loading"
@@ -314,6 +357,17 @@ function ConnectionRow({
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
+        <select
+          aria-label="協定"
+          value={protocol}
+          onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
+        >
+          {PROTOCOLS.map((item) => (
+            <option key={item} value={item}>
+              {PROTOCOL_LABEL[item]}
+            </option>
+          ))}
+        </select>
         <input
           aria-label="Base URL"
           value={baseUrl}
@@ -335,6 +389,7 @@ function ConnectionRow({
               const result = await api.updateConnection(connection.id, {
                 name,
                 baseUrl,
+                protocol,
                 ...(apiKey ? { apiKey } : {}),
               });
               setApiKey("");
@@ -401,8 +456,9 @@ function ModelsSection({
   const [connectionRef, setConnectionRef] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort | "">("");
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">("");
+  const connections = connectionsFor(library, providerKind);
   const availableModels =
-    providerKind === "openai" && connectionRef
+    needsConnection(providerKind) && connectionRef
       ? (connectionModels[connectionRef]?.models ?? [])
       : [];
   const create = async () => {
@@ -413,7 +469,7 @@ function ModelsSection({
         capability,
         providerKind,
         model: model.trim(),
-        ...(providerKind === "openai" && connectionRef ? { connectionRef } : {}),
+        ...(needsConnection(providerKind) && connectionRef ? { connectionRef } : {}),
         ...(providerKind === "codex" && reasoningEffort ? { reasoningEffort } : {}),
         ...(providerKind === "openai" && capability === "image" && imageApi ? { imageApi } : {}),
       }),
@@ -427,7 +483,7 @@ function ModelsSection({
     <section className="dashboard-section model-library-section">
       <SectionHeading icon="models" label="MODELS" title="模型" />
       <p className="model-library-hint">
-        每個模型服務單一能力（影像／文字／搜尋）。OpenAI 相容模型需選擇連線。
+        每個模型服務單一能力（影像／文字／搜尋）。OpenAI 相容與 Gemini 原生模型需選擇同協定的連線。
       </p>
       <div className="model-library-groups">
         {CAPABILITIES.map((cap) => {
@@ -480,7 +536,11 @@ function ModelsSection({
         <select
           aria-label="Provider 種類"
           value={providerKind}
-          onChange={(event) => setProviderKind(event.target.value as ProviderKind)}
+          onChange={(event) => {
+            // 換 kind 會換掉可選連線集合（協定不同），沿用舊選擇會留下跨協定的懸空 ref。
+            setProviderKind(event.target.value as ProviderKind);
+            setConnectionRef("");
+          }}
         >
           {KINDS.map((item) => (
             <option key={item} value={item}>
@@ -491,7 +551,7 @@ function ModelsSection({
         <select
           aria-label="連線"
           value={connectionRef}
-          disabled={providerKind !== "openai"}
+          disabled={!needsConnection(providerKind)}
           onChange={(event) => {
             const next = event.target.value;
             setConnectionRef(next);
@@ -499,7 +559,7 @@ function ModelsSection({
           }}
         >
           <option value="">（無連線）</option>
-          {library.connections.map((connection) => (
+          {connections.map((connection) => (
             <option key={connection.id} value={connection.id}>
               {connection.name}
             </option>
@@ -528,7 +588,11 @@ function ModelsSection({
           <input
             aria-label="模型名"
             placeholder={
-              providerKind === "codex" ? "model（留空用 Codex 預設）" : "model（如 gpt-image-2）"
+              providerKind === "codex"
+                ? "model（留空用 Codex 預設）"
+                : providerKind === "gemini"
+                  ? "model（如 gemini-3.1-flash-image）"
+                  : "model（如 gpt-image-2）"
             }
             value={model}
             onChange={(event) => setModel(event.target.value)}
@@ -600,8 +664,9 @@ function ModelRow({
     connectionRef !== (entry.connectionRef ?? "") ||
     reasoningEffort !== (entry.reasoningEffort ?? "") ||
     imageApi !== (entry.imageApi ?? "");
+  const connections = connectionsFor(library, entry.providerKind);
   const availableModels =
-    entry.providerKind === "openai" && connectionRef
+    needsConnection(entry.providerKind) && connectionRef
       ? (connectionModels[connectionRef]?.models ?? [])
       : [];
   return (
@@ -634,7 +699,7 @@ function ModelRow({
       <select
         aria-label="連線"
         value={connectionRef}
-        disabled={entry.providerKind !== "openai"}
+        disabled={!needsConnection(entry.providerKind)}
         onChange={(event) => {
           const next = event.target.value;
           setConnectionRef(next);
@@ -642,7 +707,7 @@ function ModelRow({
         }}
       >
         <option value="">（無連線）</option>
-        {library.connections.map((connection) => (
+        {connections.map((connection) => (
           <option key={connection.id} value={connection.id}>
             {connection.name}
           </option>
@@ -684,7 +749,7 @@ function ModelRow({
               api.updateModel(entry.id, {
                 name,
                 model,
-                ...(entry.providerKind === "openai"
+                ...(needsConnection(entry.providerKind)
                   ? { connectionRef: connectionRef || undefined }
                   : {}),
                 ...(entry.providerKind === "codex"
