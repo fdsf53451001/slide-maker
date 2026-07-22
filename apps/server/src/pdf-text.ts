@@ -195,16 +195,16 @@ const BULLET_LEFT_CLEARANCE = 3;
  *
  * 兩個條件缺一不可：右邊近距離有文字，**且**左邊在同一條基線上是淨空的。少了左側條件，
  * 封面「截至 … · GCR SMB GTM」這種行內分隔號會被誤判成項目符號。
+ *
+ * 先算完配對再一次輸出，而不是邊掃邊 push：`lines` 依「基線、x」排序，而同一條視覺行的
+ * 基線容許 ±0.5 字級的落差，所以項目文字有可能排在符號**前面**。邊掃邊 push 的話那一行
+ * 會先以自己的身分輸出一次、再被併進符號裡輸出一次，`content` 就多出一份重複的文字。
  */
 function attachBulletMarkers(lines: readonly PdfTextLine[]): PdfTextLine[] {
-  const merged: PdfTextLine[] = [];
   const consumed = new Set<number>();
+  const merged = new Map<number, PdfTextLine>();
   for (const [index, line] of lines.entries()) {
-    if (consumed.has(index)) continue;
-    if (!BULLET_MARKER.test(line.text)) {
-      merged.push(line);
-      continue;
-    }
+    if (!BULLET_MARKER.test(line.text)) continue;
     const sameBaseline = [...lines.entries()].filter(
       ([other, candidate]) =>
         other !== index &&
@@ -227,19 +227,16 @@ function attachBulletMarkers(lines: readonly PdfTextLine[]): PdfTextLine[] {
           }))
           .filter(({ gap }) => gap >= 0 && gap <= line.fontSize * BULLET_TEXT_GAP)
           .sort((left, right) => left.gap - right.gap)[0];
-    if (!target) {
-      merged.push(line);
-      continue;
-    }
+    if (!target) continue;
     consumed.add(target.other);
-    merged.push({
+    merged.set(index, {
       ...target.candidate,
       text: `${line.text} ${target.candidate.text}`,
       x: line.x,
       width: target.candidate.x + target.candidate.width - line.x,
     });
   }
-  return merged;
+  return lines.flatMap((line, index) => (consumed.has(index) ? [] : [merged.get(index) ?? line]));
 }
 
 /** 字級相近、行距不超過 1.9 倍、水平範圍重疊 30% 以上 = 同一段的續行。 */
@@ -443,8 +440,10 @@ function looksTabular(blocks: readonly PdfTextBlock[], bands: readonly LayoutSpa
   if (rows.length < 2) return false;
   for (const row of rows) {
     const cells = bands.map(() => 0);
-    for (const block of row)
-      cells[bandIndexOf(block, bands)] = (cells[bandIndexOf(block, bands)] ?? 0) + 1;
+    for (const block of row) {
+      const band = bandIndexOf(block, bands);
+      cells[band] = (cells[band] ?? 0) + 1;
+    }
     if (cells.some((count) => count > 1)) return false;
     if (cells.filter((count) => count === 1).length < TABLE_MIN_BANDS) return false;
   }

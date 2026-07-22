@@ -100,6 +100,8 @@ function workerEntryUrl(): string {
 interface WorkerAttempt<T> {
   /** 這一輪成功產出的頁（依完成順序）。 */
   produced: T[];
+  /** `produced` 對應的頁碼，用來認出「已經產出卻又被看門狗判定卡住」的那一頁。 */
+  producedPages: Set<number>;
   /** 這一輪 worker 自己判定失敗的頁。 */
   failedPages: number[];
   /** worker 正常跑完整批。 */
@@ -118,7 +120,12 @@ async function runWorkerAttempt<T>(
     eval: true,
     workerData: { entryUrl: workerEntryUrl(), request },
   });
-  const attempt: WorkerAttempt<T> = { produced: [], failedPages: [], completed: false };
+  const attempt: WorkerAttempt<T> = {
+    produced: [],
+    producedPages: new Set(),
+    failedPages: [],
+    completed: false,
+  };
   let watchdog: NodeJS.Timeout | undefined;
   try {
     await new Promise<void>((resolve) => {
@@ -148,7 +155,8 @@ async function runWorkerAttempt<T>(
               attempt.stalledPage = message.pageNumber;
             });
           case "page":
-            return void attempt.produced.push(message.value as T);
+            attempt.produced.push(message.value as T);
+            return void attempt.producedPages.add(message.value.pageNumber);
           case "failed-page":
             return void attempt.failedPages.push(message.pageNumber);
           case "done":
@@ -190,7 +198,7 @@ async function renderInWorkers<T>(
   assertDeckPdf(bytes);
   const pageTimeoutMs = limits.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS;
   const expiresAt = Date.now() + (limits.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS);
-  let remaining = [...pageNumbers].slice(0, MAX_DECK_PAGES);
+  let remaining = pageNumbers.slice(0, MAX_DECK_PAGES);
   const produced: T[] = [];
   const failedPages: number[] = [];
   while (remaining.length) {
@@ -209,7 +217,9 @@ async function renderInWorkers<T>(
     failedPages.push(...attempt.failedPages);
     if (attempt.completed) break;
     if (attempt.stalledPage !== undefined) {
-      failedPages.push(attempt.stalledPage);
+      // 看門狗有可能在「這一頁的成果已經送回來、下一頁的開工訊息還沒到」的空檔擊發。
+      // 那一頁其實是好的，別把它列進使用者看得到的失敗頁清單。
+      if (!attempt.producedPages.has(attempt.stalledPage)) failedPages.push(attempt.stalledPage);
       // 卡住的那一頁與它之前的頁都處理過了，從它的下一頁接著跑。
       remaining = remaining.slice(remaining.indexOf(attempt.stalledPage) + 1);
       continue;

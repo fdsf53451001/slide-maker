@@ -9,6 +9,8 @@ import {
   renderDeckPages,
   renderDeckPreviews,
 } from "../src/pdf-deck.js";
+import { renderDeckPagesInThread } from "../src/pdf-deck-render.js";
+import { extractPdfTextLayer } from "../src/pdf-text-layer.js";
 
 interface TestPage {
   size?: [number, number];
@@ -260,6 +262,26 @@ describe("renderDeckPages with text layers", () => {
     for (let index = 0; index < original!.length; index += 3)
       if (Math.abs((original![index] ?? 0) - (background![index] ?? 0)) > 24) differing += 1;
     expect(differing).toBeGreaterThan(2_000);
+  }, 60_000);
+
+  /**
+   * 單頁看門狗只認得 `start`：抽文字層是這一頁的第二段重工作（自己的二次光柵化 +
+   * 全頁像素比對），不重報一次開工的話，兩段的耗時會一起算進同一個單頁預算，
+   * worker 會在還正常做事的時候被主執行緒砍掉。
+   */
+  it("reports the text-layer step as its own start so the page watchdog is re-armed", async () => {
+    const deck = await makeDeck([{ title: { text: "Quarterly Review", size: 44 } }]);
+    const runWith = async (extractor?: typeof extractPdfTextLayer) => {
+      const started: number[] = [];
+      const sink = { onPageStart: (pageNumber: number) => void started.push(pageNumber) };
+      const result = await renderDeckPagesInThread(deck, [1], {}, sink, extractor);
+      return { started, page: result.pages[0] };
+    };
+    const withText = await runWith(extractPdfTextLayer);
+    // 文字層那一步真的跑過了，否則這條測試量不到它有沒有重報開工。
+    expect(withText.page?.textLayer?.boxes.length).toBeGreaterThan(0);
+    expect(withText.started).toEqual([1, 1]);
+    expect((await runWith()).started).toEqual([1]);
   }, 60_000);
 
   /** 掃描頁沒有原生文字：頁面照樣匯入，只是沒有文字層，而且不算失敗。 */

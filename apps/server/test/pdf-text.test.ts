@@ -493,6 +493,17 @@ describe("real deck geometry", () => {
       "GCR SMB GTM",
     ]);
   });
+
+  /**
+   * 符號與它的文字容許 ±0.5 字級的基線落差，但行是依基線排序的——落差夠大時文字會排在
+   * 符號前面。文字必須只出現一次（併進符號那一行），不能自己再輸出一份。
+   */
+  it("folds a bullet's item in only once even when the item sits on a higher baseline", () => {
+    const blocks = mergeLinesIntoBlocks(
+      mergeFragmentsIntoLines([at("•", 164, 636, 25, 11), at("長脈絡思考能力", 218, 625, 25, 175)]),
+    );
+    expect(blocks.map((block) => block.text)).toEqual(["• 長脈絡思考能力"]);
+  });
 });
 
 describe("extractTitle", () => {

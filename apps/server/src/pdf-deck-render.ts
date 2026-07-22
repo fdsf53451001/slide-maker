@@ -471,6 +471,10 @@ export async function renderDeckPagesInThread(
         const source: RenderedDeckSource = { pageNumber, png, blocks };
         if (extractTextLayer && textDocument) {
           try {
+            // 文字層是這一頁的**第二段**受時限保護的工作（自己的二次光柵化 + 全頁像素
+            // 比對）。不重報一次開工的話，主執行緒的單頁看門狗還在為第一段計時，兩段
+            // 加起來一定超過它的預算——worker 會在還在正常做事的時候被砍掉。
+            sink.onPageStart?.(pageNumber);
             source.textLayer = await extractTextLayer(textDocument, pageNumber, canvas, png, {
               pageTimeoutMs,
             });

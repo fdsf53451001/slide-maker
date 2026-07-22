@@ -100,7 +100,6 @@ function inkColor(
   }
   if (!candidates.length) return undefined;
   const core = candidates.filter((pixel) => pixel.difference >= strongest * 0.6);
-  const total = core.length || candidates.length;
   const sample = core.length ? core : candidates;
   const sum = sample.reduce(
     (accumulator, pixel) => {
@@ -111,7 +110,7 @@ function inkColor(
     },
     { r: 0, g: 0, b: 0 },
   );
-  return hex(sum.r / total, sum.g / total, sum.b / total);
+  return hex(sum.r / sample.length, sum.g / sample.length, sum.b / sample.length);
 }
 
 /** 完全取不到顏色時的保底：依背景亮度挑深／淺色，永遠不會與底色同色。 */
