@@ -520,7 +520,6 @@ function ImageEditDialog({
   type MaskPoint = { x: number; y: number };
   type MaskSelection = MaskPoint & { width: number; height: number };
   const [instruction, setInstruction] = useState("");
-  const [maskEnabled, setMaskEnabled] = useState(false);
   const [selection, setSelection] = useState<MaskSelection>();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragStart = useRef<MaskPoint | undefined>(undefined);
@@ -558,7 +557,7 @@ function ImageEditDialog({
     return rectangle;
   };
   const beginSelection = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!maskEnabled) return;
+    if (!supportsMask) return;
     const point = canvasPoint(event);
     if (!point) return;
     dragStart.current = point;
@@ -602,7 +601,7 @@ function ImageEditDialog({
           if (!instruction.trim()) return;
           onSubmit(
             instruction.trim(),
-            maskEnabled && selection ? canvasRef.current?.toDataURL("image/png") : undefined,
+            selection ? canvasRef.current?.toDataURL("image/png") : undefined,
           );
         }}
       >
@@ -616,7 +615,7 @@ function ImageEditDialog({
             ×
           </button>
         </header>
-        <div className={`image-mask-stage ${maskEnabled ? "masking" : ""}`}>
+        <div className={`image-mask-stage ${supportsMask ? "masking" : ""}`}>
           <img src={image} alt="目前頁面圖片" />
           <canvas
             ref={canvasRef}
@@ -628,7 +627,7 @@ function ImageEditDialog({
             onPointerUp={finishSelection}
             onPointerCancel={clearMask}
           />
-          {maskEnabled && selection && (
+          {selection && (
             <div
               className="mask-selection-box"
               style={{
@@ -639,7 +638,7 @@ function ImageEditDialog({
               }}
             />
           )}
-          {maskEnabled && !selection && <span>拖曳框選要修改的區域</span>}
+          {supportsMask && !selection && <span>拖曳框選要修改的區域（不框選＝整張套用）</span>}
         </div>
         <label className="image-edit-instruction">
           修改說明
@@ -653,21 +652,13 @@ function ImageEditDialog({
           />
         </label>
         <div className="mask-controls">
-          <label>
-            <input
-              type="checkbox"
-              checked={maskEnabled}
-              disabled={!supportsMask}
-              onChange={(event) => {
-                setMaskEnabled(event.target.checked);
-                if (!event.target.checked) clearMask();
-              }}
-            />
-            限制修改範圍（框選）
-          </label>
           {supportsMask ? (
             <>
-              <small>{selection ? "可直接拖曳重選範圍" : "框內可修改，框外保留原圖"}</small>
+              <small>
+                {selection
+                  ? "框內可修改，框外保留原圖；可直接拖曳重選"
+                  : "直接在圖上拖曳即可限定修改範圍"}
+              </small>
               <button type="button" disabled={!selection} onClick={clearMask}>
                 清除框選
               </button>
@@ -680,10 +671,7 @@ function ImageEditDialog({
           <button type="button" disabled={busy} onClick={onCancel}>
             取消
           </button>
-          <button
-            className="primary"
-            disabled={busy || !instruction.trim() || (maskEnabled && !selection)}
-          >
+          <button className="primary" disabled={busy || !instruction.trim()}>
             {busy ? "正在建立圖片編輯工作…" : "套用修改 →"}
           </button>
         </div>
