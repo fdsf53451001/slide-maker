@@ -6,6 +6,7 @@ import {
   type WebSearchResult,
   webSearchResultSchema,
 } from "@slide-maker/core";
+import { isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { type OpenAiClientConfig, parseLooseJson, probeReady, requestJson } from "./http.js";
 
 export interface OpenAiWebSearchOptions {
@@ -14,11 +15,6 @@ export interface OpenAiWebSearchOptions {
   model: string;
   /** Registry id 覆寫（模型庫 entry id）。未設回退 "openai"。 */
   id?: string;
-}
-
-function readableWebResult(result: WebSearchResult): boolean {
-  const pathname = new URL(result.url).pathname.toLowerCase();
-  return !/\.(?:pdf|zip|docx?|pptx?|xlsx?)(?:$|\/)/.test(pathname);
 }
 
 function extractContent(payload: unknown): string {
@@ -96,7 +92,7 @@ export class OpenAiWebSearchProvider implements WebSearchProvider {
         // Gemini via CLIProxyAPI must receive `google_search`; sending the
         // OpenAI built-in type silently omits the native search tool.
         // Keep the prompt short and do not combine json_schema with search.
-        // 下載檔（PDF 等）由 readableWebResult 事後過濾；搜尋結果一律視為 untrusted，由下游 prompt 約束。
+        // 下載檔（PDF 等）由 isReadableWebUrl 事後過濾；搜尋結果一律視為 untrusted，由下游 prompt 約束。
         messages: [
           {
             role: "system",
@@ -116,7 +112,7 @@ export class OpenAiWebSearchProvider implements WebSearchProvider {
     const results: WebSearchResult[] = [];
     for (const row of rows) {
       const candidate = webSearchResultSchema.safeParse(row);
-      if (candidate.success && readableWebResult(candidate.data)) results.push(candidate.data);
+      if (candidate.success && isReadableWebUrl(candidate.data.url)) results.push(candidate.data);
     }
     if (results.length === 0)
       throw new SafeProviderError(

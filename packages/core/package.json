@@ -14,6 +14,11 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./url-safety": {
+      "development": "./src/url-safety.ts",
+      "types": "./dist/url-safety.d.ts",
+      "import": "./dist/url-safety.js"
     }
   },
   "scripts": {
