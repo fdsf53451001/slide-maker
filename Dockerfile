@@ -22,6 +22,10 @@ COPY packages/core/package.json packages/core/
 COPY packages/provider-mock/package.json packages/provider-mock/
 COPY packages/provider-codex/package.json packages/provider-codex/
 COPY packages/provider-openai/package.json packages/provider-openai/
+COPY packages/provider-gemini/package.json packages/provider-gemini/
+# 新增 workspace 套件時，這份清單必須跟著加一行——漏掉的話 pnpm install 不認得該
+# 套件，node_modules 不會建立，直到 `pnpm -r build` 才以「Cannot find module」爆掉。
+# `pnpm check` 涵蓋不到映像建置，本機全綠也擋不住。
 # --store-dir 必須明講：pnpm 預設 store 在 ~/.local/share/pnpm/store，
 # 不指過來的話下面這個 cache mount 等於沒作用。
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \

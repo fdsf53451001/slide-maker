@@ -169,6 +169,15 @@ resource "google_cloud_run_v2_service" "app" {
         value = "/tmp/slide-maker-index/sources.sqlite"
       }
 
+      # 每次冷啟動把 egress 位址寫進 log。Cloud Run 沒有 NAT，出向位址取自 Google
+      # 的共用位址池，服務本身無從得知，而第三方 API 的 IP 白名單（如 AI Studio
+      # key）需要它。注意這個位址每次冷啟動都可能不同——log 只回答「此刻是哪個」，
+      # 要穩定出口仍得加 Cloud NAT。
+      env {
+        name  = "SLIDE_MAKER_LOG_EGRESS_IP"
+        value = "1"
+      }
+
       # 刻意不設任何 AI 相關環境變數：app.ts 只在「首次開機且 models.json
       # 不存在」時用 env seed 一份模型庫，之後 DATA_ROOT/models.json 就是單一
       # 真實來源。連線與 API key 一律在 UI 設定。

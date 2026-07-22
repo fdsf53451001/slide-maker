@@ -1,4 +1,5 @@
 import { createApp } from "./app.js";
+import { egressLoggingEnabled, logEgressAddresses } from "./egress-ip.js";
 import { formatStartupStatus } from "./startup-status.js";
 import type { JobRunner } from "./jobs.js";
 import type { ProviderReadinessService } from "./readiness.js";
@@ -16,6 +17,8 @@ const server = app.listen(port, host, () => {
     codexSoftSandboxEnabled,
   }))
     console.log(message);
+  // 不 await：位址探測要打外網，不該讓它決定服務何時開始收請求。
+  if (egressLoggingEnabled()) void logEgressAddresses();
 });
 installShutdownHandlers(
   server,
