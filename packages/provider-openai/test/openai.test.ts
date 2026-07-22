@@ -3,6 +3,7 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Resvg } from "@resvg/resvg-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { SafeProviderError, type ImageGenerationRequest } from "@slide-maker/core";
 import {
@@ -10,6 +11,8 @@ import {
   OpenAiCompatibleImageProvider,
   OpenAiStructuredTextProvider,
   OpenAiWebSearchProvider,
+  flattenMaskToBlack,
+  maskAwareDataUrl,
 } from "../src/index.js";
 
 // ---- minimal valid PNG builder (structure only; not real pixels) --------------
@@ -57,6 +60,33 @@ function png(width: number, height: number): Uint8Array {
     offset += part.length;
   }
   return out;
+}
+
+// ---- resvg 像素工具（遮罩攤平測試用） -----------------------------------------
+
+/** 以 resvg 畫出測試用 PNG（不畫底色就是透明底）。 */
+function renderSvgPng(inner: string, width: number, height: number): Uint8Array {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${inner}</svg>`;
+  return new Uint8Array(new Resvg(svg).render().asPng());
+}
+
+/** 從 IHDR 讀 PNG 寬高。 */
+function pngSize(bytes: Uint8Array): { width: number; height: number } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/** 測試目錄沒有 PNG decoder：把 PNG 用 resvg 再 render 一次取 RGBA 像素。 */
+function decodePixels(png: Uint8Array): { pixels: Buffer; width: number; height: number } {
+  const { width, height } = pngSize(png);
+  const dataUri = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><image href="${dataUri}" width="${width}" height="${height}"/></svg>`;
+  return { pixels: new Resvg(svg).render().pixels, width, height };
+}
+
+function pixelAt(image: { pixels: Buffer; width: number }, x: number, y: number): number[] {
+  const offset = (y * image.width + x) * 4;
+  return [...image.pixels.subarray(offset, offset + 4)];
 }
 
 // ---- fake OpenAI-compatible server -------------------------------------------
@@ -302,6 +332,70 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(parts[0]!.text).toContain("Do not re-render text from slide.content");
   });
 
+  it("chat masked edits flatten the transparent mask; the base image stays as-is", async () => {
+    const realPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+    const basePath = join(tmpdir(), `openai-flat-base-${process.pid}.png`);
+    await writeFile(basePath, Buffer.from(realPng, "base64"));
+    // 遮罩：白色矩形＋全透明底（textMask() 的形狀），直接送會被視覺模型攤成全白而隱形。
+    const maskBytes = renderSvgPng(
+      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+      1920,
+      1080,
+    );
+    const maskPath = join(tmpdir(), `openai-flat-mask-${process.pid}.png`);
+    await writeFile(maskPath, Buffer.from(maskBytes));
+    active = await startFake(() => ({
+      status: 200,
+      json: {
+        choices: [
+          {
+            message: {
+              images: [
+                { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+              ],
+            },
+          },
+        ],
+      },
+    }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gemini-3.1-flash-image",
+      apiShape: "chat",
+    });
+    await provider.generate({
+      ...imageRequest(),
+      references: [
+        { path: basePath, mediaType: "image/png", role: "content", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "content", name: "Mask" },
+      ],
+      edit: {
+        instruction: "Remove text",
+        baseImageIndex: 0,
+        maskImageIndex: 1,
+        purpose: "text-removal",
+      },
+    });
+    const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
+    const parts = body.messages[0]!.content as { type: string; image_url?: { url: string } }[];
+    const images = parts.filter((part) => part.type === "image_url");
+    // base 圖不受影響：仍是原檔 bytes。
+    expect(images[0]!.image_url!.url).toBe(`data:image/png;base64,${realPng}`);
+    // 遮罩那張已攤平：非原檔 bytes，且透明處變不透明黑、白框仍是白。
+    const maskUrl = images[1]!.image_url!.url;
+    expect(maskUrl).toMatch(/^data:image\/png;base64,/);
+    expect(maskUrl).not.toBe(`data:image/png;base64,${Buffer.from(maskBytes).toString("base64")}`);
+    const flattened = new Uint8Array(
+      Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
+    );
+    const image = decodePixels(flattened);
+    expect(image.width).toBe(1920);
+    expect(image.height).toBe(1080);
+    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+  });
+
   it("images shape reaches /images/edits with intrinsic base and mask inputs", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     const refPath = join(tmpdir(), `openai-native-edit-${process.pid}.png`);
@@ -427,6 +521,58 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body.input_references![0]!.image_url.url).toMatch(/^data:image\/png;base64,/);
   });
 
+  it("openrouter masked edits flatten the transparent mask in input_references", async () => {
+    const realPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+    const basePath = join(tmpdir(), `openrouter-flat-base-${process.pid}.png`);
+    await writeFile(basePath, Buffer.from(realPng, "base64"));
+    const maskBytes = renderSvgPng(
+      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+      1920,
+      1080,
+    );
+    const maskPath = join(tmpdir(), `openrouter-flat-mask-${process.pid}.png`);
+    await writeFile(maskPath, Buffer.from(maskBytes));
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({
+      status: 200,
+      json: { data: [{ b64_json: b64, media_type: "image/png" }] },
+    }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
+      model: "x-ai/grok-imagine-image-quality",
+      apiShape: "openrouter-image",
+    });
+    await provider.generate({
+      ...imageRequest(),
+      references: [
+        { path: basePath, mediaType: "image/png", role: "content", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "content", name: "Mask" },
+      ],
+      edit: {
+        instruction: "Remove text",
+        baseImageIndex: 0,
+        maskImageIndex: 1,
+        purpose: "text-removal",
+      },
+    });
+    const body = active.requests[0]!.body as {
+      input_references?: { image_url: { url: string } }[];
+    };
+    // base 圖原樣；遮罩（input_references 是給模型「看」的視覺通道）攤平成黑底。
+    expect(body.input_references![0]!.image_url.url).toBe(`data:image/png;base64,${realPng}`);
+    const maskUrl = body.input_references![1]!.image_url.url;
+    expect(maskUrl).toMatch(/^data:image\/png;base64,/);
+    const flattened = new Uint8Array(
+      Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
+    );
+    const image = decodePixels(flattened);
+    expect(image.width).toBe(1920);
+    expect(image.height).toBe(1080);
+    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+  });
+
   it("openrouter shape maps HTTP 429 to a usage-limit SafeProviderError", async () => {
     active = await startFake(() => ({ status: 429, json: { error: "rate limited" } }));
     const provider = new OpenAiCompatibleImageProvider({
@@ -458,6 +604,52 @@ describe("OpenAiCompatibleImageProvider", () => {
       model: "gpt-image-1",
     });
     expect(await provider.preflight()).toEqual({ status: "ready" });
+  });
+});
+
+describe("flattenMaskToBlack", () => {
+  it("turns white-on-transparent into white-on-opaque-black at the canvas size", () => {
+    const mask = renderSvgPng('<rect x="16" y="9" width="32" height="18" fill="white"/>', 64, 36);
+    // 前提確認：原遮罩底確實是全透明。
+    expect(pixelAt(decodePixels(mask), 0, 0)[3]).toBe(0);
+
+    const flattened = flattenMaskToBlack(mask, "image/png", 64, 36);
+    const image = decodePixels(flattened);
+    expect(image.width).toBe(64);
+    expect(image.height).toBe(36);
+    // alpha 全不透明。
+    const alphas = new Set<number>();
+    for (let offset = 3; offset < image.pixels.length; offset += 4)
+      alphas.add(image.pixels[offset]!);
+    expect([...alphas]).toEqual([255]);
+    // 原透明處為黑、原白框處為白。
+    expect(pixelAt(image, 0, 0)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 63, 35)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 32, 18)).toEqual([255, 255, 255, 255]);
+  });
+
+  it("rejects unsupported media types", () => {
+    expect(() => flattenMaskToBlack(new Uint8Array([1, 2, 3]), "image/gif", 64, 36)).toThrow(
+      SafeProviderError,
+    );
+  });
+});
+
+describe("maskAwareDataUrl", () => {
+  // passthrough 分支不解析 data URL，內容故意用非影像字串也不會 throw。
+  const url = "data:image/png;base64,not-really-parsed";
+
+  it("passes the url through untouched when the request has no edit", () => {
+    expect(maskAwareDataUrl(url, 0, imageRequest())).toBe(url);
+  });
+
+  it("passes the url through untouched when the edit has no maskImageIndex", () => {
+    const request = {
+      ...imageRequest(),
+      edit: { instruction: "Refine layout", baseImageIndex: 0, purpose: "refine" },
+    } as unknown as ImageGenerationRequest;
+    expect(maskAwareDataUrl(url, 0, request)).toBe(url);
+    expect(maskAwareDataUrl(url, 1, request)).toBe(url);
   });
 });
 

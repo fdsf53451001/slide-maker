@@ -193,7 +193,13 @@ describe("reference ordering", () => {
     const parts = requestParts(calls[0]!);
     // parts[0] 是合約文字，parts[N] 對應 references[N-1]，也就是合約裡的 Image N。
     expect(parts[1]!.inlineData!.data).toBe(distinctRefs[0]!.base64);
-    expect(parts[2]!.inlineData!.data).toBe(distinctRefs[1]!.base64);
+    // 遮罩（references[1]）不再是原檔 bytes——會先攤平成不透明黑底的 canvas 尺寸 PNG，
+    // 以 canvas 尺寸確認 parts[2] 正是被攤平的那張，順序沒有錯位。
+    expect(parts[2]!.inlineData!.data).not.toBe(distinctRefs[1]!.base64);
+    expect(pngSize(new Uint8Array(Buffer.from(parts[2]!.inlineData!.data, "base64")))).toEqual({
+      width: 1920,
+      height: 1080,
+    });
     expect(parts[3]!.inlineData!.data).toBe(distinctRefs[2]!.base64);
     const prompt = parts[0]!.text ?? "";
     // 合約說「Image 1 是待編輯的底圖、Image 2 是遮罩」，附加順序必須真的這樣排；

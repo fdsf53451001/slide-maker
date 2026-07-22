@@ -75,6 +75,12 @@ const REAL_PNG =
 /** 可被 resvg 解碼的最小 JPEG——原生端點回的就是 JPEG 而非 PNG。 */
 const REAL_JPEG =
   "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+/**
+ * 8×8「白色方塊＋全透明底」遮罩 PNG（textMask() 的形狀；resvg 產生）。
+ * 攤平後的像素級驗證在 provider-openai 的 flattenMaskToBlack 測試。
+ */
+const MASK_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHklEQVR4nGNkIACIV/AfCIAUHDACAZCiqwJcgKACAKUkEAkVHyenAAAAAElFTkSuQmCC";
 
 function imageRequest(): ImageGenerationRequest {
   return {
@@ -220,6 +226,45 @@ describe("GeminiImageProvider", () => {
     expect(prompt).toContain("TEXT REMOVAL CONTRACT");
     expect(prompt).toContain("Image 2 is the mask");
     expect(prompt).toContain("Do not re-render text from slide.content");
+  });
+
+  it("flattens the transparent mask inlineData to an opaque canvas PNG; base stays as-is", async () => {
+    const basePath = await writeReference("flat-base");
+    const maskPath = join(tmpdir(), `gemini-flat-mask-${process.pid}.png`);
+    await writeFile(maskPath, Buffer.from(MASK_PNG, "base64"));
+    const calls = mockFetch(() => ({
+      json: {
+        candidates: [
+          { content: { parts: [{ inlineData: { mimeType: "image/png", data: REAL_PNG } }] } },
+        ],
+      },
+    }));
+    const provider = new GeminiImageProvider({ config, model: "gemini-3.1-flash-image" });
+    await provider.generate({
+      ...imageRequest(),
+      references: [
+        { path: basePath, mediaType: "image/png", role: "content" as const, name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "content" as const, name: "Mask" },
+      ],
+      edit: {
+        instruction: "Remove text",
+        baseImageIndex: 0,
+        maskImageIndex: 1,
+        purpose: "text-removal" as const,
+      },
+    });
+    const parts = requestParts(calls[0]!);
+    // base 圖不受影響：仍是原檔 bytes。
+    expect(parts[1]!.inlineData).toEqual({ mimeType: "image/png", data: REAL_PNG });
+    // 遮罩那張已攤平：非原檔 bytes，且是 canvas 尺寸的 PNG（透明底攤成不透明黑，
+    // 否則視覺模型會把透明攤成白色而看不到白框）。
+    const mask = parts[2]!.inlineData!;
+    expect(mask.mimeType).toBe("image/png");
+    expect(mask.data).not.toBe(MASK_PNG);
+    expect(pngSize(new Uint8Array(Buffer.from(mask.data, "base64")))).toEqual({
+      width: 1920,
+      height: 1080,
+    });
   });
 
   it("reads the image from a part that also carries thoughtSignature", async () => {

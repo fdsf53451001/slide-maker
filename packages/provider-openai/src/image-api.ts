@@ -95,6 +95,10 @@ async function requestEdit(
   if (edit.maskImageIndex !== undefined) {
     const mask = request.references[edit.maskImageIndex];
     if (!mask) throw new SafeProviderError("OPENAI_IMAGE_MASK_MISSING", "找不到遮罩影像。");
+    // 已知語意差異、刻意不轉換：我們的遮罩是「白＝要抹除、透明＝保留」，OpenAI 官方
+    // /images/edits 的 alpha 語意剛好相反（透明＝可編輯）。實測下游 gateway 並不嚴格
+    // 遵守官方 alpha 語意、這條路徑現行運作良好，且 server 端另有 compositeMaskedEdit
+    // 兜底把未遮罩區域貼回原圖；在此翻轉或攤平反而有回歸風險，故維持原檔送出。
     form.set("mask", await imageBlob(mask.path, mask.mediaType), "mask.png");
   }
   return requestJson(config, {

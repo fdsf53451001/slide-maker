@@ -5,7 +5,7 @@ import {
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
-import { parseDataUri, rasterToCanvasPng } from "./image-util.js";
+import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 
 /**
  * OpenRouter 專用影像 transport。與 CLI2Proxy 的 images/chat adapter 並列為第三種形狀，
@@ -79,10 +79,14 @@ export async function generateViaOpenRouter(
   }
   validateEditReferences(request);
   const inputReferences: OpenRouterReference[] = [];
-  for (const reference of request.references) {
+  for (const [index, reference] of request.references.entries()) {
+    // input_references 是給模型「看」的視覺通道（無 alpha 語意的 edit 端點），
+    // 遮罩同 chat transport：先攤平成不透明黑底，否則透明底會被攤成全白而隱形。
     inputReferences.push({
       type: "image_url",
-      image_url: { url: await readImageAsDataUrl(reference.path) },
+      image_url: {
+        url: maskAwareDataUrl(await readImageAsDataUrl(reference.path), index, request),
+      },
     });
   }
   const payload = await requestJson(config, {

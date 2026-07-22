@@ -9,7 +9,12 @@ import {
   type ProviderAvailability,
   type ProviderPreflightResult,
 } from "@slide-maker/core";
-import { parseDataUri, rasterToCanvasPng, readImageAsDataUrl } from "@slide-maker/provider-openai";
+import {
+  maskAwareDataUrl,
+  parseDataUri,
+  rasterToCanvasPng,
+  readImageAsDataUrl,
+} from "@slide-maker/provider-openai";
 import {
   candidateParts,
   generateContent,
@@ -61,10 +66,20 @@ function validateEditReferences(request: ImageGenerationRequest): void {
   }
 }
 
-/** 安全讀取本機參考圖並轉成 `inlineData` part（沿用 provider-openai 的檔案驗證）。 */
-async function inlineReference(path: string): Promise<InlineDataPart> {
+/**
+ * 安全讀取本機參考圖並轉成 `inlineData` part（沿用 provider-openai 的檔案驗證）。
+ *
+ * masked edit 的遮罩那張（index === edit.maskImageIndex）是「白框＋透明底」，視覺模型
+ * 會把透明底攤成白色而看不到白框，故先經 `maskAwareDataUrl` 攤平成不透明黑底 PNG。
+ */
+async function inlineReference(
+  path: string,
+  index: number,
+  request: ImageGenerationRequest,
+): Promise<InlineDataPart> {
   try {
-    const { mediaType, bytes } = parseDataUri(await readImageAsDataUrl(path));
+    const url = maskAwareDataUrl(await readImageAsDataUrl(path), index, request);
+    const { mediaType, bytes } = parseDataUri(url);
     return { inlineData: { mimeType: mediaType, data: Buffer.from(bytes).toString("base64") } };
   } catch (error) {
     rethrowAsGeminiError(error, GEMINI_IMAGE_INPUT_FALLBACK);
@@ -150,7 +165,8 @@ export class GeminiImageProvider implements ImageProvider {
     // 參考圖接在文字之後、依 request.references 原順序 append——合約文字裡的
     // `Image N` 編號就是靠這個順序對齊，實測 Gemini 確實遵守。
     const parts: ContentPart[] = [{ text: imagePrompt(request) }];
-    for (const reference of request.references) parts.push(await inlineReference(reference.path));
+    for (const [index, reference] of request.references.entries())
+      parts.push(await inlineReference(reference.path, index, request));
 
     const payload = await generateContent(
       this.#options.config,

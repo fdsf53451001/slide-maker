@@ -4,7 +4,7 @@ import {
   type ImageGenerationRequest,
 } from "@slide-maker/core";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
-import { parseDataUri, rasterToCanvasPng } from "./image-util.js";
+import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 
 type ChatImagePart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -75,10 +75,14 @@ export async function generateViaChat(
   }
   validateEditReferences(request);
   const parts: ChatImagePart[] = [{ type: "text", text: chatPrompt(request) }];
-  for (const reference of request.references) {
+  for (const [index, reference] of request.references.entries()) {
+    // 遮罩是「白框＋透明底」，視覺模型會把透明底攤成白色而看不到白框，
+    // 故 masked edit 的遮罩那張先攤平成不透明黑底再送。
     parts.push({
       type: "image_url",
-      image_url: { url: await readImageAsDataUrl(reference.path) },
+      image_url: {
+        url: maskAwareDataUrl(await readImageAsDataUrl(reference.path), index, request),
+      },
     });
   }
   const payload = await requestJson(config, {
