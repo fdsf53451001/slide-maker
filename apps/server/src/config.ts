@@ -77,6 +77,34 @@ export function parseCodexReasoningEffort(
   return value as CodexReasoningEffort;
 }
 
+/** 永遠放行的主機名。這三個以外一律要靠 SLIDE_MAKER_TRUSTED_HOSTS 明確列出。 */
+export const LOCAL_HOSTNAMES = ["localhost", "127.0.0.1", "::1"] as const;
+
+/**
+ * 額外放行的主機名（逗號分隔），用於雲端部署。未設時回空陣列，行為與過去完全
+ * 相同——本機開發的防護不因這個選項而改變。
+ *
+ * 刻意不接受萬用字元：這份白名單是 API 對外的唯一防線，放行範圍必須逐一寫死。
+ */
+export function parseTrustedHosts(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim() === "") return [];
+  const hosts = value
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter((host) => host !== "");
+  if (hosts.length === 0)
+    throw new Error("SLIDE_MAKER_TRUSTED_HOSTS must list at least one hostname when set");
+  for (const host of hosts) {
+    if (host.includes("*"))
+      throw new Error(
+        "SLIDE_MAKER_TRUSTED_HOSTS must not contain wildcards; list hostnames one by one",
+      );
+    if (!/^[a-z0-9._:-]+$/.test(host))
+      throw new Error(`SLIDE_MAKER_TRUSTED_HOSTS contains an invalid hostname: ${host}`);
+  }
+  return hosts;
+}
+
 export const DEFAULT_OPENAI_TIMEOUT_MS = 120_000;
 export const MIN_OPENAI_TIMEOUT_MS = 5_000;
 export const MAX_OPENAI_TIMEOUT_MS = 30 * 60_000;

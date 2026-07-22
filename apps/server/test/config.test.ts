@@ -22,6 +22,8 @@ import {
   parseOpenAiImageApi,
   parseOpenAiTimeoutMs,
   parseOptionalString,
+  parseTrustedHosts,
+  LOCAL_HOSTNAMES,
 } from "../src/config.js";
 
 describe("Codex timeout configuration", () => {
@@ -132,4 +134,37 @@ describe("OpenAI-compatible endpoint configuration", () => {
       /SLIDE_MAKER_TEXT_ENGINE/,
     );
   });
+});
+
+describe("trusted host configuration", () => {
+  it("defaults to no extra hosts, so the guard stays local-only", () => {
+    expect(parseTrustedHosts(undefined)).toEqual([]);
+    expect(parseTrustedHosts("")).toEqual([]);
+    expect(parseTrustedHosts("   ")).toEqual([]);
+  });
+
+  it("splits, trims and lowercases a comma-separated list", () =>
+    expect(parseTrustedHosts(" App.Example.COM , slide-maker-abc-de.a.run.app ")).toEqual([
+      "app.example.com",
+      "slide-maker-abc-de.a.run.app",
+    ]));
+
+  it("drops empty entries but keeps the remaining hosts", () =>
+    expect(parseTrustedHosts("a.example.com,,b.example.com,")).toEqual([
+      "a.example.com",
+      "b.example.com",
+    ]));
+
+  it("rejects wildcards so the allowlist can never widen implicitly", () => {
+    expect(() => parseTrustedHosts("*")).toThrow(/wildcards/);
+    expect(() => parseTrustedHosts("*.example.com")).toThrow(/wildcards/);
+  });
+
+  it.each(["exa mple.com", "https://example.com", "example.com/path", "exam,ple.com;drop"])(
+    "rejects malformed hostname %s",
+    (value) => expect(() => parseTrustedHosts(value)).toThrow(/SLIDE_MAKER_TRUSTED_HOSTS/),
+  );
+
+  it("keeps the local names available for the guard to merge in", () =>
+    expect(LOCAL_HOSTNAMES).toEqual(["localhost", "127.0.0.1", "::1"]));
 });

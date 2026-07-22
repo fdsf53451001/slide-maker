@@ -1,0 +1,16 @@
+project_id  = "slide-maker-503201"
+region      = "asia-east1"
+bucket_name = "slide-maker-503201-data"
+
+# 每次部署新映像就換這一行的 tag，然後 terraform apply。
+image = "asia-east1-docker.pkg.dev/slide-maker-503201/slide-maker/server:2026-07-22"
+
+# app.ts 的主機閘門白名單。IAP 設好之前留空——放行等於把 API 攤開。
+#
+# Cloud Run 會配「兩個」網址，兩個都要列，否則從沒列到的那個進來會拿到
+# LOCAL_HOST_REQUIRED。注意 gcloud run services describe 的 status.url 只顯示舊格式
+# 那一個，別以為只有一個；完整清單要看 terraform output 或 terraform state 的 urls。
+trusted_hosts = [
+  "slide-maker-941757070298.asia-east1.run.app", # <服務>-<專案編號>.<區域>.run.app
+  "slide-maker-mnqpnlvqea-de.a.run.app",         # <服務>-<雜湊>-<區碼>.a.run.app
+]

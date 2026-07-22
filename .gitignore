@@ -12,6 +12,13 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 
+# Terraform: state stays local on purpose (see README). Commit .terraform.lock.hcl.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfplan
+infra/terraform.tfvars
+
 # cli-switch managed entries (per-CLI private fixtures)
 .claude/
 .cli-switch/

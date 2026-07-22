@@ -47,6 +47,7 @@ import { ModelLibraryError, ModelRuntime } from "./model-runtime.js";
 import { runtimePaths } from "./runtime-paths.js";
 import {
   type AiEngine,
+  LOCAL_HOSTNAMES,
   parseAiEngine,
   parseCodexMaxConcurrency,
   parseCodexModel,
@@ -58,6 +59,7 @@ import {
   parseOpenAiImageApi,
   parseOpenAiTimeoutMs,
   parseOptionalString,
+  parseTrustedHosts,
 } from "./config.js";
 import { ProviderReadinessGateError, ProviderReadinessService } from "./readiness.js";
 import { FileStyleRepository } from "./styles.js";
@@ -330,7 +332,14 @@ export async function createApp(
   await repository.initialize();
   const styles = new FileStyleRepository(join(dataRoot, "styles"));
   await styles.initialize();
-  const retriever = new SqliteFtsRetriever(join(dataRoot, "index", "sources.sqlite"));
+  // FTS 索引是純衍生資料——下面這個迴圈啟動時就從 project.sources 全量重建。
+  // 因此它不該躺在 DATA_ROOT：雲端的 DATA_ROOT 是 gcsfuse 掛載，而 gcsfuse 沒有
+  // POSIX 檔案鎖，SQLite 的 WAL 模式在上面會靜默損毀。部署時用
+  // SLIDE_MAKER_SEARCH_INDEX_PATH 指到容器本機磁碟；未設時維持原本的位置。
+  const retriever = new SqliteFtsRetriever(
+    parseOptionalString(process.env.SLIDE_MAKER_SEARCH_INDEX_PATH) ??
+      join(dataRoot, "index", "sources.sqlite"),
+  );
   for (const project of await repository.listProjects())
     retriever.index(project.id, project.sources);
   const codexSandbox = process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX === "1";
@@ -586,16 +595,23 @@ export async function createApp(
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "8mb" }));
+  // 未設 SLIDE_MAKER_TRUSTED_HOSTS 時這個集合就只有本機三個名字，與過去等價。
+  // 雲端部署必須明確列出自己的主機名，並且自行確保前面有 IAP 之類的驗證層——
+  // 放行一個主機名等於把這道防線交出去。
+  const allowedHosts = new Set<string>([
+    ...LOCAL_HOSTNAMES,
+    ...parseTrustedHosts(process.env.SLIDE_MAKER_TRUSTED_HOSTS),
+  ]);
   app.use((request, response, next) => {
     const hostname = request.hostname.toLowerCase();
-    if (!["localhost", "127.0.0.1", "::1"].includes(hostname)) {
+    if (!allowedHosts.has(hostname)) {
       return response.status(403).json({ error: "LOCAL_HOST_REQUIRED" });
     }
     const origin = request.headers.origin;
     if (origin) {
       try {
         const originHost = new URL(origin).hostname.toLowerCase();
-        if (!["localhost", "127.0.0.1", "::1"].includes(originHost))
+        if (!allowedHosts.has(originHost))
           return response.status(403).json({ error: "LOCAL_ORIGIN_REQUIRED" });
       } catch {
         return response.status(403).json({ error: "INVALID_ORIGIN" });
