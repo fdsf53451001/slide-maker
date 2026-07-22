@@ -19,6 +19,11 @@ import {
   OpenAiWebSearchProvider,
   type OpenAiClientConfig,
 } from "@slide-maker/provider-openai";
+import {
+  GeminiImageProvider,
+  GeminiStructuredTextProvider,
+  GeminiWebSearchProvider,
+} from "@slide-maker/provider-gemini";
 import type { OcrModelTier } from "./config.js";
 
 /** 執行環境常數（與品質無關），由 env 提供，rebuild 不變。 */
@@ -194,6 +199,8 @@ export class ModelRuntime {
     text: ProviderRegistry<StructuredTextProvider>,
     search: ProviderRegistry<WebSearchProvider>,
   ): void {
+    // 連線設定的形狀（base URL + key + timeout）在 openai 與 gemini 兩家 provider 之間
+    // 完全相同，故共用同一個型別，不另立平行結構。
     const connectionConfig = (entry: ModelEntry): OpenAiClientConfig => {
       const connection = entry.connectionRef
         ? library.connections.find((item) => item.id === entry.connectionRef)
@@ -233,6 +240,8 @@ export class ModelRuntime {
         ...(entry.model ? { model: entry.model } : {}),
         ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
       });
+    if (entry.providerKind === "gemini")
+      return new GeminiImageProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiCompatibleImageProvider({
       id: entry.id,
       config,
@@ -254,6 +263,8 @@ export class ModelRuntime {
         workspaceRoot: this.#base.codexStructuredJobsRoot,
         timeoutMs: system.codexTimeoutMs,
       });
+    if (entry.providerKind === "gemini")
+      return new GeminiStructuredTextProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiStructuredTextProvider({ id: entry.id, config, model: entry.model });
   }
 
@@ -270,6 +281,8 @@ export class ModelRuntime {
         workspaceRoot: this.#base.codexWebSearchJobsRoot,
         timeoutMs: system.codexTimeoutMs,
       });
+    if (entry.providerKind === "gemini")
+      return new GeminiWebSearchProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiWebSearchProvider({ id: entry.id, config, model: entry.model });
   }
 }

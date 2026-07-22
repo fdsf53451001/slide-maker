@@ -21,6 +21,7 @@ import {
   slideSpecFieldsSchema,
   slideSpecSchema,
   stylePresetSchema,
+  type ModelEntry,
   type ModelLibrary,
   type PresentationBrief,
   type PresentationProject,
@@ -39,6 +40,7 @@ import {
   outlineOverflowRetryInstruction,
 } from "@slide-maker/provider-codex";
 import { listModelIds } from "@slide-maker/provider-openai";
+import { listGeminiModelIds } from "@slide-maker/provider-gemini";
 import { JobRunner } from "./jobs.js";
 import { FileProjectRepository } from "./repository.js";
 import { ModelLibraryRepository } from "./model-library-repository.js";
@@ -86,6 +88,7 @@ import {
 } from "./exporters.js";
 import { SqliteFtsRetriever } from "./retriever.js";
 import { knownSourceContext } from "./source-context.js";
+import { isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { captureWebPage, type WebSearchResult } from "./web-capture.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask } from "./text-layers.js";
@@ -312,9 +315,25 @@ function asPersisted(project: PresentationProject): PresentationProject {
   return presentationProjectSchema.parse(project);
 }
 
-function readableWebResult(result: WebSearchResult): boolean {
-  const pathname = new URL(result.url).pathname.toLowerCase();
-  return !/\.(?:pdf|zip|docx?|pptx?|xlsx?)(?:$|\/)/.test(pathname);
+/**
+ * model entry 的 providerKind 與其連線 protocol 必須一致。
+ *
+ * 兩者是各自獨立的欄位，REST API 或手改 `models.json` 都能把 `providerKind:"gemini"`
+ * 的 entry 指向 `protocol:"openai"` 的連線；那樣的組合在執行期只會得到難懂的
+ * `GEMINI_REQUEST_FAILED HTTP 404`（請求形狀根本不同），所以在寫入時就擋掉。
+ * connectionRef 為空是允許的草稿狀態（完整性留到生成時檢查），只驗有指定的情形。
+ */
+function assertConnectionProtocol(draft: ModelLibrary, entry: ModelEntry): void {
+  if (entry.providerKind !== "openai" && entry.providerKind !== "gemini") return;
+  if (!entry.connectionRef) return;
+  const connection = draft.connections.find((item) => item.id === entry.connectionRef);
+  // 懸空 ref 不在這裡管：連線刪除已被 CONNECTION_IN_USE 擋住，且草稿允許半成品。
+  if (!connection) return;
+  if (connection.protocol !== entry.providerKind)
+    throw new ModelLibraryError(
+      "CONNECTION_PROTOCOL_MISMATCH",
+      `模型「${entry.name}」是 ${entry.providerKind} 類型，不能引用 ${connection.protocol} 協定的連線「${connection.name}」。`,
+    );
 }
 
 export const EDITOR_BUILD_MISSING =
@@ -676,10 +695,16 @@ export async function createApp(
       const connection = draft.connections.find((item) => item.id === connectionId);
       if (!connection) throw new Error("Connection not found");
       // 空字串或 redact 佔位的 apiKey 代表「沿用舊 key」；僅在給定新明文時覆寫。
+      const previousProtocol = connection.protocol;
       const { apiKey, ...rest } = patch;
       Object.assign(connection, rest);
       if (apiKey !== undefined && apiKey !== "" && !isRedactedKey(apiKey))
         connection.apiKey = apiKey;
+      // 改協定會反向弄壞既有引用（entry 的 kind 不會跟著變），故只在協定真的改變時
+      // 回頭檢查引用這條連線的 entry；改名／換 key 不受影響。
+      if (connection.protocol !== previousProtocol)
+        for (const entry of draft.models)
+          if (entry.connectionRef === connectionId) assertConnectionProtocol(draft, entry);
     });
     response.json(library);
   });
@@ -696,19 +721,25 @@ export async function createApp(
     response.json(library);
   });
 
-  // 列出連線端點可用模型（GET /models）：供模型 entry 的「模型名」下拉選單。
+  // 列出連線端點可用模型：供模型 entry 的「模型名」下拉選單。
   // 用 server 端存的明文 key，不外洩；探測失敗回安全錯誤碼。
+  // 請求形狀依連線協定分流：OpenAI 是 `GET /models` 回 `{data:[{id}]}`，
+  // Gemini 是 ListModels 回 `{models:[{name:"models/…"}]}`，兩者無法共用一條路徑。
   app.get("/api/model-library/connections/:id/models", async (request, response) => {
     const connectionId = idSchema.parse(request.params.id);
     const connection = runtime.library.connections.find((item) => item.id === connectionId);
     if (!connection) throw new Error("Connection not found");
     if (!connection.baseUrl)
       throw new ModelLibraryError("CONNECTION_BASE_URL_MISSING", "此連線尚未設定 base URL。");
-    const models = await listModelIds({
+    const config = {
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
       timeoutMs: connection.timeoutMs ?? runtime.system.codexTimeoutMs,
-    });
+    };
+    const models =
+      connection.protocol === "gemini"
+        ? await listGeminiModelIds(config)
+        : await listModelIds(config);
     response.json({ models });
   });
 
@@ -716,7 +747,9 @@ export async function createApp(
     const input = modelCreateSchema.parse(request.body);
     const id = randomUUID();
     const library = await mutateLibrary((draft) => {
-      draft.models.push(modelEntrySchema.parse({ ...input, id }));
+      const entry = modelEntrySchema.parse({ ...input, id });
+      assertConnectionProtocol(draft, entry);
+      draft.models.push(entry);
     });
     response.status(201).json(library);
   });
@@ -728,6 +761,7 @@ export async function createApp(
       const entry = draft.models.find((item) => item.id === modelId);
       if (!entry) throw new Error("Model not found");
       Object.assign(entry, patch);
+      assertConnectionProtocol(draft, entry);
     });
     response.json(library);
   });
@@ -2329,7 +2363,10 @@ export async function createApp(
     if (!project) throw new Error("Project not found");
     const results = await searchFor(project)(query, limit, project);
     response.json(
-      webSearchOutputSchema.parse({ results }).results.filter(readableWebResult).slice(0, limit),
+      webSearchOutputSchema
+        .parse({ results })
+        .results.filter((result) => isReadableWebUrl(result.url))
+        .slice(0, limit),
     );
   });
 
