@@ -94,7 +94,7 @@ import { isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { captureWebPage, type WebSearchResult } from "./web-capture.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask } from "./text-layers.js";
-import { refineOcrBoxes } from "./ocr-refine.js";
+import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
 
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
@@ -2033,7 +2033,7 @@ export async function createApp(
     // （簡體混入、破折號認成「一」）、拆開黏成一框的「標題｜內文」，再以原圖
     // 字墨對位校正字級與位置（偵測框帶 unclip 外擴，直接換算會偏大偏移）。
     const rawImage = await sharp(normalized).raw().toBuffer({ resolveWithObject: true });
-    const refined = refineOcrBoxes(boxesFromOcr(result, project.canvas, threshold), {
+    const refined = await refineOcrBoxes(boxesFromOcr(result, project.canvas, threshold), {
       sourceTexts: [slide.content, slide.layoutHint],
       image: {
         data: new Uint8Array(rawImage.data),
@@ -2051,6 +2051,7 @@ export async function createApp(
         return undefined;
       }
     })();
+
     if (styleRefiner?.availability.status === "available" && boxes.length) {
       try {
         const styleRefinement = ocrStyleRefinementSchema.parse(
@@ -2077,11 +2078,22 @@ export async function createApp(
             ].join("\n"),
           }),
         );
-        const byId = new Map(styleRefinement.boxes.map((box) => [box.id, box]));
-        boxes = boxes.map((box) => {
-          const style = byId.get(box.id);
-          return style ? { ...box, ...style } : box;
-        });
+        // 樣式落地與「以最終字型重解幾何」是兩件獨立的事：第一輪的字級是用 OCR
+        // 預設字型（Arial/400）量出來的，模型把字型改成 Noto Sans TC 之後前進寬
+        // 與字墨高都變了，必須重解才不會「算一套、渲染另一套」；但重解失敗不該
+        // 連模型判定的 role／color 一起丟掉。
+        const applied = await applyStyleRefinement(
+          boxes,
+          new Map(styleRefinement.boxes.map((box) => [box.id, box])),
+          refined.inkGeometry,
+        );
+        boxes = applied.boxes;
+        // 重解失敗只影響幾何精度，但不可靜默：這通常代表伺服器的字型環境有問題。
+        if (applied.resnapError)
+          console.error("OCR resnap with final fonts failed", {
+            slideId,
+            reason: applied.resnapError,
+          });
       } catch {
         // OCR geometry remains usable if optional visual style refinement fails.
       }

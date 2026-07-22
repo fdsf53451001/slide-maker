@@ -34,8 +34,18 @@ export const openAiImageApiSchema = z.enum(["images", "chat", "openrouter-image"
 export type OpenAiImageApi = z.infer<typeof openAiImageApiSchema>;
 export const codexReasoningEffortSchema = z.enum(["minimal", "low", "medium", "high"]);
 export type CodexReasoningEffort = z.infer<typeof codexReasoningEffortSchema>;
-export const ocrModelTierSchema = z.enum(["mobile", "hybrid", "server"]);
-export type OcrModelTier = z.infer<typeof ocrModelTierSchema>;
+// PP-OCRv6 的層級（tiny／small／medium）。v5 時代的 mobile／hybrid／server 是
+// 已持久化在 models.json 的舊值，解析時映射到對應層級，讓既有資料照常載入
+//（重新儲存時即以新值落地）。
+export type OcrModelTier = "tiny" | "small" | "medium";
+const LEGACY_OCR_MODEL_TIERS: Record<string, OcrModelTier> = {
+  mobile: "small",
+  hybrid: "medium",
+  server: "medium",
+};
+export const ocrModelTierSchema = z
+  .enum(["tiny", "small", "medium", "mobile", "hybrid", "server"])
+  .transform((value): OcrModelTier => LEGACY_OCR_MODEL_TIERS[value] ?? (value as OcrModelTier));
 
 /** 連線層：供 openai／gemini 兩家 HTTP 端點使用。key 於 API GET 時 redact（唯寫）。 */
 export const modelConnectionSchema = z.object({

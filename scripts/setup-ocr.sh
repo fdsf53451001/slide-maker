@@ -14,7 +14,7 @@ fi
 
 "$PYTHON" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip
-"$VENV/bin/python" -m pip install "paddlepaddle==3.2.0" "paddleocr==3.3.2" "Pillow>=10,<12"
+"$VENV/bin/python" -m pip install "paddlepaddle==3.2.0" "paddleocr==3.7.0" "Pillow>=10,<12"
 "$VENV/bin/python" "$ROOT/scripts/paddle_ocr.py" --self-test
 touch "$VENV/.ready"
 
