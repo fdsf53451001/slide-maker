@@ -1,0 +1,29 @@
+# 只送建置需要的東西進 build context。本機 .slide-maker-data 有 883MB，
+# .venv-ocr 有 909MB——兩者都由映像自己重建，絕不可送進 context。
+.git
+node_modules
+**/node_modules
+dist
+**/dist
+dist-lib
+**/dist-lib
+dist-types
+**/dist-types
+*.tsbuildinfo
+
+.data
+.slide-maker-data
+.venv-ocr
+artifacts
+coverage
+playwright-report
+test-results
+.playwright-mcp
+
+.claude
+.cli-switch
+.kiro
+.agents
+infra
+Dockerfile
+.dockerignore
