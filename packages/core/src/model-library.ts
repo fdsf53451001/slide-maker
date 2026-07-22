@@ -15,9 +15,20 @@ import { SCHEMA_VERSION } from "./schemas.js";
 export const modelCapabilitySchema = z.enum(["image", "text", "search"]);
 export type ModelCapability = z.infer<typeof modelCapabilitySchema>;
 
-/** provider 種類：mock（確定性佔位）、codex（本機 CLI）、openai（OpenAI 相容端點）。 */
-export const providerKindSchema = z.enum(["mock", "codex", "openai"]);
+/**
+ * provider 種類：mock（確定性佔位）、codex（本機 CLI）、openai（OpenAI 相容端點）、
+ * gemini（AI Studio 原生 `:generateContent`）。
+ */
+export const providerKindSchema = z.enum(["mock", "codex", "openai", "gemini"]);
 export type ProviderKind = z.infer<typeof providerKindSchema>;
+
+/**
+ * 端點協定。屬於連線本身而非模型：同一把 key、同一個 base URL 只會說一種協定，
+ * 而「列出可用模型」的請求形狀（OpenAI `GET /models` vs Gemini `ListModels`）
+ * 完全不同，必須在連線層就分流。default 讓既有 `models.json` 無痛升級。
+ */
+export const connectionProtocolSchema = z.enum(["openai", "gemini"]);
+export type ConnectionProtocol = z.infer<typeof connectionProtocolSchema>;
 
 export const openAiImageApiSchema = z.enum(["images", "chat", "openrouter-image"]);
 export type OpenAiImageApi = z.infer<typeof openAiImageApiSchema>;
@@ -26,19 +37,20 @@ export type CodexReasoningEffort = z.infer<typeof codexReasoningEffortSchema>;
 export const ocrModelTierSchema = z.enum(["mobile", "hybrid", "server"]);
 export type OcrModelTier = z.infer<typeof ocrModelTierSchema>;
 
-/** 連線層：僅 openai 家使用。key 於 API GET 時 redact（唯寫）。 */
+/** 連線層：供 openai／gemini 兩家 HTTP 端點使用。key 於 API GET 時 redact（唯寫）。 */
 export const modelConnectionSchema = z.object({
   id: z.string().min(1),
   name: z.string().trim().min(1).max(120),
   baseUrl: z.string().trim().default(""),
   apiKey: z.string().default(""),
+  protocol: connectionProtocolSchema.default("openai"),
   timeoutMs: z.number().int().positive().optional(),
 });
 export type ModelConnection = z.infer<typeof modelConnectionSchema>;
 
 /**
- * 模型層：一個 entry 服務單一能力。openai kind 才有 connectionRef；
- * reasoningEffort 專屬 codex；imageApi 專屬 openai 影像。
+ * 模型層：一個 entry 服務單一能力。openai／gemini kind 才有 connectionRef；
+ * reasoningEffort 專屬 codex；imageApi 專屬 openai 影像（Gemini 只有一種 transport）。
  */
 export const modelEntrySchema = z.object({
   id: z.string().min(1),

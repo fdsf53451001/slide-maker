@@ -1606,7 +1606,9 @@ describe("Editor MVP navigation", () => {
     fireEvent.click(await screen.findByText("圖片局部編輯"));
     fireEvent.click(await screen.findByText("編輯當頁圖片"));
     expect(await screen.findByRole("dialog", { name: "編輯當頁圖片" })).toBeTruthy();
-    expect(screen.getByText("限制修改範圍（框選）")).toBeTruthy();
+    // 框選不再需要先勾選開關：進來就能直接在圖上拖曳，不框選則整張套用。
+    expect(screen.getByText("直接在圖上拖曳即可限定修改範圍")).toBeTruthy();
+    expect(screen.queryByText("限制修改範圍（框選）")).toBeNull();
     expect(screen.queryByLabelText("遮罩筆刷大小")).toBeNull();
     fireEvent.change(screen.getByLabelText("圖片修改說明"), {
       target: { value: "只調整右上角圖示" },

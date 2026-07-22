@@ -1,5 +1,5 @@
 import type { WebSearchResult } from "@slide-maker/core";
-import { isIP } from "node:net";
+import { assertPublicHttpUrl as safePublicUrl } from "@slide-maker/core/url-safety";
 
 export type { WebSearchResult } from "@slide-maker/core";
 
@@ -37,73 +37,6 @@ export function readableHtml(html: string): string {
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function isPrivateIpv4(host: string): boolean {
-  const octets = host.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return true;
-  const [first, second] = octets as [number, number, number, number];
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 198 && (second === 18 || second === 19)) ||
-    first >= 224
-  );
-}
-
-function ipv6Words(host: string): number[] | undefined {
-  const halves = host.split("::");
-  if (halves.length > 2) return undefined;
-  const left = halves[0] ? halves[0].split(":") : [];
-  const right = halves[1] ? halves[1].split(":") : [];
-  const missing = 8 - left.length - right.length;
-  if ((halves.length === 1 && missing !== 0) || missing < 0) return undefined;
-  const words = [...left, ...Array(missing).fill("0"), ...right].map((word) =>
-    Number.parseInt(word, 16),
-  );
-  return words.length === 8 && words.every((word) => Number.isInteger(word) && word <= 0xffff)
-    ? words
-    : undefined;
-}
-
-function isPrivateIpv6(host: string): boolean {
-  const words = ipv6Words(host);
-  if (!words) return true;
-  const [first] = words;
-  if (
-    words.every((word) => word === 0) ||
-    (words.slice(0, 7).every((word) => word === 0) && words[7] === 1) ||
-    (first! & 0xfe00) === 0xfc00 ||
-    (first! & 0xffc0) === 0xfe80 ||
-    (first! & 0xff00) === 0xff00
-  )
-    return true;
-  const hasEmbeddedIpv4 = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
-  if (!hasEmbeddedIpv4) return false;
-  return isPrivateIpv4(
-    `${words[6]! >> 8}.${words[6]! & 0xff}.${words[7]! >> 8}.${words[7]! & 0xff}`,
-  );
-}
-
-function safePublicUrl(value: string): URL {
-  const url = new URL(value);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("WEB_SOURCE_URL_UNSUPPORTED");
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".local") ||
-    (isIP(host) === 4 && isPrivateIpv4(host)) ||
-    (isIP(host) === 6 && isPrivateIpv6(host))
-  ) {
-    throw new Error("WEB_SOURCE_URL_PRIVATE");
-  }
-  return url;
 }
 
 export async function captureWebPage(

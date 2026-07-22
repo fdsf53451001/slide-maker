@@ -1,5 +1,5 @@
 {
-  "name": "@slide-maker/core",
+  "name": "@slide-maker/provider-gemini",
   "version": "0.1.0",
   "type": "module",
   "license": "Apache-2.0",
@@ -14,11 +14,6 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./url-safety": {
-      "development": "./src/url-safety.ts",
-      "types": "./dist/url-safety.d.ts",
-      "import": "./dist/url-safety.js"
     }
   },
   "scripts": {
@@ -27,6 +22,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^3.25.76"
+    "@slide-maker/core": "workspace:*",
+    "@slide-maker/provider-openai": "workspace:*"
   }
 }

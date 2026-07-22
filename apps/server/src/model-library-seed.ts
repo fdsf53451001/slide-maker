@@ -84,6 +84,8 @@ export function buildSeedLibrary(config: SeedConfig): ModelLibrary {
       name: "OpenAI 相容端點",
       baseUrl: config.openai.baseUrl,
       apiKey: config.openai.apiKey,
+      // env 遷移路徑只涵蓋 OpenAI 相容端點；Gemini 從未有對應 env，由使用者在 UI 新增。
+      protocol: "openai",
       timeoutMs: config.openai.timeoutMs,
     });
     models.push({
