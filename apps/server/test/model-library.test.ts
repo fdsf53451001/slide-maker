@@ -118,6 +118,31 @@ describe("model library CRUD and project composition", () => {
     ).rejects.toThrow("DEFAULT_COMBINATION_LOCKED");
   });
 
+  // local-inpaint 是 fullSlideGeneration:false 的遮罩去字工具，綁進組合的影像模型後
+  // 一般生成會在 readiness gate 必然失敗；寫入時就以 IMAGE_MODEL_NOT_GENERATIVE 擋掉。
+  it("refuses binding a non-generative image model (local-inpaint) as a combination image ref", async (context) => {
+    if (unavailable) return context.skip();
+    // create：直接把 local-inpaint 設為影像 ref → 拒絕。
+    await expect(
+      send("/api/model-library/combinations", "POST", {
+        name: "非法組合",
+        imageModelRef: "local-inpaint",
+      }),
+    ).rejects.toThrow("IMAGE_MODEL_NOT_GENERATIVE");
+
+    // patch：先建合法組合（mock-image），再改成 local-inpaint → 拒絕。
+    const library = await send<ModelLibrary>("/api/model-library/combinations", "POST", {
+      name: "先合法後改壞",
+      imageModelRef: "mock-image",
+    });
+    const combination = library.combinations.at(-1)!;
+    await expect(
+      send(`/api/model-library/combinations/${combination.id}`, "PATCH", {
+        imageModelRef: "local-inpaint",
+      }),
+    ).rejects.toThrow("IMAGE_MODEL_NOT_GENERATIVE");
+  });
+
   it("defaults new connections to the openai protocol", async (context) => {
     if (unavailable) return context.skip();
     const library = await send<ModelLibrary>("/api/model-library/connections", "POST", {

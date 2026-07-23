@@ -46,7 +46,7 @@ import { listGeminiModelIds } from "@slide-maker/provider-gemini";
 import { JobRunner } from "./jobs.js";
 import { FileProjectRepository } from "./repository.js";
 import { ModelLibraryRepository } from "./model-library-repository.js";
-import { buildSeedLibrary } from "./model-library-seed.js";
+import { buildSeedLibrary, withLocalInpaintEntry } from "./model-library-seed.js";
 import { ModelLibraryError, ModelRuntime } from "./model-runtime.js";
 import { runtimePaths } from "./runtime-paths.js";
 import {
@@ -340,6 +340,38 @@ function assertConnectionProtocol(draft: ModelLibrary, entry: ModelEntry): void 
     );
 }
 
+/**
+ * 影像組合只能綁「能整頁生成」的模型。
+ *
+ * local-inpaint 這類 `fullSlideGeneration:false` 的 provider 只做遮罩去字（extract-text）；
+ * 綁成組合的影像模型後，一般「生成／重新生成圖片」會在 jobs 的 readiness gate 被
+ * FULL_SLIDE_GENERATION_UNSUPPORTED 擋下——等於存了一個必然失敗的組合。寫入時就擋掉。
+ *
+ * 權威判斷來自 runtime 已建好的 provider capabilities；provider 不在 registry（懸空 ref、
+ * 或 ref 指到非影像 entry）時，退回 `providerKind === "local"`（目前唯一的非生成影像 kind）。
+ * imageModelRef 為空是允許的草稿狀態，完整性留到生成時檢查。
+ */
+function assertGenerativeImageModel(
+  runtime: ModelRuntime,
+  draft: ModelLibrary,
+  imageModelRef: string | undefined,
+): void {
+  if (!imageModelRef) return;
+  const entry = draft.models.find((item) => item.id === imageModelRef);
+  if (!entry) return; // 懸空 ref 屬草稿；生成時才檢查完整性
+  let generative: boolean;
+  try {
+    generative = runtime.imageProvider(entry.id).capabilities.fullSlideGeneration;
+  } catch {
+    generative = entry.providerKind !== "local";
+  }
+  if (!generative)
+    throw new ModelLibraryError(
+      "IMAGE_MODEL_NOT_GENERATIVE",
+      `模型「${entry.name}」只能用於遮罩去字（抽離文字），不能設為組合的影像生成模型。`,
+    );
+}
+
 export const EDITOR_BUILD_MISSING =
   "Editor build not found. Run `pnpm --filter @slide-maker/editor build`, then restart the server.";
 
@@ -380,7 +412,7 @@ export async function createApp(
 
   // 模型庫：首次開機由 env seed 一份，之後以 DATA_ROOT/models.json 為單一真實來源。
   const libraryRepository = new ModelLibraryRepository(dataRoot);
-  const seededLibrary = await libraryRepository.loadOrSeed(() =>
+  let seededLibrary = await libraryRepository.loadOrSeed(() =>
     buildSeedLibrary({
       now: new Date().toISOString(),
       textEngine: parseAiEngine("SLIDE_MAKER_TEXT_ENGINE", process.env.SLIDE_MAKER_TEXT_ENGINE),
@@ -414,6 +446,10 @@ export async function createApp(
       system: envDefaults,
     }),
   );
+  // 在 local-inpaint 出現之前 seed 的既有 models.json 補上內建 entry，
+  // 否則 extract-text 的新預設 providerId 會解析不到。
+  const migratedLibrary = withLocalInpaintEntry(seededLibrary);
+  if (migratedLibrary) seededLibrary = await libraryRepository.save(migratedLibrary);
 
   const runtime = new ModelRuntime(
     {
@@ -421,6 +457,7 @@ export async function createApp(
       codexImageJobsRoot: runtimePaths.codexImageJobsRoot,
       codexStructuredJobsRoot: join(dataRoot, "codex-structured-jobs"),
       codexWebSearchJobsRoot: join(dataRoot, "codex-web-search-jobs"),
+      localToolsRoot: runtimePaths.workspaceRoot,
       defaults: envDefaults,
     },
     seededLibrary,
@@ -823,6 +860,7 @@ export async function createApp(
     const input = combinationCreateSchema.parse(request.body);
     const id = randomUUID();
     const library = await mutateLibrary((draft) => {
+      assertGenerativeImageModel(runtime, draft, input.imageModelRef);
       draft.combinations.push(modelCombinationSchema.parse({ ...input, id }));
       // 第一個組合自動設為預設，避免存了組合卻無預設可用。
       if (!draft.defaultCombinationId) draft.defaultCombinationId = id;
@@ -837,6 +875,7 @@ export async function createApp(
       const combination = draft.combinations.find((item) => item.id === combinationId);
       if (!combination) throw new Error("Combination not found");
       Object.assign(combination, patch);
+      assertGenerativeImageModel(runtime, draft, combination.imageModelRef);
     });
     response.json(library);
   });
@@ -2011,7 +2050,9 @@ export async function createApp(
     const slideId = idSchema.parse(request.params.slideId);
     const { providerId, threshold, acceptUnknownReadiness } = z
       .object({
-        providerId: z.string().default("codex-image-spike"),
+        // 預設走本地 OpenCV inpaint（快、零配額）；前端選「生圖模型」時
+        // 才帶專案組合解析出的影像 providerId。
+        providerId: z.string().default("local-inpaint"),
         threshold: z.number().min(0.5).max(0.95).default(0.75),
         acceptUnknownReadiness: z.boolean().default(false),
       })
@@ -2696,7 +2737,7 @@ export async function createApp(
       return response.status(404).json({ error: "NOT_FOUND" });
     if (
       error instanceof Error &&
-      /^(SOURCE_IN_USE|OUTLINE_HAS_GENERATED_VERSIONS|SLIDE_HAS_ACTIVE_JOB|LAST_SLIDE|INVALID_SLIDE_ORDER|INVALID_SLIDE_SELECTION|SOURCE_PROJECT_LIMIT|STYLE_REFERENCES_UNSUPPORTED|MULTIPLE_REFERENCES_UNSUPPORTED|SYSTEM_STYLE_READ_ONLY|STYLE_REFERENCE_LIMIT|VERSION_IN_USE|VERSION_HAS_ACTIVE_JOB|VERSION_REFERENCED_BY_TEXT_LAYER|EDIT_BASE_VERSION_MISSING)/.test(
+      /^(SOURCE_IN_USE|OUTLINE_HAS_GENERATED_VERSIONS|SLIDE_HAS_ACTIVE_JOB|LAST_SLIDE|INVALID_SLIDE_ORDER|INVALID_SLIDE_SELECTION|SOURCE_PROJECT_LIMIT|STYLE_REFERENCES_UNSUPPORTED|MULTIPLE_REFERENCES_UNSUPPORTED|FULL_SLIDE_GENERATION_UNSUPPORTED|SYSTEM_STYLE_READ_ONLY|STYLE_REFERENCE_LIMIT|VERSION_IN_USE|VERSION_HAS_ACTIVE_JOB|VERSION_REFERENCED_BY_TEXT_LAYER|EDIT_BASE_VERSION_MISSING)/.test(
         error.message,
       )
     ) {

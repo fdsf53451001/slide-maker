@@ -3391,13 +3391,25 @@ header {
 .text-extraction-control.open .threshold-toggle .caret {
   transform: rotate(180deg);
 }
-.text-extraction-control .threshold-slider {
+.text-extraction-control .threshold-slider,
+.text-extraction-control .extract-engine {
   display: flex;
   align-items: center;
   gap: 6px;
   color: #9ba9bc;
   font-size: 10px;
   white-space: nowrap;
+}
+.text-extraction-control .extract-engine select {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 3px 6px;
+  border: 1px solid #31445e;
+  border-radius: 5px;
+  background: #131c2a;
+  color: #d8eaff;
+  font-size: 10px;
 }
 .text-extraction-control .threshold-slider input {
   flex: 1;

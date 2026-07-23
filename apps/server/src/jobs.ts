@@ -215,6 +215,10 @@ export class JobRunner {
     if (!this.#accepting) throw new Error("SERVER_SHUTTING_DOWN");
     const provider = this.providers.get(providerId);
     if (provider.availability.status !== "available") throw new Error("Provider is unavailable");
+    // 局部用途的 provider（如 local-inpaint 只做遮罩去字）不能整頁生成；
+    // 兩條 generate route（單頁／批次）都經過這裡，統一在 enqueue 擋。
+    if (!edit && !provider.capabilities.fullSlideGeneration)
+      throw new Error("FULL_SLIDE_GENERATION_UNSUPPORTED");
     this.providerLimit(provider);
     const now = new Date().toISOString();
     const job: GenerationJob = {

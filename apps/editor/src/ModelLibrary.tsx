@@ -23,13 +23,14 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   codex: "Codex",
   openai: "OpenAI 相容",
   gemini: "Gemini 原生",
+  local: "本機（OpenCV）",
 };
 const PROTOCOL_LABEL: Record<ConnectionProtocol, string> = {
   openai: "OpenAI 相容",
   gemini: "Gemini 原生",
 };
 const CAPABILITIES: ModelCapability[] = ["image", "text", "search"];
-const KINDS: ProviderKind[] = ["mock", "codex", "openai", "gemini"];
+const KINDS: ProviderKind[] = ["mock", "codex", "openai", "gemini", "local"];
 const PROTOCOLS: ConnectionProtocol[] = ["openai", "gemini"];
 const REASONING_EFFORTS: CodexReasoningEffort[] = ["minimal", "low", "medium", "high"];
 const OPENAI_IMAGE_APIS: OpenAiImageApi[] = ["images", "chat", "openrouter-image"];
@@ -854,11 +855,15 @@ function CombinationRow({
       {CAPABILITY_LABEL[capability]}
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         <option value="">（未設定）</option>
-        {modelsByCapability(library, capability).map((entry) => (
-          <option key={entry.id} value={entry.id}>
-            {entry.name}
-          </option>
-        ))}
+        {modelsByCapability(library, capability)
+          // local kind（如 local-inpaint）是 fullSlideGeneration:false 的遮罩去字工具，
+          // 綁進組合的影像模型必然在生成時失敗，故不列入組合下拉（server 端同步硬擋）。
+          .filter((entry) => entry.providerKind !== "local")
+          .map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.name}
+            </option>
+          ))}
       </select>
     </label>
   );

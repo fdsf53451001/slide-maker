@@ -25,6 +25,7 @@ import {
   GeminiWebSearchProvider,
 } from "@slide-maker/provider-gemini";
 import type { OcrModelTier } from "./config.js";
+import { LocalInpaintProvider } from "./local-inpaint.js";
 
 /** 執行環境常數（與品質無關），由 env 提供，rebuild 不變。 */
 export interface ModelRuntimeBase {
@@ -32,6 +33,8 @@ export interface ModelRuntimeBase {
   codexImageJobsRoot: string;
   codexStructuredJobsRoot: string;
   codexWebSearchJobsRoot: string;
+  /** 本機 provider（local-inpaint）解析 `.venv-ocr` 與 `scripts/` 的 workspace 根目錄。 */
+  localToolsRoot: string;
   defaults: {
     codexTimeoutMs: number;
     codexMaxConcurrency: number;
@@ -230,6 +233,8 @@ export class ModelRuntime {
     config: OpenAiClientConfig,
   ): ImageProvider {
     if (entry.providerKind === "mock") return new MockImageProvider(entry.id);
+    if (entry.providerKind === "local")
+      return new LocalInpaintProvider({ id: entry.id, root: this.#base.localToolsRoot });
     if (entry.providerKind === "codex")
       return new CodexImageSpikeProvider({
         id: entry.id,
@@ -255,7 +260,7 @@ export class ModelRuntime {
     system: ResolvedSystemSettings,
     config: OpenAiClientConfig,
   ): StructuredTextProvider | undefined {
-    if (entry.providerKind === "mock") return undefined;
+    if (entry.providerKind === "mock" || entry.providerKind === "local") return undefined;
     if (entry.providerKind === "codex")
       return new CodexStructuredTextProvider({
         id: entry.id,
@@ -273,7 +278,7 @@ export class ModelRuntime {
     system: ResolvedSystemSettings,
     config: OpenAiClientConfig,
   ): WebSearchProvider | undefined {
-    if (entry.providerKind === "mock") return undefined;
+    if (entry.providerKind === "mock" || entry.providerKind === "local") return undefined;
     if (entry.providerKind === "codex")
       return new CodexWebSearchProvider({
         id: entry.id,

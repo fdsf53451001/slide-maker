@@ -10,7 +10,11 @@ import type {
 } from "./schemas.js";
 
 export interface ImageProviderCapabilities {
-  fullSlideGeneration: true;
+  /**
+   * 是否能從大綱整頁生成投影片。局部用途的 provider（如 local-inpaint 只做
+   * 遮罩去字）宣告 false；一般「生成／重新生成圖片」流程會在 enqueue 時擋下。
+   */
+  fullSlideGeneration: boolean;
   referenceImages: boolean;
   imageEditing: boolean;
   maskedEditing: boolean;

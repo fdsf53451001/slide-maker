@@ -1814,6 +1814,131 @@ describe("Editor MVP navigation", () => {
     );
   });
 
+  const extractionProject = () => {
+    const project = createProject({ topic: "文字抽離測試專案", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    project.slides[0]!.versions = [
+      {
+        id: "base-version",
+        imagePath: "assets/generated/base.png",
+        prompt: "base",
+        providerId: "mock-image",
+        model: "mock-svg-v1",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: now,
+      },
+    ];
+    project.slides[0]!.currentVersionId = "base-version";
+    return project;
+  };
+
+  const extractionFetchMock = (project: ReturnType<typeof createProject>, maskedEditing: boolean) =>
+    vi.fn(async (input: string | URL | Request) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      const now = new Date().toISOString();
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true, imageEditing: true, maskedEditing },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
+      if (path.endsWith("/extract-text"))
+        return Response.json(
+          {
+            id: "extract-job",
+            projectId: project.id,
+            slideId: project.slides[0]!.id,
+            providerId: "local-inpaint",
+            status: "queued",
+            operation: "extract-text",
+            attempt: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+          { status: 202 },
+        );
+      return Response.json(project);
+    });
+
+  it("抽離文字預設走 OpenCV 引擎（providerId local-inpaint），不受生圖模型 maskedEditing 限制", async () => {
+    const project = extractionProject();
+    // 生圖模型不支援 maskedEditing 也不影響 OpenCV 引擎（本機跑）。
+    const fetchMock = extractionFetchMock(project, false);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    // 點專案標題開啟專案（進入編輯器）；「抽離文字」按鈕在屬性面板中預設可見，
+    // 不需要展開選項——早先誤把專案標題「抽離文字引擎」當成引擎控制的寫法已移除。
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    const extractButton = await screen.findByRole("button", { name: "抽離文字" });
+    expect((extractButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(extractButton);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"providerId":"local-inpaint"'),
+        }),
+      ),
+    );
+
+    // 切到「生圖模型」：模型不支援 maskedEditing 時按鈕停用。
+    fireEvent.click(screen.getByRole("button", { name: "調整文字抽離選項" }));
+    fireEvent.change(await screen.findByLabelText("抹字引擎"), { target: { value: "model" } });
+    expect((screen.getByRole("button", { name: "抽離文字" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it("選「生圖模型」時帶組合解析出的影像 providerId", async () => {
+    const project = extractionProject();
+    const fetchMock = extractionFetchMock(project, true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    // 開啟專案後，展開真正的「調整文字抽離選項」toggle 才會出現抹字引擎下拉。
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "調整文字抽離選項" }));
+    const engineSelect = (await screen.findByLabelText("抹字引擎")) as HTMLSelectElement;
+    expect(engineSelect.value).toBe("opencv");
+    fireEvent.change(engineSelect, { target: { value: "model" } });
+    fireEvent.click(screen.getByRole("button", { name: "抽離文字" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"providerId":"mock-image"'),
+        }),
+      ),
+    );
+  });
+
   it("opens a project and exposes slide, source, project and export workflows", async () => {
     const project = createProject({
       topic: "UI 測試專案",

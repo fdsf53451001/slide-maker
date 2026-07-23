@@ -17,9 +17,10 @@ export type ModelCapability = z.infer<typeof modelCapabilitySchema>;
 
 /**
  * provider 種類：mock（確定性佔位）、codex（本機 CLI）、openai（OpenAI 相容端點）、
- * gemini（AI Studio 原生 `:generateContent`）。
+ * gemini（AI Studio 原生 `:generateContent`）、local（本機子程序，如 OpenCV 抹字
+ * inpaint；比照 mock 不需要 connection）。
  */
-export const providerKindSchema = z.enum(["mock", "codex", "openai", "gemini"]);
+export const providerKindSchema = z.enum(["mock", "codex", "openai", "gemini", "local"]);
 export type ProviderKind = z.infer<typeof providerKindSchema>;
 
 /**

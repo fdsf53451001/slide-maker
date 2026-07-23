@@ -1720,6 +1720,8 @@ export function Editor() {
   const [selectedTextId, setSelectedTextId] = useState<string>();
   const [textThreshold, setTextThreshold] = useState(0.75);
   const [showTextThreshold, setShowTextThreshold] = useState(false);
+  // 抹字引擎：本地 OpenCV inpaint（快、零配額，預設）或專案組合的生圖模型。
+  const [textExtractEngine, setTextExtractEngine] = useState<"opencv" | "model">("opencv");
   const [textLayerBusy, setTextLayerBusy] = useState(false);
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
@@ -2359,7 +2361,7 @@ export function Editor() {
       await api.extractText(
         project.id,
         selected.id,
-        effectiveImageProviderId,
+        textExtractEngine === "opencv" ? "local-inpaint" : effectiveImageProviderId,
         textThreshold,
         acceptUnknownReadiness,
       );
@@ -3066,10 +3068,11 @@ export function Editor() {
                       !!activeJob ||
                       !!previewVersion ||
                       textLayerBusy ||
-                      // 這個版本已經有文字層了：再抽一次是拿 OCR ＋ 生圖模型重做一份
+                      // 這個版本已經有文字層了：再抽一次是拿 OCR ＋ 抹字引擎重做一份
                       // 已經精確而且零成本的東西（PDF 匯入的文字層取自原生文字層）。
                       !!selectedVersion?.textLayer ||
-                      !provider?.capabilities.maskedEditing
+                      // OpenCV 引擎在本機跑，不受生圖模型的 maskedEditing 能力限制。
+                      (textExtractEngine === "model" && !provider?.capabilities.maskedEditing)
                     }
                     title={
                       selectedVersion?.textLayer
@@ -3082,25 +3085,40 @@ export function Editor() {
                   <button
                     className="threshold-toggle"
                     aria-expanded={showTextThreshold}
-                    aria-label="調整文字抽離門檻"
-                    title="調整文字抽離門檻"
+                    aria-label="調整文字抽離選項"
+                    title="調整文字抽離選項"
                     onClick={() => setShowTextThreshold((open) => !open)}
                   >
                     <span className="caret">▾</span>
                   </button>
                 </div>
                 {showTextThreshold && (
-                  <label className="threshold-slider">
-                    門檻 <b>{textThreshold.toFixed(2)}</b>
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="0.95"
-                      step="0.05"
-                      value={textThreshold}
-                      onChange={(event) => setTextThreshold(Number(event.target.value))}
-                    />
-                  </label>
+                  <>
+                    <label className="extract-engine">
+                      抹字引擎
+                      <select
+                        aria-label="抹字引擎"
+                        value={textExtractEngine}
+                        onChange={(event) =>
+                          setTextExtractEngine(event.target.value as "opencv" | "model")
+                        }
+                      >
+                        <option value="opencv">OpenCV（快速，預設）</option>
+                        <option value="model">生圖模型</option>
+                      </select>
+                    </label>
+                    <label className="threshold-slider">
+                      門檻 <b>{textThreshold.toFixed(2)}</b>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="0.95"
+                        step="0.05"
+                        value={textThreshold}
+                        onChange={(event) => setTextThreshold(Number(event.target.value))}
+                      />
+                    </label>
+                  </>
                 )}
               </div>
             </div>
