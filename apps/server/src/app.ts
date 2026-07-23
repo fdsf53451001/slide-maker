@@ -90,6 +90,7 @@ import {
   parseProjectBundle,
   type ExportFormat,
 } from "./exporters.js";
+import { sendChunked } from "./http-stream.js";
 import { SqliteFtsRetriever } from "./retriever.js";
 import { knownSourceContext } from "./source-context.js";
 import { isReadableWebUrl } from "@slide-maker/core/url-safety";
@@ -2658,7 +2659,9 @@ export async function createApp(
       "Content-Disposition",
       `attachment; filename*=UTF-8''${encodeURIComponent(exportFilename(project, format))}`,
     );
-    response.send(Buffer.from(bytes));
+    // 一定要走 chunked：`response.send()` 會補 Content-Length，Cloud Run 對這種
+    // non-streamed 回應有 32 MiB 上限，大一點的簡報匯出必爆。詳見 sendChunked。
+    await sendChunked(response, bytes);
   });
 
   app.post(
@@ -2723,7 +2726,19 @@ export async function createApp(
     app.get("/*path", unavailable);
   }
 
-  app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+  // 四個參數的簽名不可省略，否則 Express 不會把這支當成 error handler。
+  app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
+    if (response.headersSent) {
+      // 已經吐了一半才失敗（串流匯出、sendFile、express.static）：再 `.status().json()`
+      // 會撞 ERR_HTTP_HEADERS_SENT，原始錯誤就此消失、客戶端只拿到被截斷的檔案。
+      // 交給 finalhandler，它會正確地 destroy socket，讓客戶端知道這份檔案不完整。
+      logError(
+        "http_response_failed_after_headers",
+        { method: request.method, path: request.path },
+        error,
+      );
+      return next(error);
+    }
     if (error instanceof z.ZodError)
       return response.status(400).json({ error: "INVALID_REQUEST", issues: error.issues });
     if (error instanceof ProviderReadinessGateError)

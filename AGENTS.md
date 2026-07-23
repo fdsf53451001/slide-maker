@@ -21,6 +21,7 @@ Edit this file; it is the single source of truth synced to every CLI.
 - PDF 有**三條互不共用的路徑**，用途不同、參數不同，不要互相重用：①「風格參考圖」`apps/server/src/pdf-pages.ts`（長邊 1024、上限 24 頁、無狀態回 data URL，只餵風格庫縮圖）；②「來源素材」`apps/server/src/sources.ts` 的 `parsePdf`（純文字抽取）；③「匯入成簡報專案」`apps/server/src/pdf-deck.ts`＋`pdf-text.ts`＋`pdf-text-layer.ts`（1920×1080 落地存檔）。
 - PDF 匯入簡報（③）全程**零模型**，不得退回 OCR＋inpaint：文字取自 PDF 原生文字層（`getTextContent()`），抹字背景靠**二次渲染過濾 text operator** 取得，而非 `extract-text` 那條 PaddleOCR＋生圖模型 masked edit 的路。受理條件為 16:9（每頁長寬比 1.70–1.82，混比例以第一頁為準）、150 頁上限；render 需有單頁與總時限，且不得長時間阻塞 event loop。匯入時**同時建立兩個 version**：version A 是原圖（`currentVersionId` 指向它，無 `textLayer`），version B 是可編輯文字（`textLayer.originalVersionId` 指向 A），兩者靠既有的版本切換 UI 存取；掃描頁沒有原生文字層，就只有 A。PDF 原檔一併保留於 `assets/pdf-import/source.pdf`。停在 A 時畫布與三種匯出皆為原圖保真；切到 B 會以系統字型重繪文字（內嵌字型在瀏覽器與伺服器都不存在），前端對此有一次性提示。
 - `apps/server` 直接相依 `pdfjs-dist`（版本鎖定）：`pdf-to-img` 只提供「render page → PNG」，viewport 尺寸、`getTextContent()` 與 operator list 都必須直接用 pdf.js。無文字背景需掛 pdf.js 內部掛點 `page._renderPageChunk`（無公開 API 可渲染過濾後的 operator list），升級 `pdfjs-dist` 會使對應測試失敗而非靜默失效。
+- Cloud Run 的 HTTP/1 回應在未使用 `Transfer-Encoding: chunked`／串流機制時上限 32 MiB，超過直接回 "Response size was too large."。匯出內嵌無損 PNG，二十頁上下就會撞線，故匯出端點一律走 `apps/server/src/http-stream.ts` 的 `sendChunked()`，不得「簡化」回 `response.send()`（`send()` 會補 `Content-Length`，回應即屬 non-streamed）。
 - `.data/`、`.slide-maker-data/`、`artifacts/`、`.venv-ocr/` 為執行期／生成資料，不要編輯或提交。
 
 ## 結構
