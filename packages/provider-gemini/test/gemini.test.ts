@@ -228,6 +228,45 @@ describe("GeminiImageProvider", () => {
     expect(prompt).toContain("Do not re-render text from slide.content");
   });
 
+  it("pins temperature to 0 only for text-removal edits; other requests omit the key", async () => {
+    const refPath = await writeReference("temp");
+    const calls = mockFetch(() => ({
+      json: {
+        candidates: [
+          { content: { parts: [{ inlineData: { mimeType: "image/png", data: REAL_PNG } }] } },
+        ],
+      },
+    }));
+    const provider = new GeminiImageProvider({ config, model: "gemini-3.1-flash-image" });
+    const references = [
+      { path: refPath, mediaType: "image/png", role: "content" as const, name: "Current slide" },
+      { path: refPath, mediaType: "image/png", role: "content" as const, name: "Mask" },
+    ];
+    // 1) text-removal masked edit → temperature 0（實測可大幅降低漏抹率）。
+    await provider.generate({
+      ...imageRequest(),
+      references,
+      edit: {
+        instruction: "Remove text",
+        baseImageIndex: 0,
+        maskImageIndex: 1,
+        purpose: "text-removal" as const,
+      },
+    });
+    // 2) 一般生成 → 不帶 temperature。
+    await provider.generate(imageRequest());
+    // 3) 一般編輯（無 text-removal purpose）→ 不帶 temperature。
+    await provider.generate({
+      ...imageRequest(),
+      references: [references[0]!],
+      edit: { instruction: "Make the background darker", baseImageIndex: 0 },
+    });
+    const bodies = calls.map((call) => call.body as { generationConfig: Record<string, unknown> });
+    expect(bodies[0]!.generationConfig.temperature).toBe(0);
+    expect(bodies[1]!.generationConfig).not.toHaveProperty("temperature");
+    expect(bodies[2]!.generationConfig).not.toHaveProperty("temperature");
+  });
+
   it("flattens the transparent mask inlineData to an opaque canvas PNG; base stays as-is", async () => {
     const basePath = await writeReference("flat-base");
     const maskPath = join(tmpdir(), `gemini-flat-mask-${process.pid}.png`);

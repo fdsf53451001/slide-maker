@@ -179,6 +179,9 @@ export class GeminiImageProvider implements ImageProvider {
           // 沒有任何一個要求併帶 "TEXT"。
           responseModalities: ["IMAGE"],
           ...(aspectRatio(request.width, request.height) ?? {}),
+          // 2026-07-23 實測（6 取樣 vs 6 對照）：temperature 0 使文字抽離的漏抹率大幅
+          // 下降（平均 ~22 區 → ~5 區）；一般生成／編輯不帶 temperature，保留預設創意度。
+          ...(request.edit?.purpose === "text-removal" ? { temperature: 0 } : {}),
         },
       },
       context?.signal,
