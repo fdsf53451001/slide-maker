@@ -1428,11 +1428,53 @@ header {
   max-height: 100px;
   overflow-y: auto;
 }
+.version-item {
+  position: relative;
+  /* 卡片外多包一層 div 之後，flex item 換成這個容器；沒有這行的話裡面的按鈕會縮到
+     內容高度，有 label 與沒 label 的卡片邊框高度就對不齊了。 */
+  display: flex;
+}
 .version-list button {
   padding: 4px;
   border: 1px solid #293349;
   background: #111725;
   cursor: pointer;
+}
+/* 刪除是不可逆操作，平時退到看不見；滑到那張卡片才浮出來，避免誤點。 */
+.version-item .version-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 14px;
+  border-radius: 8px;
+  border-color: var(--border-2);
+  background: rgba(9, 13, 22, 0.85);
+  color: var(--text-muted);
+  font-size: 12px;
+  opacity: 0;
+  /* 隱形時不可點：它壓在縮圖的右上角，看不見卻攔得到點擊是最糟的誤刪來源。 */
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.version-item:hover .version-delete,
+.version-item .version-delete:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.version-item .version-delete:hover {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+/* 觸控裝置沒有 hover：照上面的規則刪除鈕會永遠隱形又不可點，等於這個功能不存在。 */
+@media (hover: none) {
+  .version-item .version-delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .version-list button.current {
   border-color: var(--accent);

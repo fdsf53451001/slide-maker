@@ -494,6 +494,195 @@ describe("Editor MVP navigation", () => {
     expect(screen.getAllByRole("button", { name: /^版本 \d/ })).toHaveLength(2);
   });
 
+  it("deletes an unused version after confirmation and leaves the preview state clean", async () => {
+    let project = createProject({ topic: "刪除版本", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const baseVersion = {
+      prompt: "p",
+      providerId: "mock-image",
+      model: "mock",
+      parameters: {},
+      styleVersion: 1,
+      sources: [],
+    };
+    project.slides[0]!.versions = [
+      {
+        ...baseVersion,
+        id: "version-1",
+        imagePath: "assets/generated/version-1.png",
+        createdAt: "2026-07-16T01:00:00.000Z",
+      },
+      {
+        ...baseVersion,
+        id: "version-2",
+        imagePath: "assets/generated/version-2.png",
+        createdAt: "2026-07-16T02:00:00.000Z",
+      },
+    ];
+    project.slides[0]!.currentVersionId = "version-2";
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles")
+        return Response.json([createDefaultStyle("2026-07-16T02:00:00.000Z")]);
+      if (path.endsWith("/versions/version-1") && init?.method === "DELETE") {
+        project = structuredClone(project);
+        project.slides[0]!.versions = project.slides[0]!.versions.filter(
+          (version) => version.id !== "version-1",
+        );
+        return Response.json(project);
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("刪除版本"));
+    // 先進入預覽，確認刪掉正在預覽的版本後會退回目前版本。
+    fireEvent.click(await screen.findByRole("button", { name: "版本 1" }));
+    expect(screen.getByText("正在預覽歷史版本")).toBeTruthy();
+    // 使用中的版本沒有刪除鈕。
+    expect(screen.queryByRole("button", { name: "刪除版本 2" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "刪除版本 1" }));
+    expect(confirmMock).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith("/versions/version-1") && init?.method === "DELETE",
+        ),
+      ).toBe(true),
+    );
+    // 這個 waitFor 必須等在「剩一顆」上：等「不是 null」的話刪除前就已經成立，
+    // 等於沒有同步點，後面的長度斷言會賽跑到重繪之前。
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /^版本 \d/ })).toHaveLength(1),
+    );
+    expect(screen.queryByText("正在預覽歷史版本")).toBeNull();
+  });
+
+  it("keeps the version when deletion is not confirmed", async () => {
+    const project = createProject({ topic: "取消刪除", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    project.slides[0]!.versions = [
+      {
+        id: "version-1",
+        imagePath: "assets/generated/version-1.png",
+        prompt: "p",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: "2026-07-16T01:00:00.000Z",
+      },
+      {
+        id: "version-2",
+        imagePath: "assets/generated/version-2.png",
+        prompt: "p",
+        providerId: "mock-image",
+        model: "mock",
+        parameters: {},
+        styleVersion: 1,
+        sources: [],
+        createdAt: "2026-07-16T02:00:00.000Z",
+      },
+    ];
+    project.slides[0]!.currentVersionId = "version-2";
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers") return Response.json([]);
+      if (path === "/api/styles")
+        return Response.json([createDefaultStyle("2026-07-16T02:00:00.000Z")]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => false),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("取消刪除"));
+    fireEvent.click(await screen.findByRole("button", { name: "刪除版本 1" }));
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).endsWith("/versions/version-1")),
+    ).toBe(false);
+    expect(screen.getAllByRole("button", { name: /^版本 \d/ })).toHaveLength(2);
+  });
+
+  // 伺服器的 409 只回裸錯誤碼（`{"error":"VERSION_REFERENCED_BY_TEXT_LAYER"}`，沒有
+  // message 欄位），前端必須翻成可行動的中文；直接把錯誤碼倒到 toast 上等於沒有提示。
+  it("explains a refused version deletion instead of showing the raw error code", async () => {
+    const project = createProject({ topic: "刪除被擋", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const baseVersion = {
+      prompt: "p",
+      providerId: "mock-image",
+      model: "mock",
+      parameters: {},
+      styleVersion: 1,
+      sources: [],
+    };
+    project.slides[0]!.versions = [
+      {
+        ...baseVersion,
+        id: "version-1",
+        imagePath: "assets/generated/version-1.png",
+        createdAt: "2026-07-16T01:00:00.000Z",
+      },
+      {
+        ...baseVersion,
+        id: "version-2",
+        imagePath: "assets/generated/version-2.png",
+        createdAt: "2026-07-16T02:00:00.000Z",
+      },
+    ];
+    project.slides[0]!.currentVersionId = "version-2";
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(typeof input === "string" ? input : (input as Request).url);
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers") return Response.json([]);
+      if (path === "/api/styles")
+        return Response.json([createDefaultStyle("2026-07-16T02:00:00.000Z")]);
+      if (path.endsWith("/versions/version-1") && init?.method === "DELETE")
+        return Response.json({ error: "VERSION_REFERENCED_BY_TEXT_LAYER" }, { status: 409 });
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("刪除被擋"));
+    fireEvent.click(await screen.findByRole("button", { name: "刪除版本 1" }));
+
+    await waitFor(() => expect(screen.getByText(/有可編輯文字版本以這一版為原圖/)).toBeTruthy());
+    expect(screen.queryByText(/VERSION_REFERENCED_BY_TEXT_LAYER/)).toBeNull();
+    // 被擋下來的刪除不能讓卡片先行消失。
+    expect(screen.getAllByRole("button", { name: /^版本 \d/ })).toHaveLength(2);
+  });
+
   it("does not present the current outline as an old version when the legacy image has no snapshot", async () => {
     const project = createProject({ topic: "舊版無大綱", brief: { desiredSlideCount: 1 } });
     project.workflowStage = "editing";
