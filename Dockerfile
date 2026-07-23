@@ -62,8 +62,12 @@ RUN sh scripts/setup-ocr.sh && mkdir -p /root/.paddlex /root/.paddleocr
 # 4. 執行層
 ########################################
 FROM node:24-bookworm-slim AS runtime
+# fontconfig + Noto（含 CJK）給 server 端 SVG 文字渲染（text-layers.ts 的合成圖與
+# OCR 字級幾何實測）用：slim 基底一套字型都沒有，中文會整片 tofu 方框，且字級
+# 重解量到 tofu 寬度而全面失準。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv libgomp1 libgl1 libglib2.0-0 ca-certificates \
+      fontconfig fonts-noto-core fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*
 
 # runtime-paths.ts 以模組位置相對解析 editorDist（apps/server/dist/../../editor/dist），
