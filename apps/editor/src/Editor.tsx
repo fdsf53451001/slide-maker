@@ -12,6 +12,7 @@ import type {
   PresentationBrief,
   PresentationProject,
   SlideSpec,
+  SlideVersion,
   SourceAsset,
   StylePreset,
 } from "@slide-maker/core";
@@ -56,6 +57,16 @@ const PHASE_LABELS: Record<string, string> = {
   cancelled: "已取消",
 };
 
+/**
+ * 刪除版本的守門錯誤：伺服器 409 只回裸錯誤碼（沒有 message 欄位），直接顯示對使用者
+ * 沒有意義，而且每一種都有明確的下一步動作，所以在這裡翻成可行動的說明。
+ */
+const VERSION_DELETE_MESSAGES: Record<string, string> = {
+  VERSION_IN_USE: "這是使用中的版本，請先切換到其他版本再刪除。",
+  VERSION_HAS_ACTIVE_JOB: "這個版本正在被生成任務使用，請等任務結束。",
+  VERSION_REFERENCED_BY_TEXT_LAYER: "有可編輯文字版本以這一版為原圖，請先刪除那個版本。",
+};
+
 function duration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -72,6 +83,19 @@ function isPdfImportVersion(version?: {
   parameters?: Record<string, unknown>;
 }) {
   return version?.providerId === "pdf-import" && version.parameters?.pdfImport === true;
+}
+
+/**
+ * 刪除版本前的確認文字。
+ *
+ * PDF 匯入的可編輯文字版本是匯入當下用 PDF 原生文字層一次做出來的，刪掉就再也造不回來：
+ * 重做只剩 extract-text 那條 OCR＋遮罩重繪的路，字框幾何明顯比原生文字層粗糙。泛用的
+ * 「無法復原」在這裡等於沒說，使用者無從知道自己要付的是這個代價。
+ */
+function versionDeleteConfirmText(version: SlideVersion): string {
+  return isPdfImportVersion(version) && version.textLayer
+    ? "這是 PDF 匯入時建立的可編輯文字版本，刪掉後只能改用 OCR 重新抽字（字框會比原生文字層粗糙），確定嗎？"
+    : "刪除這個版本後無法復原，確定嗎？";
 }
 
 /** 這份專案是不是由 PDF 匯入建立的（決定 setup 階段要走分析頁而不是四步 wizard）。 */
@@ -1686,6 +1710,9 @@ export function Editor() {
   const [showImageEdit, setShowImageEdit] = useState(false);
   const [imageEditBusy, setImageEditBusy] = useState(false);
   const [previewVersionId, setPreviewVersionId] = useState<string>();
+  // 正在刪除中的版本 id：刪除鈕不 disable 的話，連點第二下會對已刪掉的版本再送一次
+  // DELETE，使用者看到的是刪除成功後跳出 NOT_FOUND 錯誤。
+  const [deletingVersionId, setDeletingVersionId] = useState<string>();
   const [outlineBusy, setOutlineBusy] = useState(false);
   const [textBoxes, setTextBoxes] = useState<EditableTextBox[]>([]);
   // 使用者是否編輯過目前版本的文字圖層；未編輯前自動儲存不得寫回伺服器（見自動儲存 effect）。
@@ -2770,29 +2797,65 @@ export function Editor() {
               const versionNumber =
                 (selected?.versions.findIndex((candidate) => candidate.id === version.id) ?? 0) + 1;
               return (
-                <button
-                  key={version.id}
-                  aria-label={`版本 ${versionNumber}${version.label ? `：${version.label}` : ""}${isCurrent ? "（目前）" : ""}`}
-                  className={`${isCurrent ? "current" : ""} ${isPreviewing ? "previewing" : ""}`.trim()}
-                  onClick={() => setPreviewVersionId(isCurrent ? undefined : version.id)}
-                >
-                  <img src={imageUrl(project.id, version.imagePath)} alt="version" />
-                  {/*
-                    PDF 匯入的兩個版本是同一秒建立的，只看時間戳分不出哪個是原圖、
-                    哪個是可編輯文字，所以有 label 就顯示 label。
-                  */}
-                  {version.label && <span className="version-label">{version.label}</span>}
-                  <span>
-                    {(() => {
-                      const d = new Date(version.createdAt);
-                      const p2 = (n: number) => String(n).padStart(2, "0");
-                      return `${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(
-                        d.getMinutes(),
-                      )}`;
-                    })()}
-                    {isCurrent ? " · 使用中" : isPreviewing ? " · 預覽" : ""}
-                  </span>
-                </button>
+                // 刪除鈕必須是獨立的 button，巢狀 button 是無效 HTML；因此外層改用 div
+                // 當定位容器，預覽仍然是裡面那顆原本的 button。
+                <div className="version-item" key={version.id}>
+                  <button
+                    aria-label={`版本 ${versionNumber}${version.label ? `：${version.label}` : ""}${isCurrent ? "（目前）" : ""}`}
+                    className={`${isCurrent ? "current" : ""} ${isPreviewing ? "previewing" : ""}`.trim()}
+                    onClick={() => setPreviewVersionId(isCurrent ? undefined : version.id)}
+                  >
+                    <img src={imageUrl(project.id, version.imagePath)} alt="version" />
+                    {/*
+                      PDF 匯入的兩個版本是同一秒建立的，只看時間戳分不出哪個是原圖、
+                      哪個是可編輯文字，所以有 label 就顯示 label。
+                    */}
+                    {version.label && <span className="version-label">{version.label}</span>}
+                    <span>
+                      {(() => {
+                        const d = new Date(version.createdAt);
+                        const p2 = (n: number) => String(n).padStart(2, "0");
+                        return `${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(
+                          d.getMinutes(),
+                        )}`;
+                      })()}
+                      {isCurrent ? " · 使用中" : isPreviewing ? " · 預覽" : ""}
+                    </span>
+                  </button>
+                  {/* 使用中的版本刪不掉（伺服器也擋），不顯示按鈕免得使用者白按一次。 */}
+                  {!isCurrent && selected && (
+                    <button
+                      type="button"
+                      className="version-delete"
+                      aria-label={`刪除版本 ${versionNumber}`}
+                      disabled={!!deletingVersionId}
+                      onClick={() => {
+                        if (deletingVersionId) return;
+                        if (!window.confirm(versionDeleteConfirmText(version))) return;
+                        setDeletingVersionId(version.id);
+                        void run(async () => {
+                          try {
+                            return await api.deleteVersion(project.id, selected.id, version.id);
+                          } catch (reason) {
+                            const code = reason instanceof Error ? reason.message : "";
+                            throw new Error(
+                              VERSION_DELETE_MESSAGES[code] ?? (code || "刪除版本失敗"),
+                            );
+                          }
+                        })
+                          .then((updated) => {
+                            // 預覽中的版本被刪掉後，這個 id 已經指不到任何版本了；留著它
+                            // 只會讓下一次點同一張卡片的切換行為看起來時靈時不靈。
+                            if (updated && previewVersionId === version.id)
+                              setPreviewVersionId(undefined);
+                          })
+                          .finally(() => setDeletingVersionId(undefined));
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>

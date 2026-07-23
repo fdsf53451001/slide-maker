@@ -243,7 +243,27 @@ export class JobRunner {
     };
     await this.repository.updateProject(projectId, (project) => {
       if (!this.#accepting) throw new Error("SERVER_SHUTTING_DOWN");
-      if (!project.slides.some((slide) => slide.id === slideId)) throw new Error("Slide not found");
+      const target = project.slides.find((slide) => slide.id === slideId);
+      if (!target) throw new Error("Slide not found");
+      // 編輯／抽字的呼叫端是在鎖外先讀專案挑出 base 版本，再做完 OCR 等長工作才排入
+      // 任務——extract-text 那段可以跑好幾分鐘。這期間版本刪除（它只看得到已存在的
+      // 任務）擋不住任何東西，所以在鎖內、寫入任務之前再確認一次 base 還在；晚一步
+      // 發現的話 job 會照跑，把配額花光才在執行期撞上同一個錯。
+      const referencedVersionIds = edit
+        ? [
+            edit.baseVersionId,
+            ...(edit.textExtraction
+              ? [
+                  edit.textExtraction.originalVersionId,
+                  ...(edit.textExtraction.replaceVersionId
+                    ? [edit.textExtraction.replaceVersionId]
+                    : []),
+                ]
+              : []),
+          ]
+        : [];
+      if (referencedVersionIds.some((id) => !target.versions.some((version) => version.id === id)))
+        throw new Error("EDIT_BASE_VERSION_MISSING");
       if (
         !provider.capabilities.supportedSizes.some(
           (size) => size.width === project.canvas.width && size.height === project.canvas.height,

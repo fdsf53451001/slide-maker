@@ -460,6 +460,11 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/activate`,
       { method: "POST" },
     ),
+  deleteVersion: (projectId: string, slideId: string, versionId: string) =>
+    request<PresentationProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}`,
+      { method: "DELETE" },
+    ),
   setProjectCombination: (projectId: string, combinationId: string) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/combination`, {
       method: "PATCH",

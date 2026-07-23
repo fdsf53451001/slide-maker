@@ -2314,6 +2314,86 @@ export async function createApp(
     },
   );
 
+  app.delete(
+    "/api/projects/:projectId/slides/:slideId/versions/:versionId",
+    async (request, response) => {
+      const projectId = idSchema.parse(request.params.projectId);
+      const slideId = idSchema.parse(request.params.slideId);
+      const versionId = idSchema.parse(request.params.versionId);
+      const { project, staleAssets } = await repository.updateProject(projectId, (current) => {
+        const slide = current.slides.find((candidate) => candidate.id === slideId);
+        const index = slide?.versions.findIndex((candidate) => candidate.id === versionId) ?? -1;
+        if (!slide || index < 0) throw new Error("Version not found");
+        const version = slide.versions[index]!;
+        // 匯出、edit-image、extract-text 全都以 currentVersion 為基準，刪掉它會讓這一頁
+        // 進入沒有圖的狀態；要刪就先切到別的版本。
+        if (version.id === slide.currentVersionId) throw new Error("VERSION_IN_USE");
+        // 進行中的任務完成時要回寫這個版本（當 base，或是 extract-text 的替換目標）；
+        // 先刪掉的話任務結束只會拿到一個對不上的 id。
+        if (
+          // 不限定 job.slideId：版本 id 是 UUID，多比幾筆沒有代價，但少了這層耦合，
+          // 日後若有跨頁引用版本的任務，這道守門不會無聲地失效。
+          current.jobs.some(
+            (job) =>
+              ["queued", "running"].includes(job.status) &&
+              (job.baseVersionId === versionId ||
+                job.textExtraction?.originalVersionId === versionId ||
+                job.textExtraction?.replaceVersionId === versionId),
+          )
+        )
+          throw new Error("VERSION_HAS_ACTIVE_JOB");
+        // PDF 匯入與文字抽離會留下「原圖版本 A ← 可編輯文字版本 B」的配對，B 的重新抽字
+        // 與原圖保真都依賴 A 還在，所以被引用的原圖版本不能單獨刪。
+        if (
+          current.slides.some((candidate) =>
+            candidate.versions.some(
+              (other) => other.id !== versionId && other.textLayer?.originalVersionId === versionId,
+            ),
+          )
+        )
+          throw new Error("VERSION_REFERENCED_BY_TEXT_LAYER");
+        const staleCandidates = new Set([
+          version.imagePath,
+          ...(version.textLayer
+            ? [version.textLayer.backgroundPath, version.textLayer.compositePath]
+            : []),
+        ]);
+        slide.versions.splice(index, 1);
+        current.updatedAt = new Date().toISOString();
+        // restore 是 structuredClone 舊版本，多個版本共用同一個 imagePath 是常態：資產是否
+        // 該刪，只能在移除之後重算全專案的引用才算得準。
+        const referencedAssets = new Set(
+          current.slides.flatMap((candidate) =>
+            candidate.versions.flatMap((item) => [
+              item.imagePath,
+              ...(item.textLayer
+                ? [item.textLayer.backgroundPath, item.textLayer.compositePath]
+                : []),
+            ]),
+          ),
+        );
+        return {
+          project: asPersisted(current),
+          staleAssets: [...staleCandidates].filter((assetPath) => !referencedAssets.has(assetPath)),
+        };
+      });
+      // 刪除是這批資產最後一次被算到：引用集合不會再重算，刪不掉就是永久孤兒。
+      // 別的路徑（jobs、text-layer）失敗還有下一次回收，這裡沒有，所以要留得下線索。
+      const reclaimed = await Promise.allSettled(
+        staleAssets.map((assetPath) => repository.deleteAsset(projectId, assetPath)),
+      );
+      reclaimed.forEach((result, index) => {
+        if (result.status === "rejected")
+          logWarn(
+            "version_asset_reclaim_failed",
+            { projectId, slideId, versionId, assetPath: staleAssets[index] },
+            result.reason,
+          );
+      });
+      response.json(project);
+    },
+  );
+
   app.patch(
     "/api/projects/:projectId/slides/:slideId/versions/:versionId",
     async (request, response) => {
@@ -2570,7 +2650,14 @@ export async function createApp(
       ? request.params.assetPath.join("/")
       : request.params.assetPath;
     const absolutePath = repository.assetPath(projectId, assetPath);
-    await access(absolutePath);
+    // 缺檔是正常情形（刪掉版本後，畫面上還沒重整的舊 <img> 會再要一次），不是伺服器
+    // 故障：ENOENT 的訊息是 "no such file or directory"，不加這一段會落到最後的
+    // INTERNAL_SERVER_ERROR，把使用者的一般操作記成 500。
+    try {
+      await access(absolutePath);
+    } catch {
+      return response.status(404).json({ error: "ASSET_NOT_FOUND" });
+    }
     response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
     response.sendFile(absolutePath, { dotfiles: "allow" });
   });
@@ -2609,7 +2696,7 @@ export async function createApp(
       return response.status(404).json({ error: "NOT_FOUND" });
     if (
       error instanceof Error &&
-      /^(SOURCE_IN_USE|OUTLINE_HAS_GENERATED_VERSIONS|SLIDE_HAS_ACTIVE_JOB|LAST_SLIDE|INVALID_SLIDE_ORDER|INVALID_SLIDE_SELECTION|SOURCE_PROJECT_LIMIT|STYLE_REFERENCES_UNSUPPORTED|MULTIPLE_REFERENCES_UNSUPPORTED|SYSTEM_STYLE_READ_ONLY|STYLE_REFERENCE_LIMIT)/.test(
+      /^(SOURCE_IN_USE|OUTLINE_HAS_GENERATED_VERSIONS|SLIDE_HAS_ACTIVE_JOB|LAST_SLIDE|INVALID_SLIDE_ORDER|INVALID_SLIDE_SELECTION|SOURCE_PROJECT_LIMIT|STYLE_REFERENCES_UNSUPPORTED|MULTIPLE_REFERENCES_UNSUPPORTED|SYSTEM_STYLE_READ_ONLY|STYLE_REFERENCE_LIMIT|VERSION_IN_USE|VERSION_HAS_ACTIVE_JOB|VERSION_REFERENCED_BY_TEXT_LAYER|EDIT_BASE_VERSION_MISSING)/.test(
         error.message,
       )
     ) {
