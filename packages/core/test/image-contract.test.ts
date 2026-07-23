@@ -314,6 +314,30 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain("leave axes, ticks, and values unlabelled");
   });
 
+  it("forbids the model from drawing deck chrome the system composites itself", () => {
+    // 頁碼由 exporters／編輯器合成；模型再畫一組就會出現兩個頁碼，而且數字還不一樣。
+    // 禁令必須無條件成立（沒有參考圖時也在），不能只掛在 references 區塊裡。
+    const prompt = buildImageGenerationContract({ ...request(), references: [] });
+    expect(prompt).toContain("DECK CHROME IS NOT YOURS TO DRAW");
+    expect(prompt).toContain("never render page numbers, slide numbers");
+    expect(prompt).toContain("running header or footer");
+    expect(prompt).toContain("composited onto the slide by the system after generation");
+  });
+
+  it("keeps deck chrome banned on edits too, but not on text removal", () => {
+    const edit = request();
+    edit.edit = { instruction: "Make the accent colour warmer", baseImageIndex: 0 };
+    expect(buildImageGenerationContract(edit)).toContain("DECK CHROME IS NOT YOURS TO DRAW");
+    const removal = request();
+    removal.edit = {
+      instruction: "Remove masked text",
+      purpose: "text-removal",
+      baseImageIndex: 0,
+    };
+    // 抹字任務整段共用區塊都不送，這條也一樣——那裡的規則是「什麼都別畫」。
+    expect(buildImageGenerationContract(removal)).not.toContain("DECK CHROME IS NOT YOURS TO DRAW");
+  });
+
   it("blocks style references from leaking their own copy, figures, and branding", () => {
     const prompt = buildImageGenerationContract(request());
     expect(prompt).toContain("Do not reproduce what those references say");

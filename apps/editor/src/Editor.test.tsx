@@ -2083,3 +2083,480 @@ describe("Editor MVP navigation", () => {
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
   });
 });
+
+describe("簡報級頁碼", () => {
+  function pageNumberProject(topic: string) {
+    const project = createProject({ topic, brief: { desiredSlideCount: 3 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    for (const slide of project.slides) {
+      slide.versions = [
+        {
+          id: `${slide.id}-v1`,
+          imagePath: `assets/generated/${slide.id}.png`,
+          prompt: "",
+          providerId: "mock-image",
+          model: "mock",
+          parameters: {},
+          styleVersion: 1,
+          sources: [],
+          createdAt: now,
+        },
+      ];
+      slide.currentVersionId = `${slide.id}-v1`;
+    }
+    return project;
+  }
+
+  /** 專案級 PATCH 直接把 patch 併回同一份專案，模擬 server 的部分更新語意。 */
+  function stubApi(state: { project: ReturnType<typeof pageNumberProject> }) {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/projects" && (init?.method ?? "GET") === "GET")
+        return Response.json([state.project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+        });
+      if (path.endsWith("/page-number") && init?.method === "PATCH") {
+        const patch = JSON.parse(String(init.body)) as Record<string, unknown> & {
+          background?: Record<string, unknown>;
+        };
+        state.project = {
+          ...state.project,
+          pageNumber: {
+            ...state.project.pageNumber,
+            ...patch,
+            background: { ...state.project.pageNumber.background, ...patch.background },
+          },
+        };
+        return Response.json(state.project);
+      }
+      return Response.json(state.project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("疊出頁碼並跳過封面，數字與匯出用的同一份計算一致", async () => {
+    const state = { project: pageNumberProject("頁碼疊圖") };
+    state.project.pageNumber = {
+      ...state.project.pageNumber,
+      enabled: true,
+      skipFirstSlide: true,
+      format: "zh-page",
+    };
+    stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("頁碼疊圖"));
+    expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
+    // 封面不編號：畫布上不該出現任何頁碼。
+    expect(document.querySelector(".page-number-layer")).toBeNull();
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(await screen.findByText("第 1 頁")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(await screen.findByText("第 2 頁")).toBeTruthy();
+    // 位置以百分比座標定位，預覽與匯出共用同一份 pageNumberLayout。
+    const text = document.querySelector<HTMLElement>(".page-number-text")!;
+    expect(text.style.left).toBe(`${(63 / 1920) * 100}%`);
+    expect(text.style.justifyContent).toBe("flex-end");
+  });
+
+  it("關閉時畫布上沒有頁碼", async () => {
+    const state = { project: pageNumberProject("頁碼關閉") };
+    stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("頁碼關閉"));
+    expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(await screen.findByDisplayValue(state.project.slides[1]!.purpose)).toBeTruthy();
+    expect(document.querySelector(".page-number-layer")).toBeNull();
+  });
+
+  it("設定面板即時送出部分更新，並讓畫布預覽跟著變", async () => {
+    const state = { project: pageNumberProject("頁碼設定面板") };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("頁碼設定面板"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+    // 關閉時只有啟用開關，其餘設定不佔面板空間。
+    expect(screen.queryByLabelText("位置")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("顯示頁碼"));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/page-number$/),
+        expect.objectContaining({ method: "PATCH", body: JSON.stringify({ enabled: true }) }),
+      ),
+    );
+    // 預設 skipFirstSlide，第二頁顯示 1。
+    expect(await screen.findByText("1")).toBeTruthy();
+
+    fireEvent.change(await screen.findByLabelText("格式"), { target: { value: "number-total" } });
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/page-number$/),
+        expect.objectContaining({ body: JSON.stringify({ format: "number-total" }) }),
+      ),
+    );
+    // 三頁、跳封面 → 總數是 2，不是投影片張數 3。
+    expect(await screen.findByText("1 / 2")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("加上背景色塊"));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/page-number$/),
+        expect.objectContaining({ body: JSON.stringify({ background: { enabled: true } }) }),
+      ),
+    );
+    expect(await screen.findByLabelText("色塊顏色")).toBeTruthy();
+
+    // 數字欄位是失焦／Enter 才送出的（每個 keystroke 就送會讓兩位數永遠打不進去，
+    // 見「兩位數字級打得進去」那條）。
+    const startAt = screen.getByLabelText("起始頁碼");
+    fireEvent.change(startAt, { target: { value: "10" } });
+    fireEvent.blur(startAt);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/page-number$/),
+        expect.objectContaining({ body: JSON.stringify({ startAt: 10 }) }),
+      ),
+    );
+    expect(await screen.findByText("10 / 11")).toBeTruthy();
+  });
+
+  it("其餘每個控制項都各自送出只含自己那一欄的 PATCH", async () => {
+    // 面板上任一控制項若順手把整份設定重送，使用者在另一台裝置的調整就會被覆蓋；
+    // 逐一鎖住「只送自己那一欄」才擋得住這種回歸。
+    const state = { project: pageNumberProject("頁碼逐欄更新") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("頁碼逐欄更新"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+
+    const expectPatch = async (body: unknown) =>
+      waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringMatching(/\/page-number$/),
+          expect.objectContaining({ method: "PATCH", body: JSON.stringify(body) }),
+        ),
+      );
+
+    fireEvent.change(screen.getByLabelText("位置"), { target: { value: "bottom-left" } });
+    await expectPatch({ position: "bottom-left" });
+    await waitFor(() =>
+      expect(document.querySelector<HTMLElement>(".page-number-text")!.style.justifyContent).toBe(
+        "flex-start",
+      ),
+    );
+
+    fireEvent.click(screen.getByLabelText("封面不編號"));
+    await expectPatch({ skipFirstSlide: false });
+
+    // 數字欄位延後到失焦／Enter 才送；滑桿與色票 debounce 後才送。兩者都只帶自己那一欄。
+    const fontSize = screen.getByLabelText("字級");
+    fireEvent.change(fontSize, { target: { value: "48" } });
+    fireEvent.blur(fontSize);
+    await expectPatch({ fontSize: 48 });
+
+    fireEvent.change(screen.getByLabelText("顏色"), { target: { value: "#ff0000" } });
+    await expectPatch({ color: "#ff0000" });
+
+    fireEvent.change(screen.getByLabelText("透明度"), { target: { value: "0.5" } });
+    await expectPatch({ opacity: 0.5 });
+
+    fireEvent.click(screen.getByLabelText("顯示頁碼"));
+    await expectPatch({ enabled: false });
+    // 關閉後畫布立刻不再有頁碼，面板也收起其餘欄位。
+    await waitFor(() => expect(document.querySelector(".page-number-layer")).toBeNull());
+    expect(screen.queryByLabelText("位置")).toBeNull();
+  });
+
+  it("關閉封面不編號後，封面立刻長出頁碼", async () => {
+    const state = { project: pageNumberProject("封面編號") };
+    state.project.pageNumber = {
+      ...state.project.pageNumber,
+      enabled: true,
+      skipFirstSlide: true,
+    };
+    stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("封面編號"));
+    expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
+    expect(document.querySelector(".page-number-layer")).toBeNull();
+
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("封面不編號"));
+
+    // 停留在封面：原本沒有頁碼的那一頁現在顯示 1。
+    expect(await screen.findByText("1")).toBeTruthy();
+    expect(document.querySelector(".page-number-text")!.textContent).toBe("1");
+  });
+
+  it("簡報模式把頁碼疊在圖片矩形上，而不是整個舞台", async () => {
+    const state = { project: pageNumberProject("簡報模式頁碼") };
+    state.project.pageNumber = {
+      ...state.project.pageNumber,
+      enabled: true,
+      skipFirstSlide: true,
+      format: "number-total",
+    };
+    stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("簡報模式頁碼"));
+    expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(await screen.findByDisplayValue(state.project.slides[1]!.purpose)).toBeTruthy();
+
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    const stage = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(".presentation-stage");
+      if (!element) throw new Error("presentation stage not rendered");
+      return element;
+    });
+    // 頁碼必須是圖片矩形的子節點，否則 letterbox 留下的黑邊會讓它偏離畫面。
+    expect(stage.querySelector(".page-number-text")!.textContent).toBe("1 / 2");
+    // 舞台是「兩軸都算死」的精確畫布比例，不是 aspect-ratio。用 aspect-ratio 搭
+    // height: 100% + max-width: 100% 時，grid 的 auto track 會照 max-content 撐開再溢出，
+    // `.presentation-mode` 的 overflow: hidden 就把右側連同右下角頁碼切掉
+    // （實測 1000×800 視窗算出 1422×800）。長度單位取 `.presentation-surface` 的容器查詢
+    // 單位而非 vw／vh：vw／vh 不扣傳統捲軸寬度，會比固定覆蓋層多出約 15px。
+    expect(stage.style.aspectRatio).toBe("");
+    // CSS 解析器會把 calc() 收斂成單一係數，所以比對算出來的數字而不是原始字串。
+    const scale = (declaration: string, self: "cqw" | "cqh") => {
+      const other = self === "cqw" ? "cqh" : "cqw";
+      const match = new RegExp(`^min\\(100${self}, ([0-9.]+)${other}\\)$`).exec(declaration);
+      if (!match) throw new Error(`舞台尺寸不是 min(100${self}, k${other}) 的形式：${declaration}`);
+      return Number(match[1]);
+    };
+    expect(scale(stage.style.width, "cqw")).toBeCloseTo((1920 / 1080) * 100, 6);
+    expect(scale(stage.style.height, "cqh")).toBeCloseTo((1080 / 1920) * 100, 6);
+
+    // 翻到下一頁，簡報模式的數字跟著走。
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(document.querySelector(".presentation-stage .page-number-text")!.textContent).toBe(
+        "2 / 2",
+      ),
+    );
+  });
+
+  it("編輯畫布以 --ar 供 CSS 算出精確比例，而不是 aspect-ratio", async () => {
+    // `.page-number-layer` 是貼著 `.canvas` 的 inset: 0。`.canvas` 的比例只要不精確，
+    // `object-fit: contain` 就會留出灰邊，頁碼落進灰邊裡、與匯出對不上。
+    // aspect-ratio 搭 height: 100% + max-width: 100% 會失效（高度已是定值，寬度被夾住後
+    // 比例直接無效；實測 540×671.5 而非 16:9），所以改由 CSS 用 --ar 算死兩軸。
+    const state = { project: pageNumberProject("畫布比例") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("畫布比例"));
+    expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+
+    const canvas = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(".canvas");
+      if (!element) throw new Error("canvas not rendered");
+      return element;
+    });
+    expect(canvas.style.aspectRatio).toBe("");
+    expect(canvas.style.getPropertyValue("--ar")).toBe(String(1920 / 1080));
+    // 頁碼疊層必須掛在同一個 `.canvas` 上，兩者的座標系才是同一個。
+    expect(canvas.querySelector(".page-number-layer")).not.toBeNull();
+  });
+
+  it("兩位數字級打得進去：打字期間不送出、也不被伺服器打回舊值", async () => {
+    // 每個 keystroke 就送 PATCH 的話，30 → 45 會先送出 `4`（違反 min 12）而 400，
+    // 受控 input 當場被打回 30——12–120 區間裡每個值的首位數字都小於下界，必中。
+    const state = { project: pageNumberProject("字級鍵盤輸入") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("字級鍵盤輸入"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+
+    const fontSize = screen.getByLabelText("字級") as HTMLInputElement;
+    const patches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
+    expect(fontSize.value).toBe("30");
+
+    // 模擬「全選後打 4、再打 5」：中途不得送出，欄位也不得被打回 30。
+    fireEvent.change(fontSize, { target: { value: "4" } });
+    expect(fontSize.value).toBe("4");
+    expect(patches()).toHaveLength(0);
+    fireEvent.change(fontSize, { target: { value: "45" } });
+    expect(fontSize.value).toBe("45");
+    expect(patches()).toHaveLength(0);
+
+    fireEvent.blur(fontSize);
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({ fontSize: 45 });
+    await waitFor(() => expect(state.project.pageNumber.fontSize).toBe(45));
+    expect(fontSize.value).toBe("45");
+  });
+
+  it("數字欄位按 Enter 也送出，越界值先夾進區間，空字串則還原", async () => {
+    const state = { project: pageNumberProject("字級邊界輸入") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("字級邊界輸入"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+    const patches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
+
+    const fontSize = screen.getByLabelText("字級") as HTMLInputElement;
+    fireEvent.change(fontSize, { target: { value: "999" } });
+    fireEvent.keyDown(fontSize, { key: "Enter" });
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({ fontSize: 120 });
+    await waitFor(() => expect(fontSize.value).toBe("120"));
+
+    // 清空欄位不得送出 `Number("") === 0`（違反 min，必然 400），而是還原成現值。
+    const startAt = screen.getByLabelText("起始頁碼") as HTMLInputElement;
+    fireEvent.change(startAt, { target: { value: "" } });
+    fireEvent.blur(startAt);
+    expect(startAt.value).toBe("1");
+    expect(patches()).toHaveLength(1);
+  });
+
+  it("拖曳滑桿只在停手後送一次 PATCH，畫布卻是即時跟著動的", async () => {
+    // 每個 change 都送的話，一次拖曳會連發數十筆，每筆都讓伺服器「取檔鎖 → 讀 project.json
+    // → 全量 zod 驗證 → 原子寫」跑一趟；150 頁 PDF 匯入專案的 project.json 相當大。
+    const state = { project: pageNumberProject("透明度拖曳") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("透明度拖曳"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+    const patches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
+
+    const opacity = screen.getByLabelText("透明度");
+    for (const value of ["0.7", "0.6", "0.5", "0.4", "0.3"])
+      fireEvent.change(opacity, { target: { value } });
+
+    // 樂觀值讓預覽在請求送出前就已經是最後一格的值。
+    expect(document.querySelector<HTMLElement>(".page-number-text")!.style.opacity).toBe("0.3");
+    expect(patches()).toHaveLength(0);
+
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({ opacity: 0.3 });
+    // debounce 視窗過後不會再補送中間那幾格。
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(patches()).toHaveLength(1);
+    expect(state.project.pageNumber.opacity).toBe(0.3);
+  });
+
+  it("debounce 期間改到別的欄位時，兩個欄位併成同一筆送出，不會有人被吃掉", async () => {
+    const state = { project: pageNumberProject("色塊連續調整") };
+    state.project.pageNumber = {
+      ...state.project.pageNumber,
+      enabled: true,
+      background: { ...state.project.pageNumber.background, enabled: true },
+    };
+    const fetchMock = stubApi(state);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("色塊連續調整"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+    const patches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
+
+    fireEvent.change(screen.getByLabelText("色塊顏色"), { target: { value: "#112233" } });
+    fireEvent.change(screen.getByLabelText("色塊透明度"), { target: { value: "0.6" } });
+
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({
+      background: { color: "#112233", opacity: 0.6 },
+    });
+    await waitFor(() => expect(state.project.pageNumber.background.color).toBe("#112233"));
+    expect(state.project.pageNumber.background.opacity).toBe(0.6);
+  });
+
+  it("回應亂序時 UI 停在最新的值，不會被較早的那筆蓋回去", async () => {
+    // 兩筆在途時，先送的那筆若晚回來，無條件 setProject 會讓滑桿與畫布跳回舊值。
+    const state = { project: pageNumberProject("亂序回應") };
+    state.project.pageNumber = { ...state.project.pageNumber, enabled: true };
+    const fetchMock = stubApi(state);
+    const gate: (() => void)[] = [];
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const response = await original(input, init);
+      if (!String(input).endsWith("/page-number")) return response;
+      // 第一筆頁碼 PATCH 卡住，等第二筆回來後才放行。
+      if (gate.length === 0) await new Promise<void>((resolve) => gate.push(resolve));
+      return response;
+    });
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("亂序回應"));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.click(screen.getByText("設定"));
+    expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("位置"), { target: { value: "bottom-left" } });
+    await waitFor(() => expect(gate).toHaveLength(1));
+    fireEvent.change(screen.getByLabelText("位置"), { target: { value: "bottom-center" } });
+    await waitFor(() => expect(state.project.pageNumber.position).toBe("bottom-center"));
+
+    // 卡住的第一筆現在才回來，帶的是 bottom-left 那個時間點的專案。
+    gate[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.querySelector<HTMLElement>(".page-number-text")!.style.justifyContent).toBe(
+      "center",
+    );
+    expect((screen.getByLabelText("位置") as HTMLSelectElement).value).toBe("bottom-center");
+  });
+});

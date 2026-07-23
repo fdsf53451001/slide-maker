@@ -20,12 +20,14 @@ function xml(value: string): string {
 const FONT_ASCENT = 0.905;
 const FONT_DESCENT = 0.212;
 
-export function textOverlaySvg(
-  boxes: readonly EditableTextBox[],
-  width: number,
-  height: number,
-): Buffer {
-  const content = boxes
+/**
+ * 文字框的 `<text>` 元素，不含外層 `<svg>`。
+ *
+ * 匯出端要在同一張 SVG 裡先畫頁碼色塊 `<rect>` 再畫文字，需要能拿到裸元素；
+ * `textOverlaySvg()` 只是包一層 `<svg>` 呼叫它，輸出逐字不變。
+ */
+export function textElements(boxes: readonly EditableTextBox[]): string {
+  return boxes
     .map((box) => {
       const anchor = box.align === "center" ? "middle" : box.align === "right" ? "end" : "start";
       const x =
@@ -58,8 +60,15 @@ export function textOverlaySvg(
       return `<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
     })
     .join("");
+}
+
+export function textOverlaySvg(
+  boxes: readonly EditableTextBox[],
+  width: number,
+  height: number,
+): Buffer {
   return Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${content}</svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${textElements(boxes)}</svg>`,
   );
 }
 

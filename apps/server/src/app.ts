@@ -15,6 +15,7 @@ import {
   modelCombinationSchema,
   modelEntrySchema,
   modelLibrarySystemSchema,
+  pageNumberSettingsSchema,
   presentationBriefSchema,
   presentationProjectSchema,
   redactLibrary,
@@ -90,6 +91,7 @@ import {
   parseProjectBundle,
   type ExportFormat,
 } from "./exporters.js";
+import { sendChunked } from "./http-stream.js";
 import { SqliteFtsRetriever } from "./retriever.js";
 import { knownSourceContext } from "./source-context.js";
 import { isReadableWebUrl } from "@slide-maker/core/url-safety";
@@ -1363,6 +1365,30 @@ export async function createApp(
       const previousTopic = current.brief.topic;
       current.brief = presentationBriefSchema.parse({ ...current.brief, ...patch });
       current.name = patch.topic && current.name === previousTopic ? patch.topic : current.name;
+      current.updatedAt = new Date().toISOString();
+      return structuredClone(current);
+    });
+    response.json(project);
+  });
+
+  // 巢狀 partial：`background` 只送其中一個欄位時，其餘欄位要保留專案現值而不是被預設值覆蓋，
+  // 所以內層也得是 partial（`deepPartial()` 不會穿透帶 `.default()` 的物件欄位）。
+  const pageNumberPatchSchema = pageNumberSettingsSchema
+    .omit({ background: true })
+    .partial()
+    .extend({
+      background: pageNumberSettingsSchema.shape.background.removeDefault().partial().optional(),
+    });
+
+  app.patch("/api/projects/:projectId/page-number", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const patch = pageNumberPatchSchema.parse(request.body);
+    const project = await repository.updateProject(projectId, (current) => {
+      current.pageNumber = pageNumberSettingsSchema.parse({
+        ...current.pageNumber,
+        ...patch,
+        background: { ...current.pageNumber.background, ...patch.background },
+      });
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });
@@ -2658,7 +2684,9 @@ export async function createApp(
       "Content-Disposition",
       `attachment; filename*=UTF-8''${encodeURIComponent(exportFilename(project, format))}`,
     );
-    response.send(Buffer.from(bytes));
+    // 一定要走 chunked：`response.send()` 會補 Content-Length，Cloud Run 對這種
+    // non-streamed 回應有 32 MiB 上限，大一點的簡報匯出必爆。詳見 sendChunked。
+    await sendChunked(response, bytes);
   });
 
   app.post(
@@ -2723,7 +2751,19 @@ export async function createApp(
     app.get("/*path", unavailable);
   }
 
-  app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+  // 四個參數的簽名不可省略，否則 Express 不會把這支當成 error handler。
+  app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
+    if (response.headersSent) {
+      // 已經吐了一半才失敗（串流匯出、sendFile、express.static）：再 `.status().json()`
+      // 會撞 ERR_HTTP_HEADERS_SENT，原始錯誤就此消失、客戶端只拿到被截斷的檔案。
+      // 交給 finalhandler，它會正確地 destroy socket，讓客戶端知道這份檔案不完整。
+      logError(
+        "http_response_failed_after_headers",
+        { method: request.method, path: request.path },
+        error,
+      );
+      return next(error);
+    }
     if (error instanceof z.ZodError)
       return response.status(400).json({ error: "INVALID_REQUEST", issues: error.issues });
     if (error instanceof ProviderReadinessGateError)

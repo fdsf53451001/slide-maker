@@ -6,6 +6,7 @@ import type {
   ModelEntry,
   ModelLibrary,
   ModelLibrarySystem,
+  PageNumberSettings,
   PresentationBrief,
   PresentationProject,
   SlideSpec,
@@ -134,6 +135,16 @@ export const api = {
     }),
   updateBrief: (projectId: string, patch: Partial<PresentationBrief>) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/brief`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  updatePageNumber: (
+    projectId: string,
+    patch: Partial<Omit<PageNumberSettings, "background">> & {
+      background?: Partial<PageNumberSettings["background"]>;
+    },
+  ) =>
+    request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/page-number`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),

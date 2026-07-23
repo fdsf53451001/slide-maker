@@ -31,6 +31,41 @@ export const presentationBriefSchema = z.object({
   webSearchMode: webSearchModeSchema.default("cached"),
 });
 
+export const pageNumberPositionSchema = z.enum(["bottom-left", "bottom-center", "bottom-right"]);
+export const pageNumberFormatSchema = z.enum(["number", "number-total", "zh-page"]);
+
+/**
+ * 頁碼是專案級設定，且由系統合成而非生圖模型畫上去——影像合約明文禁止模型自己畫頁碼，
+ * 這裡的數值才是畫布預覽、簡報模式與三種匯出唯一的真相來源。
+ */
+export const pageNumberSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  position: pageNumberPositionSchema.default("bottom-right"),
+  format: pageNumberFormatSchema.default("number"),
+  /** 第一個有頁碼的頁面顯示的數字。 */
+  startAt: z.number().int().min(1).max(999).default(1),
+  /** 封面（第一頁）不編號也不計數。 */
+  skipFirstSlide: z.boolean().default(true),
+  /** 畫布座標系的 px（畫布固定 1920×1080），三個渲染端共用同一數值。 */
+  fontSize: z.number().min(12).max(120).default(30),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .default("#ffffff"),
+  opacity: z.number().min(0.05).max(1).default(0.8),
+  /** 墊在頁碼底下的小色塊，複雜背景上用來保可讀性。 */
+  background: z
+    .object({
+      enabled: z.boolean().default(false),
+      color: z
+        .string()
+        .regex(/^#[0-9a-fA-F]{6}$/)
+        .default("#000000"),
+      opacity: z.number().min(0.05).max(1).default(0.35),
+    })
+    .default({}),
+});
+
 export const sourceCitationSchema = z.object({
   sourceId: z.string().min(1),
   title: z.string().min(1),
@@ -292,6 +327,8 @@ export const presentationProjectSchema = z.object({
     height: z.number().int().positive().default(1080),
   }),
   styleSnapshot: stylePresetSchema,
+  /** 舊專案檔沒有這個欄位，靠 zod default 補齊（預設關閉，行為與加入前一致）。 */
+  pageNumber: pageNumberSettingsSchema.default({}),
   /** 綁定的模型組合 id（模型庫）。未設時生成流程回退到庫的 default 組合（lazy 綁定）。 */
   combinationId: z.string().optional(),
   slides: z.array(slideSpecSchema),
@@ -338,6 +375,7 @@ export type SlideVersion = z.infer<typeof slideVersionSchema>;
 export type EditableTextBox = z.infer<typeof editableTextBoxSchema>;
 export type EditableTextLayer = z.infer<typeof editableTextLayerSchema>;
 export type GenerationJob = z.infer<typeof generationJobSchema>;
+export type PageNumberSettings = z.infer<typeof pageNumberSettingsSchema>;
 export type PresentationProject = z.infer<typeof presentationProjectSchema>;
 export type SourceAsset = z.infer<typeof sourceAssetSchema>;
 export type SourceCitation = z.infer<typeof sourceCitationSchema>;
