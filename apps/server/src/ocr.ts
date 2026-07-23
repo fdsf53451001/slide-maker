@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { logError } from "@slide-maker/core";
 import { z } from "zod";
 
 const pointSchema = z.tuple([z.number(), z.number()]);
@@ -64,7 +65,17 @@ export class PaddleOcrAdapter implements OcrAdapter {
       );
     try {
       return outputSchema.parse(JSON.parse(result.stdout));
-    } catch {
+    } catch (error) {
+      // stdout 合約是「單行機器 JSON」；違反時保持嚴格丟錯（合約修正在 python 端），
+      // 但先記下實際輸出內容，否則像 oneDNN 對 fd 1 printf 這種污染只會看到解析失敗。
+      logError(
+        "ocr_output_invalid",
+        {
+          stdoutPreview: result.stdout.slice(0, 500),
+          stderrPreview: result.stderr.slice(0, 500),
+        },
+        error,
+      );
       throw new Error("OCR_OUTPUT_INVALID");
     }
   }
