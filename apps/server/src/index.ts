@@ -1,9 +1,20 @@
+import { logError } from "@slide-maker/core";
 import { createApp } from "./app.js";
 import { egressLoggingEnabled, logEgressAddresses } from "./egress-ip.js";
 import { formatStartupStatus } from "./startup-status.js";
 import type { JobRunner } from "./jobs.js";
 import type { ProviderReadinessService } from "./readiness.js";
 import { installShutdownHandlers } from "./shutdown.js";
+
+process.on("uncaughtException", (error) => {
+  logError("uncaught_exception", {}, error);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logError("unhandled_rejection", {}, reason);
+  process.exit(1);
+});
 
 const port = Number.parseInt(process.env.PORT ?? "4173", 10);
 const host = process.env.HOST ?? "127.0.0.1";

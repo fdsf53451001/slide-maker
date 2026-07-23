@@ -9,6 +9,8 @@ import {
   createSlidesFromBrief,
   editableTextBoxSchema,
   isRedactedKey,
+  logError,
+  logWarn,
   modelConnectionSchema,
   modelCombinationSchema,
   modelEntrySchema,
@@ -624,15 +626,31 @@ export async function createApp(
   app.use((request, response, next) => {
     const hostname = request.hostname.toLowerCase();
     if (!allowedHosts.has(hostname)) {
+      logWarn("trusted_host_rejected", {
+        host: request.hostname,
+        origin: request.headers.origin,
+        reason: "LOCAL_HOST_REQUIRED",
+      });
       return response.status(403).json({ error: "LOCAL_HOST_REQUIRED" });
     }
     const origin = request.headers.origin;
     if (origin) {
       try {
         const originHost = new URL(origin).hostname.toLowerCase();
-        if (!allowedHosts.has(originHost))
+        if (!allowedHosts.has(originHost)) {
+          logWarn("trusted_host_rejected", {
+            host: request.hostname,
+            origin: request.headers.origin,
+            reason: "LOCAL_ORIGIN_REQUIRED",
+          });
           return response.status(403).json({ error: "LOCAL_ORIGIN_REQUIRED" });
+        }
       } catch {
+        logWarn("trusted_host_rejected", {
+          host: request.hostname,
+          origin: request.headers.origin,
+          reason: "INVALID_ORIGIN",
+        });
         return response.status(403).json({ error: "INVALID_ORIGIN" });
       }
     }
@@ -2094,7 +2112,8 @@ export async function createApp(
             slideId,
             reason: applied.resnapError,
           });
-      } catch {
+      } catch (error) {
+        logWarn("ocr_style_refine_failed", { projectId, slideId }, error);
         // OCR geometry remains usable if optional visual style refinement fails.
       }
     }
@@ -2576,7 +2595,7 @@ export async function createApp(
     app.get("/*path", unavailable);
   }
 
-  app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+  app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError)
       return response.status(400).json({ error: "INVALID_REQUEST", issues: error.issues });
     if (error instanceof ProviderReadinessGateError)
@@ -2619,10 +2638,14 @@ export async function createApp(
     }
     if (error instanceof SafeProviderError) {
       // Provider 對外安全錯誤：回傳 code 與安全訊息，讓前端能顯示可行動的原因。
-      console.error("Request failed", { name: error.name, code: error.code });
+      logError(
+        "http_request_failed",
+        { method: request.method, path: request.path, code: error.code },
+        error,
+      );
       return response.status(502).json({ error: error.code, message: error.safeMessage });
     }
-    console.error("Request failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    logError("http_request_failed", { method: request.method, path: request.path }, error);
     return response.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
   });
   return app;

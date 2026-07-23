@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import {
   SafeProviderError,
+  logError,
   type GenerationJob,
   type EditableTextBox,
   type ImageGenerationProgress,
@@ -875,6 +876,18 @@ export class JobRunner {
         ),
       );
     } catch (error) {
+      logError(
+        "slide_job_failed",
+        {
+          jobId,
+          projectId,
+          slideId: context.job.slideId,
+          providerId: context.job.providerId,
+          operation: context.job.operation,
+          attempt: context.job.attempt,
+        },
+        error,
+      );
       if (!resultPersisted)
         await Promise.allSettled(
           [...generatedAssets].map((assetPath) =>

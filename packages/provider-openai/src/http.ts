@@ -1,6 +1,11 @@
 import { constants as fsConstants } from "node:fs";
 import { open } from "node:fs/promises";
-import { type ProviderPreflightStatus, SafeProviderError } from "@slide-maker/core";
+import {
+  logError,
+  logWarn,
+  type ProviderPreflightStatus,
+  SafeProviderError,
+} from "@slide-maker/core";
 
 export interface OpenAiClientConfig {
   /** 端點根位址，如 `http://localhost:8317/v1` 或 `https://api.openai.com/v1`。 */
@@ -65,6 +70,22 @@ export async function requestJson(
   }
   if (!response!.ok) {
     const status = response!.status;
+    const bodyText = await response!.text().catch(() => "");
+    const logFields = {
+      status,
+      url: joinUrl(config.baseUrl, init.path).split("?")[0],
+      // 空 key 是合法設定（keyless 本機 gateway）；replaceAll("") 會把替換字插進
+      // 每個字元之間，故僅在 key 非空時遮蔽。
+      bodyPreview: (config.apiKey
+        ? bodyText.replaceAll(config.apiKey, "[REDACTED]")
+        : bodyText
+      ).slice(0, 2000),
+    };
+    // 401/403/429 是已分類、預期內的失敗（未登入、readiness probe 常態性打到），
+    // 用 WARNING 避免每次 readiness 重新檢查就固定噴 ERROR，稀釋真正異常的告警訊號。
+    if (status === 401 || status === 403 || status === 429)
+      logWarn("provider_http_error", logFields);
+    else logError("provider_http_error", logFields);
     if (status === 401 || status === 403)
       throw new SafeProviderError(
         "OPENAI_AUTH_REQUIRED",
