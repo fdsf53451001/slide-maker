@@ -219,6 +219,7 @@ export function buildImageGenerationContract(
       ? []
       : [
           "The slide.content field is the authoritative visible copy. Preserve and render its substantive headings, bullets, labels, numbers, and conclusions legibly. Use slide.narrative and slide.dataBasis to enrich structure when useful without inventing facts.",
+          "DECK CHROME IS NOT YOURS TO DRAW: never render page numbers, slide numbers, or any other indicator of this slide's position within the deck, and never render a running header or footer carrying the deck or section name, a date, or a copyright line. Page numbering is composited onto the slide by the system after generation, so anything drawn here would duplicate or contradict it.",
           "FACTUAL GROUNDING CONTRACT:",
           "Every figure rendered anywhere on the slide — statistics, percentages, multipliers, currency amounts, dates, counts, chart values, axis ticks, KPI numbers, and figures inside decorative panels — must already appear in slide.content, slide.narrative, or slide.dataBasis. Never invent, extrapolate, round, or illustrate a number that is not there, even when the layout looks like it needs one.",
           "Never add wording that asserts measurement, verification, or provenance — such as 'measured', 'benchmark', 'real-world results', 'actual test', 'case study data', or a source attribution — unless that exact claim already appears in the untrusted slide fields.",

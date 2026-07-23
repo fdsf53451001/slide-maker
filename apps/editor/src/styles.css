@@ -1305,13 +1305,21 @@ header {
   justify-content: center;
   margin-bottom: 12px;
   overflow: hidden;
+  /* 畫布要照 --ar 算出精確的 letterbox 尺寸，需要一個「兩軸都可查詢」的容器。 */
+  container-type: size;
 }
 .canvas {
-  /* 比例由 Editor.tsx 依 project.canvas 以 inline style 設定，這裡不寫死。 */
-  width: auto;
-  height: 100%;
-  max-width: 100%;
-  max-height: 100%;
+  /*
+   * 畫布比例由 Editor.tsx 以 inline style 的 `--ar`（= 寬/高）提供，這裡不寫死。
+   *
+   * 刻意不用 `aspect-ratio` + `height: 100%` + `max-width: 100%`：高度一旦是定值，
+   * aspect-ratio 就只能決定寬度，被 max-width 夾住之後比例直接失效（實測 500×588 的
+   * 容器會算出 500×588 而不是 16:9）。畫布比例不對時 `object-fit: contain` 會留出灰邊，
+   * 而 `.page-number-layer` 是貼著 `.canvas` 的 `inset: 0`，頁碼就會落進灰邊、與匯出對不上。
+   * 顯式算出兩軸尺寸則兩邊都是定值，比例必然正確。
+   */
+  width: min(100cqw, calc(100cqh * var(--ar)));
+  height: min(100cqh, calc(100cqw / var(--ar)));
   flex: none;
   background: var(--surface-2);
   border: 1px solid #2c374c;
@@ -1344,6 +1352,24 @@ header {
   to {
     transform: translateX(100%);
   }
+}
+/* 系統合成的頁碼。字級與圓角以容器查詢單位表示（畫布是縮放顯示的，寫死 px 會讓
+   預覽與匯出對不上），所以這一層自己就是 size container。 */
+.page-number-layer {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+  pointer-events: none;
+  z-index: 5;
+}
+.page-number-chip {
+  position: absolute;
+}
+.page-number-text {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
 }
 .canvas-empty {
   height: 100%;
@@ -1710,16 +1736,35 @@ header {
   background: #000;
   overflow: hidden;
 }
+/* 撐滿 `.presentation-mode`（`position: fixed; inset: 0`），並當舞台的查詢容器。
+   不用 100vw／100vh：`vw`／`vh` 不扣掉傳統捲軸寬度，Windows 版瀏覽器上會比這個固定
+   覆蓋層多出約 15px，舞台一樣被 `overflow: hidden` 切掉一條（1000×800 已實測）。 */
 .presentation-surface {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  container-type: size;
   display: grid;
   place-items: center;
 }
+/*
+ * 圖片實際佔到的矩形：尺寸由 Editor.tsx 依 project.canvas 以 inline style 顯式算出
+ * （`min(100cqw, 100cqh * ar)` × `min(100cqh, 100cqw / ar)`）。頁碼疊在這一層之上，
+ * 才不會落到 letterbox 的黑邊裡。
+ *
+ * 不能用 `aspect-ratio` + `height: 100%` + `max-width: 100%`：這裡是 grid item，
+ * auto track 會照 max-content 撐開再溢出，`.presentation-mode` 的 overflow: hidden
+ * 就把投影片右側連同右下角的頁碼一起切掉（實測 1000×800 視窗算出 1422×800）。
+ * 觸發條件只是「視窗比例比投影片窄」，16:10／3:2 筆電全螢幕就會中。
+ */
+.presentation-stage {
+  position: relative;
+}
+/* stage 本身已經是精確比例，圖片直接填滿即可；`fill` 也與匯出端 withPageNumber() 的
+   `resize(..., { fit: "fill" })` 同一套語意——尺寸不符的素材在兩端會拉伸成同樣的樣子。 */
 .presentation-surface img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
   display: block;
   user-select: none;
 }
@@ -1889,6 +1934,26 @@ header {
   color: #8995a8;
   font-size: 10px;
   line-height: 1.6;
+}
+.page-number-heading {
+  margin-top: 18px;
+}
+.page-number-toggle {
+  margin: 10px 0;
+}
+.page-number-fields {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 17px;
+  padding: 12px;
+  border: 1px solid var(--border-1);
+}
+.page-number-fields input[type="color"] {
+  height: 30px;
+  padding: 2px;
+}
+.page-number-fields input[type="range"] {
+  padding: 0;
 }
 .panel-actions {
   display: grid;

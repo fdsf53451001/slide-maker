@@ -203,7 +203,9 @@ describe("project export streaming", () => {
     repository = new FileProjectRepository(root);
     await repository.initialize();
     project = createProject({ topic: "匯出串流", brief: { desiredSlideCount: 2 } });
-    // 亂數雜訊：PNG 壓不掉，單頁就超過一個 chunk，讓匯出走完整的多塊路徑。
+    // 亂數雜訊：任何編碼都壓不掉，單頁就超過一個 chunk，讓匯出走完整的多塊路徑。
+    // pptx／pdf 會把整版圖重新編成 JPEG q88，這裡的雜訊撐過有損重編後仍有約 3 MiB，
+    // 下方 `> RESPONSE_CHUNK_BYTES` 的守門才不會退化成必然成立的斷言。
     const noise = new Uint8Array(
       await sharp(randomBytes(1920 * 1080 * 3), {
         raw: { width: 1920, height: 1080, channels: 3 },

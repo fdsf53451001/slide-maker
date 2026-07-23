@@ -15,6 +15,7 @@ import {
   modelCombinationSchema,
   modelEntrySchema,
   modelLibrarySystemSchema,
+  pageNumberSettingsSchema,
   presentationBriefSchema,
   presentationProjectSchema,
   redactLibrary,
@@ -1364,6 +1365,30 @@ export async function createApp(
       const previousTopic = current.brief.topic;
       current.brief = presentationBriefSchema.parse({ ...current.brief, ...patch });
       current.name = patch.topic && current.name === previousTopic ? patch.topic : current.name;
+      current.updatedAt = new Date().toISOString();
+      return structuredClone(current);
+    });
+    response.json(project);
+  });
+
+  // 巢狀 partial：`background` 只送其中一個欄位時，其餘欄位要保留專案現值而不是被預設值覆蓋，
+  // 所以內層也得是 partial（`deepPartial()` 不會穿透帶 `.default()` 的物件欄位）。
+  const pageNumberPatchSchema = pageNumberSettingsSchema
+    .omit({ background: true })
+    .partial()
+    .extend({
+      background: pageNumberSettingsSchema.shape.background.removeDefault().partial().optional(),
+    });
+
+  app.patch("/api/projects/:projectId/page-number", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const patch = pageNumberPatchSchema.parse(request.body);
+    const project = await repository.updateProject(projectId, (current) => {
+      current.pageNumber = pageNumberSettingsSchema.parse({
+        ...current.pageNumber,
+        ...patch,
+        background: { ...current.pageNumber.background, ...patch.background },
+      });
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });

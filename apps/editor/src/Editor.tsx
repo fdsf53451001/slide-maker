@@ -4,17 +4,23 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import type {
-  EditableTextBox,
-  PresentationBrief,
-  PresentationProject,
-  SlideSpec,
-  SlideVersion,
-  SourceAsset,
-  StylePreset,
+import {
+  pageNumberFormatSchema,
+  pageNumberLabel,
+  pageNumberLayout,
+  pageNumberPositionSchema,
+  type EditableTextBox,
+  type PageNumberSettings,
+  type PresentationBrief,
+  type PresentationProject,
+  type SlideSpec,
+  type SlideVersion,
+  type SourceAsset,
+  type StylePreset,
 } from "@slide-maker/core";
 import {
   api,
@@ -525,6 +531,135 @@ export function TextLayerCanvas({
           );
         })}
     </div>
+  );
+}
+
+/** 頁碼設定的部分更新；`background` 是巢狀 partial，與伺服器端的 PATCH schema 同形。 */
+type PageNumberPatch = Partial<Omit<PageNumberSettings, "background">> & {
+  background?: Partial<PageNumberSettings["background"]>;
+};
+
+/**
+ * 連續型控制項（滑桿、色票）合併連發變更的視窗。
+ *
+ * 拖一次滑桿是數十個 change；取到「放手後幾乎立刻生效」與「一次拖曳只寫一次」的平衡。
+ */
+const PAGE_NUMBER_DEBOUNCE_MS = 250;
+
+function mergePageNumber(current: PageNumberSettings, patch: PageNumberPatch): PageNumberSettings {
+  return { ...current, ...patch, background: { ...current.background, ...patch.background } };
+}
+
+/**
+ * 系統合成的頁碼，畫在畫布與簡報模式的圖片之上。
+ *
+ * 幾何與文字都來自 core 的 `pageNumberLayout`，與匯出端是同一份計算，預覽才會與匯出落點一致。
+ * 尺寸一律用容器查詢單位（外層是 `container-type: size` 的畫布）——畫布是縮放顯示的，
+ * 寫死 px 會讓頁碼在小視窗變得比匯出結果大得多。
+ */
+export function PageNumberOverlay({
+  project,
+  index,
+}: {
+  project: PresentationProject;
+  index: number;
+}) {
+  const label = pageNumberLabel(project.pageNumber, index, project.slides.length);
+  if (!label) return null;
+  const { width, height } = project.canvas;
+  const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, label);
+  return (
+    <div className="page-number-layer">
+      {chip && (
+        <div
+          className="page-number-chip"
+          style={{
+            left: `${(chip.x / width) * 100}%`,
+            top: `${(chip.y / height) * 100}%`,
+            width: `${(chip.width / width) * 100}%`,
+            height: `${(chip.height / height) * 100}%`,
+            borderRadius: `${(chip.radius / height) * 100}cqh`,
+            background: chip.color,
+            opacity: chip.opacity,
+          }}
+        />
+      )}
+      <div
+        className="page-number-text"
+        style={{
+          left: `${(text.x / width) * 100}%`,
+          top: `${(text.y / height) * 100}%`,
+          width: `${(text.width / width) * 100}%`,
+          height: `${(text.height / height) * 100}%`,
+          justifyContent:
+            text.align === "center" ? "center" : text.align === "right" ? "flex-end" : "flex-start",
+          fontFamily: text.fontFamily,
+          fontSize: `${(text.fontSize / height) * 100}cqh`,
+          fontWeight: text.fontWeight,
+          lineHeight: text.lineHeight,
+          color: text.color,
+          opacity: text.opacity,
+        }}
+      >
+        {label}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 受控、但延後送出的整數輸入框。
+ *
+ * 每個 keystroke 就送出去的話，「30 → 45」這種兩位數修改永遠打不進去：伺服器先收到的是
+ * `4`，違反 `min` 被擋成 400，受控 input 當場被打回舊值——12–120 這種區間裡每個值的
+ * 首位數字都小於下界，必中。清空欄位同理（`Number("") === 0`）。
+ * 因此打字期間只動本地 draft，失焦或按 Enter 才夾進合法區間送出；空字串與非數字一律還原。
+ */
+export function ClampedNumberField({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  // 值從外部變動（切換專案、送出後伺服器夾過的結果）時同步回 draft。
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  const commit = () => {
+    const parsed = Number(draft.trim());
+    if (draft.trim() === "" || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, Math.round(parsed)));
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+  return (
+    <label>
+      {label}
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          commit();
+        }}
+      />
+    </label>
   );
 }
 
@@ -1729,6 +1864,32 @@ export function Editor() {
   const railRef = useRef<HTMLDivElement>(null);
   // 編輯區滾輪切換頁面的冷卻時間戳，避免慣性滾動一次跳好幾頁。
   const wheelCooldown = useRef(0);
+  /**
+   * 頁碼設定的樂觀本地值（未定義代表「就用伺服器上那份」）。
+   *
+   * 滑桿拖一次會連發數十個 change，每一次都送 PATCH 等於讓
+   * `repository.updateProject`（取檔鎖 → 讀 project.json → 全量 zod 驗證 → 原子寫）跑數十趟；
+   * 150 頁 PDF 匯入專案的 project.json 相當大。連續型控制項因此先寫進這裡讓畫布即時反應，
+   * 真正的請求 debounce 之後只送最後一次。
+   */
+  const [pageNumberDraft, setPageNumberDraft] = useState<PageNumberSettings>();
+  /** 遞增的請求序號：debounce 之後仍可能兩筆在途，回應亂序時只認最新那一筆。 */
+  const pageNumberSeq = useRef(0);
+  const pageNumberTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** 還沒送出的欄位。debounce 期間改到別的欄位要併進同一筆，否則前一筆會被計時器取消掉。 */
+  const pageNumberPending = useRef<PageNumberPatch>({});
+  // 換專案時丟掉樂觀值與在途請求，免得上一份專案的頁碼設定套到下一份上。
+  useEffect(() => {
+    setPageNumberDraft(undefined);
+    pageNumberPending.current = {};
+    return () => {
+      pageNumberSeq.current += 1;
+      pageNumberPending.current = {};
+      if (pageNumberTimer.current === undefined) return;
+      clearTimeout(pageNumberTimer.current);
+      pageNumberTimer.current = undefined;
+    };
+  }, [project?.id]);
 
   const navigate = (path: string) => {
     window.history.pushState({}, "", path);
@@ -2305,6 +2466,58 @@ export function Editor() {
       return undefined;
     }
   };
+  // 面板與預覽一律讀樂觀值；只有它才會在滑桿還沒 debounce 出去時就跟著動。
+  const pageNumber = pageNumberDraft ?? project.pageNumber;
+  const pageNumberProject = pageNumberDraft ? { ...project, pageNumber: pageNumberDraft } : project;
+  const flushPageNumber = async () => {
+    if (pageNumberTimer.current !== undefined) {
+      clearTimeout(pageNumberTimer.current);
+      pageNumberTimer.current = undefined;
+    }
+    const patch = pageNumberPending.current;
+    pageNumberPending.current = {};
+    if (!Object.keys(patch).length) return;
+    const seq = (pageNumberSeq.current += 1);
+    setError(undefined);
+    try {
+      const updated = await api.updatePageNumber(project.id, patch);
+      // 更晚送出的一筆已經在途（或已回來）時，這筆是舊資料，寫進去就是 UI 跳回舊值。
+      if (seq !== pageNumberSeq.current) return;
+      setProject(updated);
+      // 還有排隊中的變更時樂觀值比伺服器新，留著等下一輪回應再收。
+      if (pageNumberTimer.current === undefined) setPageNumberDraft(undefined);
+    } catch (reason) {
+      if (seq !== pageNumberSeq.current) return;
+      // 失敗就退回伺服器上那份，不讓畫布停在一個沒被接受的狀態。
+      setPageNumberDraft(undefined);
+      setError(reason instanceof Error ? reason.message : "操作失敗");
+    }
+  };
+  /**
+   * `debounce` 給滑桿與色票這種一次操作連發數十個 change 的控制項；其餘控制項一次一個值，
+   * 立刻送出。兩者都先寫樂觀值，畫布因此永遠是即時的。
+   */
+  const patchPageNumber = (patch: PageNumberPatch, options: { debounce?: boolean } = {}) => {
+    setPageNumberDraft((current) => mergePageNumber(current ?? project.pageNumber, patch));
+    const pending = pageNumberPending.current;
+    // 巢狀欄位逐欄併：整個換掉的話，同一輪裡先改的 background.color 會被後改的 opacity 蓋掉。
+    const background = { ...pending.background, ...patch.background };
+    pageNumberPending.current = {
+      ...pending,
+      ...patch,
+      ...(Object.keys(background).length ? { background } : {}),
+    };
+    if (pageNumberTimer.current !== undefined) clearTimeout(pageNumberTimer.current);
+    pageNumberTimer.current = undefined;
+    if (!options.debounce) {
+      void flushPageNumber();
+      return;
+    }
+    pageNumberTimer.current = setTimeout(() => {
+      pageNumberTimer.current = undefined;
+      void flushPageNumber();
+    }, PAGE_NUMBER_DEBOUNCE_MS);
+  };
   const startPresentation = () => {
     const index = Math.max(
       0,
@@ -2598,7 +2811,10 @@ export function Editor() {
         <div className="canvas-fit" onWheel={handleStageWheel}>
           <div
             className={`canvas ${activeJob ? "generating" : ""}`}
-            style={{ aspectRatio: `${project.canvas.width} / ${project.canvas.height}` }}
+            // `--ar` 是純數字（寬÷高）餵給 styles.css 算 letterbox 尺寸——`calc()` 要拿它當
+            // 除數，寫成 "1920 / 1080" 會展開成 `100cqw / 1920 / 1080`。
+            // 用 aspect-ratio 則會被 max-width 夾掉而失效，見 styles.css 的 `.canvas`。
+            style={{ "--ar": project.canvas.width / project.canvas.height } as CSSProperties}
           >
             {activeTextLayer ? (
               <TextLayerCanvas
@@ -2619,6 +2835,9 @@ export function Editor() {
                 <p>請輸入頁面目的後，點下方生成大綱，再生成圖片。</p>
                 <p>同時可以至來源頁添加素材，生成大綱時會一併引用。</p>
               </div>
+            )}
+            {(activeTextLayer || image) && selected && (
+              <PageNumberOverlay project={pageNumberProject} index={selected.order} />
             )}
           </div>
         </div>
@@ -3302,6 +3521,140 @@ export function Editor() {
                 {styleOptions(styles, project.styleSnapshot)}
               </select>
             </label>
+            <div className="inspector-heading page-number-heading">
+              <span>PAGE NUMBER</span>
+            </div>
+            {/* 頁碼是專案級設定，改了立即套用，不併進「儲存 Brief」——它與大綱無關，
+                而且畫布上的預覽要馬上跟著動才看得出調整效果。
+                滑桿與色票走 debounce（見 patchPageNumber），其餘控制項一次一個值即時送出。 */}
+            <label className="check-row page-number-toggle">
+              <input
+                type="checkbox"
+                checked={pageNumber.enabled}
+                onChange={(event) => patchPageNumber({ enabled: event.target.checked })}
+              />
+              顯示頁碼
+            </label>
+            {pageNumber.enabled && (
+              <div className="page-number-fields">
+                <label>
+                  位置
+                  <select
+                    value={pageNumber.position}
+                    onChange={(event) =>
+                      patchPageNumber({
+                        position: pageNumberPositionSchema.parse(event.target.value),
+                      })
+                    }
+                  >
+                    <option value="bottom-left">左下</option>
+                    <option value="bottom-center">置中</option>
+                    <option value="bottom-right">右下</option>
+                  </select>
+                </label>
+                <label>
+                  格式
+                  <select
+                    value={pageNumber.format}
+                    onChange={(event) =>
+                      patchPageNumber({ format: pageNumberFormatSchema.parse(event.target.value) })
+                    }
+                  >
+                    <option value="number">3</option>
+                    <option value="number-total">3 / 12</option>
+                    <option value="zh-page">第 3 頁</option>
+                  </select>
+                </label>
+                <ClampedNumberField
+                  label="起始頁碼"
+                  value={pageNumber.startAt}
+                  min={1}
+                  max={999}
+                  onCommit={(startAt) => patchPageNumber({ startAt })}
+                />
+                <label className="check-row page-number-toggle">
+                  <input
+                    type="checkbox"
+                    checked={pageNumber.skipFirstSlide}
+                    onChange={(event) => patchPageNumber({ skipFirstSlide: event.target.checked })}
+                  />
+                  封面不編號
+                </label>
+                <ClampedNumberField
+                  label="字級"
+                  value={pageNumber.fontSize}
+                  min={12}
+                  max={120}
+                  onCommit={(fontSize) => patchPageNumber({ fontSize })}
+                />
+                <label>
+                  顏色
+                  <input
+                    type="color"
+                    value={pageNumber.color}
+                    onChange={(event) =>
+                      patchPageNumber({ color: event.target.value }, { debounce: true })
+                    }
+                  />
+                </label>
+                <label>
+                  透明度
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={pageNumber.opacity}
+                    onChange={(event) =>
+                      patchPageNumber({ opacity: Number(event.target.value) }, { debounce: true })
+                    }
+                  />
+                </label>
+                <label className="check-row page-number-toggle">
+                  <input
+                    type="checkbox"
+                    checked={pageNumber.background.enabled}
+                    onChange={(event) =>
+                      patchPageNumber({ background: { enabled: event.target.checked } })
+                    }
+                  />
+                  加上背景色塊
+                </label>
+                {pageNumber.background.enabled && (
+                  <>
+                    <label>
+                      色塊顏色
+                      <input
+                        type="color"
+                        value={pageNumber.background.color}
+                        onChange={(event) =>
+                          patchPageNumber(
+                            { background: { color: event.target.value } },
+                            { debounce: true },
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      色塊透明度
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        value={pageNumber.background.opacity}
+                        onChange={(event) =>
+                          patchPageNumber(
+                            { background: { opacity: Number(event.target.value) } },
+                            { debounce: true },
+                          )
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+            )}
             <div className="panel-actions">
               <button
                 className="primary"
@@ -3504,11 +3857,26 @@ export function Editor() {
         >
           <div className="presentation-surface">
             {presentationImage ? (
-              <img
-                src={presentationImage}
-                alt={`簡報第 ${presentationIndex + 1} 頁`}
-                draggable={false}
-              />
+              // 頁碼要疊在「圖片實際佔到的那塊矩形」上，而不是整個 100vw×100vh 的舞台：
+              // 圖片是 letterbox 置中的，兩者的比例不同時會差一整條黑邊。
+              //
+              // 尺寸顯式算出來，不用 aspect-ratio + max-width：這裡是 grid item，auto track
+              // 依 max-content 撐大並溢出，`max-width` 夾不住，窄視窗下右側會被裁掉。
+              // 長度單位取 `.presentation-surface` 的容器查詢單位而非 vw／vh，見 styles.css。
+              <div
+                className="presentation-stage"
+                style={{
+                  width: `min(100cqw, calc(100cqh * ${project.canvas.width} / ${project.canvas.height}))`,
+                  height: `min(100cqh, calc(100cqw * ${project.canvas.height} / ${project.canvas.width}))`,
+                }}
+              >
+                <img
+                  src={presentationImage}
+                  alt={`簡報第 ${presentationIndex + 1} 頁`}
+                  draggable={false}
+                />
+                <PageNumberOverlay project={pageNumberProject} index={presentationSlide.order} />
+              </div>
             ) : (
               <div className="presentation-empty">
                 <strong>{presentationSlide.purpose}</strong>

@@ -4,8 +4,14 @@ import { PDFDocument } from "pdf-lib";
 import PptxGenJS from "pptxgenjs";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { Resvg } from "@resvg/resvg-js";
-import sharp from "sharp";
-import { parseProject, type PresentationProject } from "@slide-maker/core";
+import sharp, { type Sharp } from "sharp";
+import {
+  pageNumberLabel,
+  pageNumberLayout,
+  parseProject,
+  type PresentationProject,
+} from "@slide-maker/core";
+import { textElements } from "./text-layers.js";
 import type { FileProjectRepository } from "./repository.js";
 
 export type ExportFormat = "pptx" | "pdf" | "png.zip" | "slide-project";
@@ -49,16 +55,68 @@ async function pngFor(
   throw new Error("EXPORT_IMAGE_UNSUPPORTED");
 }
 
+/**
+ * 系統合成頁碼的疊圖（PNG zip 與 PDF 共用）。
+ *
+ * 幾何與文字都來自 core 的 `pageNumberLayout`，與編輯器預覽及 PPTX 用的是同一份計算；
+ * 這裡只負責把它翻成 SVG。這一頁不編號時回傳 `undefined`，呼叫端據此完全跳過 sharp。
+ */
+export function pageNumberSvg(project: PresentationProject, order: number): Buffer | undefined {
+  const label = pageNumberLabel(project.pageNumber, order, project.slides.length);
+  if (!label) return undefined;
+  const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, label);
+  const rect = chip
+    ? `<rect x="${chip.x}" y="${chip.y}" width="${chip.width}" height="${chip.height}" rx="${chip.radius}" ry="${chip.radius}" fill="${chip.color}" fill-opacity="${chip.opacity}"/>`
+    : "";
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${project.canvas.width}" height="${project.canvas.height}" viewBox="0 0 ${project.canvas.width} ${project.canvas.height}">${rect}${textElements([text])}</svg>`,
+  );
+}
+
+/**
+ * 把頁碼疊圖接到底圖上，但**不決定輸出編碼**——由呼叫端接 `.png()` 或 `compressSlideImage()`
+ * 收尾，避免「先編一次 PNG 再解開重編 JPEG」那份立刻被丟棄的中間產物。
+ */
+function compositePageNumber(
+  project: PresentationProject,
+  bytes: Uint8Array,
+  svg: Buffer,
+): Sharp {
+  return (
+    sharp(bytes)
+      // 幾何是畫布座標系的，底圖必須先對齊畫布尺寸——比 renderComposite 少這一步的話，
+      // 尺寸不符的素材會讓 sharp 直接以「疊圖比底圖大」報錯，而不是畫歪一點。
+      .resize(project.canvas.width, project.canvas.height, { fit: "fill" })
+      .composite([{ input: svg, blend: "over" }])
+  );
+}
+
+/**
+ * 把系統合成的頁碼疊到整版圖上並輸出 PNG（`png.zip` 專用）。
+ *
+ * 這一頁不編號時**原樣回傳同一批位元組**，連 sharp 都不會走一趟：`png.zip` 對「沒有頁碼」
+ * 的頁面是原圖保真（PDF 匯入的原圖保真承諾就靠這條），不能退化成「一律過一次 sharp」。
+ */
+export async function withPageNumber(
+  project: PresentationProject,
+  order: number,
+  bytes: Uint8Array,
+): Promise<Uint8Array> {
+  const svg = pageNumberSvg(project, order);
+  if (!svg) return bytes;
+  return new Uint8Array(await compositePageNumber(project, bytes, svg).png().toBuffer());
+}
+
 async function exportPngZip(
   repository: FileProjectRepository,
   project: PresentationProject,
 ): Promise<Uint8Array> {
   const entries: Record<string, Uint8Array> = {};
   for (const { slide, version } of currentVersions(project))
-    entries[`${String(slide.order + 1).padStart(3, "0")}.png`] = await pngFor(
-      repository,
+    entries[`${String(slide.order + 1).padStart(3, "0")}.png`] = await withPageNumber(
       project,
-      version.imagePath,
+      slide.order,
+      await pngFor(repository, project, version.imagePath),
     );
   return zipSync(entries, { level: 6 });
 }
@@ -68,9 +126,17 @@ async function exportPdf(
   project: PresentationProject,
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
-  for (const { version } of currentVersions(project)) {
+  for (const { slide, version } of currentVersions(project)) {
+    // 這裡刻意用 version.imagePath 而非 PPTX 的 textLayer.backgroundPath：PDF 沒有可編輯
+    // 文字物件，頁面要的是含文字的合成圖，不是抹字後的背景。
     const bytes = await pngFor(repository, project, version.imagePath);
-    const image = await pdf.embedPng(bytes);
+    const svg = pageNumberSvg(project, slide.order);
+    // 比照 PPTX：整版圖以 JPEG 內嵌，體積差一個數量級。有頁碼時把疊圖併進同一條 sharp
+    // pipeline 收尾——PDF 只要最後那份 JPEG，先編一份 PNG 再解開重編是白做的
+    // （1920×1080 實測每頁多花 73 ms 與一份 2.3 MB 暫存 buffer，輸出位元完全相同）。
+    const image = await pdf.embedJpg(
+      await compressSlideImage(svg ? compositePageNumber(project, bytes, svg) : bytes),
+    );
     const page = pdf.addPage([960, 540]);
     page.drawImage(image, { x: 0, y: 0, width: 960, height: 540 });
   }
@@ -79,9 +145,25 @@ async function exportPdf(
   return pdf.save({ useObjectStreams: false });
 }
 
-export async function compressPptxImage(bytes: Uint8Array): Promise<Uint8Array> {
+/**
+ * 整版投影片圖的匯出用壓縮（PPTX 與 PDF 共用）。
+ *
+ * JPEG 沒有 alpha 通道，sharp 遇到帶 alpha 的來源會直接**丟棄**通道而非合成，等於拿沒有
+ * 預乘的 RGB 當結果；因此先顯式 flatten 到黑底再編碼。選黑是為了對齊 PPTX 既有的選擇
+ * （每張投影片都墊 `background = { color: "000000" }`），而 PDF 頁面預設是白底——不顯式
+ * flatten 的話，同一張半透明圖在兩種格式會落在不同底色上。
+ *
+ * 4:4:4 不做色度次取樣：投影片滿是彩色細字與細線，次取樣會讓它們糊掉。
+ *
+ * 收 `Sharp` pipeline 是為了讓 PDF 那條「先疊頁碼再壓縮」的路能共用同一份 flatten／JPEG 參數，
+ * 而不是在呼叫端手抄第二份——參數只該有這一個定義點。
+ */
+export async function compressSlideImage(source: Uint8Array | Sharp): Promise<Uint8Array> {
   return new Uint8Array(
-    await sharp(bytes).jpeg({ quality: 88, chromaSubsampling: "4:4:4", mozjpeg: true }).toBuffer(),
+    await (source instanceof Uint8Array ? sharp(source) : source)
+      .flatten({ background: "#000000" })
+      .jpeg({ quality: 88, chromaSubsampling: "4:4:4", mozjpeg: true })
+      .toBuffer(),
   );
 }
 
@@ -95,12 +177,10 @@ async function exportPptx(
   pptx.author = "Slide Maker";
   pptx.subject = project.brief.topic;
   pptx.title = project.name;
-  for (const { version } of currentVersions(project)) {
+  for (const { slide: spec, version } of currentVersions(project)) {
     const backgroundPath = version.textLayer?.backgroundPath ?? version.imagePath;
     const bytes = await pngFor(repository, project, backgroundPath);
-    // Full-slide artwork is opaque. JPEG is dramatically smaller than the
-    // generated PNG while 4:4:4 preserves coloured text and fine UI lines.
-    const compressed = await compressPptxImage(bytes);
+    const compressed = await compressSlideImage(bytes);
     const slide = pptx.addSlide();
     slide.background = { color: "000000" };
     slide.addImage({
@@ -110,9 +190,9 @@ async function exportPptx(
       w: 13.333,
       h: 7.5,
     });
+    const scaleX = 13.333 / project.canvas.width;
+    const scaleY = 7.5 / project.canvas.height;
     if (version.textLayer) {
-      const scaleX = 13.333 / project.canvas.width;
-      const scaleY = 7.5 / project.canvas.height;
       for (const box of version.textLayer.boxes.filter(
         (candidate) => candidate.role === "presentation",
       )) {
@@ -150,6 +230,51 @@ async function exportPptx(
           // 縮放行為不一致，是文字跑版的另一來源。
         });
       }
+    }
+    // 頁碼是專案級的系統合成物，與這一頁有沒有可編輯文字層無關，因此獨立於上面的迴圈。
+    const pageLabel = pageNumberLabel(project.pageNumber, spec.order, project.slides.length);
+    if (pageLabel) {
+      const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, pageLabel);
+      const fontSizePt = text.fontSize * scaleY * 72;
+      // 有色塊時直接用色塊幾何當文字框——色塊是看得見的東西，寬度必須與 SVG／DOM 兩端
+      // 逐點一致，所以這裡不加 extraWidth 餘裕（那會讓填色跟著變寬）。
+      // 沒有色塊時框是隱形的，就沿用文字層那套全寬對齊＋1em 餘裕防換行的規則。
+      const extraWidth = chip ? 0 : text.fontSize * scaleX;
+      const shiftX =
+        text.align === "center" ? extraWidth / 2 : text.align === "right" ? extraWidth : 0;
+      // 文字對齊方式三端一律相同。色塊只是依「近似」字寬往外墊 padX，若這裡改成置中，
+      // 近似寬與 PowerPoint 真實字寬的落差（Arial 實測 8–17%）就會直接變成水平位移；
+      // 沿用 text.align 再把色塊內距補回去，文字起點才會落回和 SVG／DOM 相同的邊距上。
+      // pptxgenjs 4.0.1 的 margin 陣列實際順序是 [左, 右, 下, 上]（與其 JSDoc 不符，
+      // 見 dist/pptxgen.cjs.js 的 lIns/rIns/bIns/tIns 指派）；上下取 0，避免壓縮字框高度。
+      const marginPt = chip ? chip.padX * scaleX * 72 : 0;
+      slide.addText(pageLabel, {
+        x: (chip ? chip.x : text.x) * scaleX - shiftX,
+        y: (chip ? chip.y : text.y) * scaleY,
+        w: (chip ? chip.width : text.width) * scaleX + extraWidth,
+        h: (chip ? chip.height : text.height) * scaleY,
+        fontFace: text.fontFamily,
+        fontSize: fontSizePt,
+        color: text.color.slice(1),
+        transparency: Math.round((1 - text.opacity) * 100),
+        align: text.align,
+        valign: "middle",
+        margin: [marginPt, marginPt, 0, 0],
+        breakLine: false,
+        wrap: false,
+        lineSpacing: fontSizePt * text.lineHeight,
+        ...(chip
+          ? {
+              shape: "roundRect" as const,
+              // rectRadius 的單位是英吋（pptxgenjs 換算成 roundRect 的 adj 比例）。
+              rectRadius: (chip.height / 2) * scaleY,
+              fill: {
+                color: chip.color.slice(1),
+                transparency: Math.round((1 - chip.opacity) * 100),
+              },
+            }
+          : {}),
+      });
     }
     if (version.sources.length)
       slide.addNotes(
