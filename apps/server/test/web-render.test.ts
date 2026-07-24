@@ -21,6 +21,25 @@ describe("Jina Reader renderer", () => {
     expect(renderer.name).toBe("jina");
   });
 
+  it("沒注入 fetcher 時於呼叫時解析全域 fetch（建構時綁定會讓 L0 guard 攔不住）", async () => {
+    // renderer 先建好（此時尚未換 fetch），之後才換掉 globalThis.fetch——模擬 createApp
+    // 開機建 renderer、E2E L0 guard 稍後才裝。呼叫時解析才會用到換上去的那個。
+    const renderer = createJinaRenderer();
+    const original = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("# 標題\n\n動態載入的正文。");
+    }) as typeof fetch;
+    try {
+      const page = await renderer.render(new URL("https://example.com/"));
+      expect(seen).toEqual(["https://r.jina.ai/https://example.com/"]);
+      expect(page.text).toContain("動態載入的正文。");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("沒有金鑰時不送 Authorization，有金鑰時送 Bearer", async () => {
     const headers: (Headers | undefined)[] = [];
     const capture = async (_input: RequestInfo | URL, init?: RequestInit) => {

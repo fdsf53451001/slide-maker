@@ -9,7 +9,7 @@
 // materializeWebSources（POST /web-sources 與 /outline 的 verifiedResults）。因此這裡
 // 斷言的是「候選結構 + 網址可讀」這層不變式，不對是否已抓取正文做斷言（那要打
 // /web-sources，會另外消耗抓取預算）。
-import { assert } from "../lib/assert.mjs";
+import { assert, skip } from "../lib/assert.mjs";
 
 export const name = "l1-web-search";
 export const layer = "l1";
@@ -35,8 +35,10 @@ export default async function run({ client, options }) {
   ).body;
 
   assert(Array.isArray(results), "web-search 應回傳陣列");
-  // 搜尋可能因外部服務空手而回（罕見）；有結果時逐筆驗證候選結構。
-  assert(results.length > 0, `web-search 應回傳至少一筆候選（實際 ${results.length}）`);
+  // 搜尋可能因外部服務空手而回（罕見但**合法**——見本檔開頭與端點語意）：零候選不是
+  // 失敗，判 skip 而非 fail，否則會把合法的空結果誤報成 bug。有候選時才逐筆嚴格驗結構。
+  if (results.length === 0)
+    skip("web-search 合法地回了零候選（外部搜尋服務空手），無候選可驗結構——留待有結果的執行");
   assert(results.length <= 5, `回傳筆數不得超過 limit（實際 ${results.length}）`);
 
   for (const [i, item] of results.entries()) {
