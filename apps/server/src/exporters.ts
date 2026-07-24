@@ -77,11 +77,7 @@ export function pageNumberSvg(project: PresentationProject, order: number): Buff
  * 把頁碼疊圖接到底圖上，但**不決定輸出編碼**——由呼叫端接 `.png()` 或 `compressSlideImage()`
  * 收尾，避免「先編一次 PNG 再解開重編 JPEG」那份立刻被丟棄的中間產物。
  */
-function compositePageNumber(
-  project: PresentationProject,
-  bytes: Uint8Array,
-  svg: Buffer,
-): Sharp {
+function compositePageNumber(project: PresentationProject, bytes: Uint8Array, svg: Buffer): Sharp {
   return (
     sharp(bytes)
       // 幾何是畫布座標系的，底圖必須先對齊畫布尺寸——比 renderComposite 少這一步的話，
@@ -203,6 +199,32 @@ async function exportPptx(
         const extraWidth = box.fontSize * scaleX;
         const shiftX =
           box.align === "center" ? extraWidth / 2 : box.align === "right" ? extraWidth : 0;
+        // 底色是獨立的矩形，畫在文字之前，用框的**原始**幾何。不能改用 addText 的 fill：
+        // 文字框為了防 CJK 自動換行加了 extraWidth 餘裕與 shiftX 位移，直接填色會讓色塊
+        // 變寬且水平偏移，與 SVG／DOM 兩端對不上。
+        //
+        // 已知限制（未旋轉時不存在，因此保留現狀）：OOXML 的 rot 是繞各自框的中心轉，
+        // 而上面那道單邊加寬讓文字框中心離開了框中心 extraWidth/2（left 往右、right 往左，
+        // 只有 center 剛好抵銷），所以**旋轉**的框在 PPTX 裡底色與文字會脫開
+        //（位移 Δ·2·sin(θ/2)，1920 畫布、72px 字、90° 約 51px）；SVG 與 DOM 兩端則共用
+        // 框中心、不受影響。目前編輯器沒有旋轉控制項，boxesFromOcr／PDF 匯入／「＋文字框」
+        // 一律給 rotation: 0，只有手改 project.json 才碰得到。要修的話得把餘裕改成左右對稱
+        // 再用 margin 把文字起點推回邊上——那會改動已被 ocr-geometry-roundtrip 與
+        // pdf-import-qa 釘住的文字落點模型（兩者都假設 margin 為 0），必須連同真機驗證
+        // 一起做，不是這裡順手改得動的。
+        if (box.backgroundColor) {
+          slide.addShape("rect", {
+            x: box.x * scaleX,
+            y: box.y * scaleY,
+            w: box.width * scaleX,
+            h: box.height * scaleY,
+            rotate: box.rotation,
+            fill: {
+              color: box.backgroundColor.slice(1),
+              transparency: Math.round((1 - (box.backgroundOpacity ?? 1)) * 100),
+            },
+          });
+        }
         slide.addText(box.text, {
           // 不夾到 0：貼著畫布左緣的 center／right 框，往左補回的餘裕會被夾掉，
           // 錨點整個右移（實測 60px 字級的框偏 41px）。OOXML 的 a:off 允許負值，
