@@ -76,7 +76,9 @@ interface ChunkSupport {
  * 支撐，並不表示這段話的內容出自其中任何一頁。若把整段原文塞給每個 index，A 站的摘要
  * 就可能整句在講 B 站的內容，而這份 summary 會進 prompt 的 sourceCatalog 與編輯器的
  * 來源卡片。因此只有 `length === 1` 的專屬段落算得上這一頁的摘要，多重支撐段落降級為
- * 補充素材並加前綴標註，僅在沒有專屬段落時才拿來湊。
+ * 補充素材並加前綴標註。兩桶一律**並存**輸出（見 `summaryText`：專屬段落在前、加前綴的
+ * 多支撐段落在後），而非「只在缺專屬段落時才拿多支撐段落來湊」的 fallback——即使某頁
+ * 已有專屬段落，能佐證它的多支撐段落仍會附在後面。
  */
 function summariesByChunk(supports: GroundingSupport[]): Map<number, ChunkSupport> {
   const byChunk = new Map<number, ChunkSupport>();
@@ -100,7 +102,10 @@ function summariesByChunk(supports: GroundingSupport[]): Map<number, ChunkSuppor
   return byChunk;
 }
 
-/** 專屬段落優先；多重支撐的段落加前綴標註為補充，避免被誤讀成本頁的原文摘要。 */
+/**
+ * 專屬段落在前、加前綴的多支撐段落在後，兩者一律並存輸出（非 fallback）。前綴讓多支撐
+ * 段落不會被誤讀成本頁的原文摘要。
+ */
 function summaryText(support: ChunkSupport | undefined): string {
   if (!support) return "";
   return [

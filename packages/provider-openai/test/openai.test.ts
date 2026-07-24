@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { rm, symlink, writeFile } from "node:fs/promises";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -604,6 +604,87 @@ describe("OpenAiCompatibleImageProvider", () => {
     });
     await provider.generate(imageRequest());
     expect(active.requests[0]!.path).toBe("/v1/images/generations");
+  });
+
+  it("images shape normalizes a non-PNG (jpeg) gateway response to a canvas PNG", async () => {
+    // gpt-image gateway 不保證回 PNG；回 jpeg 時應比照 chat／openrouter 走 rasterToCanvasPng
+    // 轉成 canvas 尺寸 PNG，而非丟出標著「Codex」的裸 PNG 結構驗證錯誤。
+    const jpegB64 =
+      "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: jpegB64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    const image = await provider.generate(imageRequest());
+    expect(image.mediaType).toBe("image/png");
+    expect(image.parameters.transport).toBe("openai-images");
+    // 轉出來的確實是 canvas 尺寸的 PNG（IHDR 寬高 = 1920×1080），而非原封 jpeg。
+    expect(pngSize(image.bytes)).toEqual({ width: 1920, height: 1080 });
+    expect(active.requests[0]!.path).toBe("/v1/images/generations");
+  });
+
+  it("images shape rejects an unrecognizable output format with a named SafeProviderError", async () => {
+    // 認不得的 magic bytes（非 png/jpeg/webp）：丟具名、可分類的 SafeProviderError，
+    // 不讓裸 Error（更不會標成別條通道的名字）冒到上層。
+    const junkB64 = Buffer.from(new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04])).toString("base64");
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: junkB64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    await expect(provider.generate(imageRequest())).rejects.toBeInstanceOf(SafeProviderError);
+    await expect(provider.generate(imageRequest())).rejects.toMatchObject({
+      code: "OPENAI_IMAGE_INVALID",
+    });
+  });
+
+  it("images shape does not follow a symlinked reference (O_NOFOLLOW)", async () => {
+    const realPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+    const targetPath = join(tmpdir(), `openai-symlink-target-${process.pid}.png`);
+    await writeFile(targetPath, Buffer.from(realPng, "base64"));
+    const linkPath = join(tmpdir(), `openai-symlink-link-${process.pid}.png`);
+    await rm(linkPath, { force: true });
+    await symlink(targetPath, linkPath);
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: realPng }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    // symlink 指向合法 PNG：若被跟隨就會成功送出請求；O_NOFOLLOW 應讓讀取失敗、請求不發出。
+    await expect(
+      provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: linkPath, mediaType: "image/png", role: "style" as const, name: "Style" },
+        ],
+      }),
+    ).rejects.toThrow();
+    expect(active.requests).toHaveLength(0);
+  });
+
+  it("images shape rejects a reference whose bytes are not a supported image", async () => {
+    const notImage = join(tmpdir(), `openai-not-image-${process.pid}.png`);
+    await writeFile(notImage, Buffer.from("this is definitely not an image", "utf8"));
+    active = await startFake(() => ({ status: 200, json: { data: [] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    await expect(
+      provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: notImage, mediaType: "image/png", role: "style" as const, name: "Style" },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "OPENAI_IMAGE_INPUT_INVALID" });
+    expect(active.requests).toHaveLength(0);
   });
 
   it("openrouter shape posts to /images with data[].b64_json and normalizes to canvas PNG", async () => {

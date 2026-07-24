@@ -160,26 +160,41 @@ export async function probeReady(config: OpenAiClientConfig): Promise<ProviderPr
   }
 }
 
-/** 安全讀取本機影像檔（拒絕 symlink、驗證 magic bytes、限制大小），回傳 data URL。 */
-export async function readImageAsDataUrl(path: string): Promise<string> {
+/** 從前導 magic bytes 判定影像媒體型別；認不得回 undefined。 */
+export function detectImageMediaType(bytes: Uint8Array): string | undefined {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x52 && bytes[1] === 0x49) return "image/webp";
+  return undefined;
+}
+
+/**
+ * 安全讀取本機影像檔並回傳判定後的 mediaType 與 bytes。
+ *
+ * `O_NOFOLLOW` 拒絕 symlink（否則參考圖路徑可被指向任意伺服器檔案）、限制大小、並以
+ * magic bytes 驗證確實是支援的 raster。所有影像 transport（chat／openrouter／images）都必須
+ * 走這條，不可用裸 `readFile`——那會跟隨 symlink、也不驗證檔案內容。
+ */
+export async function readImageBytes(
+  path: string,
+): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> }> {
   const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_INPUT_BYTES)
       throw new SafeProviderError("OPENAI_IMAGE_INPUT_INVALID", "參考影像不合法或過大。");
-    const bytes = await handle.readFile();
-    const mediaType =
-      bytes[0] === 0x89 && bytes[1] === 0x50
-        ? "image/png"
-        : bytes[0] === 0xff && bytes[1] === 0xd8
-          ? "image/jpeg"
-          : bytes[0] === 0x52 && bytes[1] === 0x49
-            ? "image/webp"
-            : undefined;
+    const bytes = new Uint8Array(await handle.readFile());
+    const mediaType = detectImageMediaType(bytes);
     if (!mediaType)
       throw new SafeProviderError("OPENAI_IMAGE_INPUT_INVALID", "不支援的參考影像格式。");
-    return `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`;
+    return { mediaType, bytes };
   } finally {
     await handle.close();
   }
+}
+
+/** 安全讀取本機影像檔（拒絕 symlink、驗證 magic bytes、限制大小），回傳 data URL。 */
+export async function readImageAsDataUrl(path: string): Promise<string> {
+  const { mediaType, bytes } = await readImageBytes(path);
+  return `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`;
 }

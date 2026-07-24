@@ -1,12 +1,16 @@
-import { readFile } from "node:fs/promises";
 import {
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
-import { type OpenAiClientConfig, requestJson } from "./http.js";
-import { flattenMaskToBlack } from "./image-util.js";
+import {
+  detectImageMediaType,
+  type OpenAiClientConfig,
+  readImageBytes,
+  requestJson,
+} from "./http.js";
+import { flattenMaskToBlack, rasterToCanvasPng } from "./image-util.js";
 
 /**
  * `image[]` 的張數上限。
@@ -47,15 +51,13 @@ function decodeB64Image(payload: unknown): Uint8Array {
   return bytes;
 }
 
-async function imageBytes(path: string): Promise<Uint8Array<ArrayBuffer>> {
-  const bytes = await readFile(path);
-  if (bytes.byteLength <= 0 || bytes.byteLength > 16 * 1024 * 1024)
-    throw new SafeProviderError("OPENAI_IMAGE_INPUT_INVALID", "編輯輸入影像不合法或過大。");
-  return new Uint8Array(bytes);
-}
-
-async function imageBlob(path: string, mediaType: string): Promise<Blob> {
-  return new Blob([await imageBytes(path)], { type: mediaType || "image/png" });
+// 參考圖／base／mask 一律走 http.ts 的 `readImageBytes`（O_NOFOLLOW＋大小限制＋magic
+// bytes 驗證），與 chat／openrouter 通道的 `readImageAsDataUrl` 同一條安全讀取路徑；不再用
+// 裸 `readFile`（會跟隨 symlink、也不驗證檔案內容）。mediaType 取自檔案 magic bytes 而非
+// 呼叫端宣告的值，更難被指向非影像的路徑騙過。
+async function imageBlob(path: string): Promise<Blob> {
+  const { mediaType, bytes } = await readImageBytes(path);
+  return new Blob([bytes], { type: mediaType });
 }
 
 async function requestGeneration(
@@ -75,7 +77,7 @@ async function requestGeneration(
     form.set("n", "1");
     form.set("response_format", "b64_json");
     for (const reference of request.references) {
-      form.append("image[]", await imageBlob(reference.path, reference.mediaType), "image.png");
+      form.append("image[]", await imageBlob(reference.path), "image.png");
     }
     return requestJson(config, {
       method: "POST",
@@ -128,13 +130,10 @@ async function requestEdit(
   for (const [index, reference] of request.references.entries()) {
     if (index === edit.maskImageIndex) {
       // 遮罩是「白框＋透明底」；視覺模型會把透明底攤成白色而看不到白框，故先攤成
-      // 不透明黑底白框（與 chat／gemini 通道的 maskAwareDataUrl 同一處理）。
-      const flattened = flattenMaskToBlack(
-        await imageBytes(reference.path),
-        reference.mediaType || "image/png",
-        request.width,
-        request.height,
-      );
+      // 不透明黑底白框（與 chat／gemini 通道的 maskAwareDataUrl 同一處理）。mediaType 取自
+      // 安全讀取判定的 magic bytes，不再信呼叫端宣告的值。
+      const { mediaType, bytes } = await readImageBytes(reference.path);
+      const flattened = flattenMaskToBlack(bytes, mediaType, request.width, request.height);
       // 攤平後的 bytes 型別是 Uint8Array<ArrayBufferLike>，BlobPart 要求
       // ArrayBufferView<ArrayBuffer>；這次複製只為滿足型別，不是語意需求。
       form.append(
@@ -146,7 +145,7 @@ async function requestEdit(
     }
     form.append(
       "image[]",
-      await imageBlob(reference.path, reference.mediaType),
+      await imageBlob(reference.path),
       index === edit.baseImageIndex ? "image.png" : `reference-${index}.png`,
     );
   }
@@ -170,6 +169,15 @@ export async function generateViaImagesApi(
     ? await requestEdit(config, model, request, size, signal)
     : await requestGeneration(config, model, request, size, signal);
   const raw = decodeB64Image(payload);
-  validatePngStructure(Buffer.from(raw));
-  return normalizePngToCanvas(raw, request.width, request.height);
+  // gateway 不保證回 PNG（實測 gpt-image gateway 會回 jpeg/webp）。比照 chat／openrouter
+  // 通道：png 走結構驗證＋canvas 正規化；其餘 raster 走 rasterToCanvasPng 轉成 canvas PNG。
+  // 認不得的格式丟具名 SafeProviderError，而非讓 validatePngStructure 以標著「Codex」的裸
+  // Error 冒到上層（那訊息來自 provider-codex，會誤導成別條通道壞了）。
+  const mediaType = detectImageMediaType(raw);
+  if (mediaType === "image/png") {
+    validatePngStructure(Buffer.from(raw));
+    return normalizePngToCanvas(raw, request.width, request.height);
+  }
+  if (mediaType) return rasterToCanvasPng(raw, mediaType, request.width, request.height);
+  throw new SafeProviderError("OPENAI_IMAGE_INVALID", "Images API 回應的影像格式無法辨識。");
 }
