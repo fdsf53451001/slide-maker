@@ -161,6 +161,20 @@ export const editableTextBoxSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .default("#ffffff"),
   opacity: z.number().min(0).max(1).default(1),
+  /**
+   * 文字框的填滿底色；沒有這個欄位就代表「無底色」＝加入這個功能之前的行為。
+   * 底色矩形的幾何就是文字框矩形本身（x/y/width/height，旋轉時跟著 rotation 轉），
+   * 不加內距也不加圓角——伺服器 SVG、編輯器 DOM、PPTX 三端才逐點一致。
+   * `opacity` 只作用於文字，底色的透明度另由 `backgroundOpacity` 決定，兩者獨立。
+   * 維持 optional 而不是 `.default()`：default 會讓這兩個欄位在推導出的型別裡變成必填，
+   * 逼所有既有的文字框 fixture 與建構點一起改，卻換不到任何行為差異——讀取端一律
+   * `backgroundOpacity ?? 1`，而沒有 `backgroundColor` 就不畫底色。
+   */
+  backgroundColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  backgroundOpacity: z.number().min(0).max(1).optional(),
   lineHeight: z.number().positive().default(1.2),
   letterSpacing: z.number().default(0),
   align: z.enum(["left", "center", "right"]).default("left"),

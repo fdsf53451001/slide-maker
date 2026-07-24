@@ -25,6 +25,10 @@ const FONT_DESCENT = 0.212;
  *
  * 匯出端要在同一張 SVG 裡先畫頁碼色塊 `<rect>` 再畫文字，需要能拿到裸元素；
  * `textOverlaySvg()` 只是包一層 `<svg>` 呼叫它，輸出逐字不變。
+ *
+ * 有底色的框會在自己的 `<text>` 前面多一個 `<rect>`，且**逐框依序輸出 rect+text**，
+ * 不把所有 rect 集中到最前面——集中輸出會讓後面框的底色蓋掉前面框的文字，
+ * 疊層順序就與編輯器 DOM（每個框各自是一層）對不上。
  */
 export function textElements(boxes: readonly EditableTextBox[]): string {
   return boxes
@@ -57,7 +61,11 @@ export function textElements(boxes: readonly EditableTextBox[]): string {
       const transform = box.rotation
         ? ` transform="rotate(${box.rotation} ${box.x + box.width / 2} ${box.y + box.height / 2})"`
         : "";
-      return `<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
+      // 底色矩形＝文字框矩形本身，無內距無圓角，並套用同一個 rotate transform。
+      const background = box.backgroundColor
+        ? `<rect x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" fill="${box.backgroundColor}" fill-opacity="${box.backgroundOpacity ?? 1}"${transform}/>`
+        : "";
+      return `${background}<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
     })
     .join("");
 }
