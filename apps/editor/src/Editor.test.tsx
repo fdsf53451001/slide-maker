@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createProject, createDefaultStyle, createSlidesFromBrief } from "@slide-maker/core";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  createProject,
+  createDefaultStyle,
+  createSlidesFromBrief,
+  type PresentationProject,
+} from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
+import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
@@ -2558,5 +2564,346 @@ describe("簡報級頁碼", () => {
       "center",
     );
     expect((screen.getByLabelText("位置") as HTMLSelectElement).value).toBe("bottom-center");
+  });
+});
+
+describe("STEP 3 自動搜尋網路資源", () => {
+  // systemSettings 是模組層單例，測試間必須重置，否則關掉的自動搜尋會漏到下一個測試。
+  afterEach(() => resetSystemSettings());
+
+  const STORAGE_KEY = "slide-maker:system-settings";
+  const storedWebSearchMode = (): unknown =>
+    (JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as { webSearchMode?: unknown })
+      .webSearchMode;
+
+  const materialsStep = async (sources: PresentationProject["sources"]) => {
+    const now = new Date().toISOString();
+    let project: PresentationProject = {
+      ...createProject({ topic: "自動搜尋開關", brief: { desiredSlideCount: 3 } }),
+      sources,
+    };
+    // 每一筆 PATCH /brief 的 body（App 層同步與 produceOutline 都會經過這裡）。
+    const briefPatches: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(raw, "http://local.test");
+      const path = url.pathname;
+      const method = init?.method ?? "GET";
+      if (path === "/api/projects" && method === "GET") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      if (path.endsWith("/brief") && method === "PATCH") {
+        const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        briefPatches.push(patch);
+        project = { ...project, brief: { ...project.brief, ...patch } };
+        return Response.json(project);
+      }
+      if (path.endsWith("/sources") && method === "POST") {
+        const name = url.searchParams.get("name") ?? "素材.md";
+        project = structuredClone(project);
+        project.sources.push({
+          id: `uploaded-${project.sources.length + 1}`,
+          name,
+          mediaType: url.searchParams.get("mediaType") ?? "text/markdown",
+          usage: "content",
+          allowModelAccess: true,
+          status: "indexed",
+          assetPath: `assets/sources/uploaded/${name}`,
+          sizeBytes: 12,
+          extractedText: name,
+          chunks: [{ id: `chunk-${project.sources.length + 1}`, text: name }],
+          metadata: {},
+          createdAt: now,
+          updatedAt: now,
+        });
+        return Response.json(project, { status: 201 });
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("自動搜尋開關"));
+    expect(await screen.findByText("STEP 2 · 需求")).toBeTruthy();
+    fireEvent.click(screen.getByText("下一步：上傳素材"));
+    expect(await screen.findByText("STEP 3 · 上傳素材")).toBeTruthy();
+    return {
+      fetchMock,
+      briefPatches,
+      toggle: screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement,
+      submit: screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement,
+    };
+  };
+
+  // produceOutline 送出整份 brief（含 topic）；STEP 2 的「下一步」也會送整份 brief，
+  // App 層同步則只帶 webSearchMode，所以要從按下產生大綱之後的那批 patch 裡找。
+  const outlinePatch = (
+    briefPatches: Record<string, unknown>[],
+    fromIndex: number,
+  ): Record<string, unknown> => {
+    const patch = briefPatches.slice(fromIndex).find((entry) => "topic" in entry);
+    expect(patch).toBeTruthy();
+    return patch!;
+  };
+
+  const textSource = (): PresentationProject["sources"] => {
+    const now = new Date().toISOString();
+    return [
+      {
+        id: "text-source",
+        name: "研究摘要.md",
+        mediaType: "text/markdown",
+        usage: "content",
+        allowModelAccess: true,
+        status: "indexed",
+        assetPath: "assets/sources/text-source/研究摘要.md",
+        sizeBytes: 2048,
+        extractedText: "已經有素材了。",
+        chunks: [{ id: "chunk-1", text: "已經有素材了。" }],
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+  };
+
+  const imageSource = (): PresentationProject["sources"] => {
+    const now = new Date().toISOString();
+    return [
+      {
+        id: "image-source",
+        name: "示意圖.png",
+        mediaType: "image/png",
+        usage: "visual-reference",
+        allowModelAccess: true,
+        status: "indexed",
+        assetPath: "assets/sources/image-source/示意圖.png",
+        sizeBytes: 4096,
+        extractedText: "",
+        chunks: [],
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+  };
+
+  const failedSource = (): PresentationProject["sources"] => {
+    const now = new Date().toISOString();
+    return [
+      {
+        id: "failed-source",
+        name: "壞掉的檔.pdf",
+        mediaType: "application/pdf",
+        usage: "content",
+        allowModelAccess: true,
+        status: "failed",
+        assetPath: "assets/sources/failed-source/壞掉的檔.pdf",
+        sizeBytes: 1024,
+        extractedText: "",
+        chunks: [],
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+  };
+
+  it("關掉自動搜尋且沒有素材時擋住產生大綱，並說明原因", async () => {
+    const { toggle, submit, fetchMock } = await materialsStep([]);
+    expect(toggle.checked).toBe(true);
+    expect(submit.disabled).toBe(false);
+
+    fireEvent.click(toggle);
+
+    expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText(/已關閉自動搜尋，請先上傳或貼上至少一項素材/)).toBeTruthy();
+    // 勾選狀態寫進 systemSettings，App 層才會把它同步回專案 brief。
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/api\/projects\/[^/]+\/brief$/),
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ webSearchMode: "disabled" }),
+        }),
+      ),
+    );
+  });
+
+  it("開著自動搜尋時，沒有素材也能產生大綱", async () => {
+    const { toggle, submit } = await materialsStep([]);
+    expect(toggle.checked).toBe(true);
+    expect(submit.disabled).toBe(false);
+    expect(screen.queryByText(/已關閉自動搜尋/)).toBeNull();
+  });
+
+  it("關掉自動搜尋但已有素材時仍可產生大綱", async () => {
+    const { toggle } = await materialsStep(textSource());
+    fireEvent.click(toggle);
+    expect(
+      (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.queryByText(/已關閉自動搜尋/)).toBeNull();
+  });
+
+  it("關掉自動搜尋時，圖片素材也算數，可產生大綱", async () => {
+    const { toggle } = await materialsStep(imageSource());
+    fireEvent.click(toggle);
+    expect(
+      (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.queryByText(/已關閉自動搜尋/)).toBeNull();
+  });
+
+  it("關掉自動搜尋時，只有解析失敗的素材仍視為沒有素材", async () => {
+    const { toggle } = await materialsStep(failedSource());
+    fireEvent.click(toggle);
+    expect(
+      (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText(/已關閉自動搜尋，請先上傳或貼上至少一項素材/)).toBeTruthy();
+  });
+
+  it("素材從 0 變 1 時解鎖產生大綱按鈕", async () => {
+    const { toggle } = await materialsStep([]);
+    fireEvent.click(toggle);
+    expect(
+      (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("上傳來源檔案"), {
+      target: { files: [new File(["研究"], "研究.md", { type: "text/markdown" })] },
+    });
+
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    expect(screen.queryByText(/已關閉自動搜尋/)).toBeNull();
+    // 自動搜尋仍是關的，解鎖純粹來自素材數量。
+    expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("localStorage 既有的 cached 視為已勾選，產生大綱時原樣送出而不改寫成 live", async () => {
+    // resetSystemSettings() 會把 DEFAULTS（webSearchMode: "cached"）寫進 localStorage，
+    // 等同「使用者上次留下 cached」的既有狀態。
+    resetSystemSettings();
+    expect(storedWebSearchMode()).toBe("cached");
+
+    const { toggle, submit, briefPatches } = await materialsStep([]);
+    expect(toggle.checked).toBe(true);
+
+    const before = briefPatches.length;
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("cached"));
+    expect(briefPatches.some((patch) => patch.webSearchMode === "live")).toBe(false);
+    expect(storedWebSearchMode()).toBe("cached");
+  });
+
+  it("重新勾選自動搜尋會寫回 live，並隨產生大綱一起送出", async () => {
+    const { toggle, briefPatches } = await materialsStep([]);
+
+    fireEvent.click(toggle);
+    expect(storedWebSearchMode()).toBe("disabled");
+    fireEvent.click(screen.getByLabelText("自動搜尋網路資源"));
+    expect(storedWebSearchMode()).toBe("live");
+    expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(true);
+
+    const before = briefPatches.length;
+    fireEvent.click(screen.getByRole("button", { name: /產生 3 頁大綱/ }));
+
+    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("live"));
+  });
+
+  it("關閉自動搜尋後產生大綱，PATCH /brief 帶的是 disabled", async () => {
+    const { toggle, briefPatches } = await materialsStep(textSource());
+
+    fireEvent.click(toggle);
+    const before = briefPatches.length;
+    fireEvent.click(screen.getByRole("button", { name: /產生 3 頁大綱/ }));
+
+    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("disabled"));
+  });
+
+  it("STEP 1 不再有 Web Search 下拉，只留模型組合", async () => {
+    await materialsStep([]);
+    const step1 = screen.getByRole("region", { name: "選擇模型組合" });
+    expect(within(step1).queryByLabelText("Web Search")).toBeNull();
+    expect(within(step1).getAllByRole("combobox")).toHaveLength(1);
+    expect(screen.queryByText("Live（即時搜尋）")).toBeNull();
+  });
+});
+
+describe("系統設定對話框", () => {
+  afterEach(() => resetSystemSettings());
+
+  it("仍保留 Web Search 三段模式下拉", async () => {
+    const project = createProject({
+      topic: "系統設定保留搜尋模式",
+      brief: { desiredSlideCount: 1 },
+    });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const raw =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const path = new URL(raw, "http://local.test").pathname;
+        if (path === "/api/projects") return Response.json([project]);
+        if (path === "/api/providers")
+          return Response.json([
+            {
+              id: "mock-image",
+              name: "Mock",
+              availability: { status: "available" },
+              capabilities: { fullSlideGeneration: true },
+            },
+          ]);
+        if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+        if (path === "/api/model-library")
+          return Response.json({ connections: [], models: [], combinations: [] });
+        if (path === "/api/text-providers") return Response.json([]);
+        return Response.json(project);
+      }),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("系統設定保留搜尋模式"));
+    fireEvent.click(await screen.findByRole("button", { name: "系統設定" }));
+
+    const select = (await screen.findByLabelText("Web Search")) as HTMLSelectElement;
+    expect(select.value).toBe("cached");
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "live",
+      "cached",
+      "disabled",
+    ]);
   });
 });

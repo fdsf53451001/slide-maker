@@ -1236,11 +1236,22 @@ function SetupFlow({
     if (project.workflowStage === "requirements") setShowRequirements(true);
   }, [project.id, project.workflowStage]);
 
+  // "cached" 也算開啟（server 端只有 "disabled" 會跳過搜尋），勾選狀態下不把 cached 改寫成 live。
+  const webSearchEnabled = systemSettings.webSearchMode !== "disabled";
+  // 關閉自動搜尋時網路來源不存在，沒有素材就沒有任何可 grounding 的內容，故擋住產生大綱。
+  // 解析失敗（status: "failed"）的素材抽不出任何內容，不算數；圖片等其他狀態都算。
+  const materialsRequired =
+    !webSearchEnabled && !project.sources.some((source) => source.status !== "failed");
+
   const produceOutline = async () => {
     setBusy(true);
     onError("");
     try {
-      const withBrief = await api.updateBrief(project.id, brief);
+      // App 層把系統設定同步回 brief 是非同步的，本地 brief clone 可能還帶著舊值；這裡明確覆寫。
+      const withBrief = await api.updateBrief(project.id, {
+        ...brief,
+        webSearchMode: systemSettings.webSearchMode,
+      });
       onProject(withBrief);
       // 文字模型由專案組合決定（server 端解析），前端不再傳 textEngine。
       const withOutline = await api.regenerateOutline(project.id, true);
@@ -1381,21 +1392,6 @@ function SetupFlow({
               ))}
             </select>
           </label>
-          <label>
-            Web Search
-            <select
-              value={systemSettings.webSearchMode}
-              onChange={(event) =>
-                systemSettings.setWebSearchMode(
-                  event.target.value as SystemSettings["webSearchMode"],
-                )
-              }
-            >
-              <option value="live">Live（即時搜尋）</option>
-              <option value="cached">Cached</option>
-              <option value="disabled">Disabled</option>
-            </select>
-          </label>
         </div>
         {effectiveImageProviderId === "mock-image" && (
           <p className="setup-provider-hint">
@@ -1411,9 +1407,14 @@ function SetupFlow({
             <div className="section-label">STEP 3 · 上傳素材</div>
             <h1>上傳生成會用到的素材</h1>
             <p>
-              文件、圖片、貼上文字或加入搜尋資料都會建立索引；產生大綱與後續生成時即可引用。這一步可略過。
+              文件、圖片、貼上文字或加入搜尋資料都會建立索引；產生大綱與後續生成時即可引用。開啟自動搜尋網路資源時，這一步可略過；關閉時必須至少提供一項素材。
             </p>
             <SourcePanel project={project} onProject={onProject} onError={onError} />
+            {materialsRequired && (
+              <p className="setup-materials-hint" id="setup-materials-hint">
+                已關閉自動搜尋，請先上傳或貼上至少一項素材再產生大綱。
+              </p>
+            )}
             <div className="setup-materials-actions">
               <button
                 type="button"
@@ -1423,14 +1424,29 @@ function SetupFlow({
               >
                 <span>←</span> 上一步
               </button>
-              <button
-                className="primary setup-submit"
-                disabled={busy || !brief.topic.trim()}
-                onClick={() => void produceOutline()}
-              >
-                {busy ? "正在產生大綱…" : `產生 ${brief.desiredSlideCount} 頁大綱`}
-                <span>→</span>
-              </button>
+              <div className="setup-materials-submit">
+                <label className="setup-websearch-toggle">
+                  <input
+                    type="checkbox"
+                    checked={webSearchEnabled}
+                    disabled={busy}
+                    onChange={(event) =>
+                      systemSettings.setWebSearchMode(event.target.checked ? "live" : "disabled")
+                    }
+                  />
+                  自動搜尋網路資源
+                </label>
+                <button
+                  className="primary setup-submit"
+                  disabled={busy || !brief.topic.trim() || materialsRequired}
+                  // 停用按鈕本身不會說明原因，讀屏使用者需要指回那句提示。
+                  aria-describedby={materialsRequired ? "setup-materials-hint" : undefined}
+                  onClick={() => void produceOutline()}
+                >
+                  {busy ? "正在產生大綱…" : `產生 ${brief.desiredSlideCount} 頁大綱`}
+                  <span>→</span>
+                </button>
+              </div>
             </div>
           </section>
         ) : (
@@ -1512,8 +1528,13 @@ function SetupFlow({
                 brief.desiredSlideCount > 100
               }
               onClick={() => {
+                // 同上：本地 brief clone 可能帶著舊的 webSearchMode，而 App 層的同步 effect
+                // 只在 webSearchMode 變動時重跑——一旦舊值被寫回 server 就沒有機制修正。
                 void api
-                  .updateBrief(project.id, brief)
+                  .updateBrief(project.id, {
+                    ...brief,
+                    webSearchMode: systemSettings.webSearchMode,
+                  })
                   .then(onProject)
                   .catch(() => undefined);
                 setMaterialsSubstep(true);
