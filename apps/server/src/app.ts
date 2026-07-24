@@ -1947,13 +1947,39 @@ export async function createApp(
       const index = current.slides.findIndex((slide) => slide.id === slideId);
       if (index < 0) throw new Error("Slide not found");
       const source = current.slides[index]!;
+      // 版本一起複製，否則複製出來的頁是空白的（沒有圖，也沒有可還原的歷史）。
+      // 版本 id 必須重新配發：`VERSION_HAS_ACTIVE_JOB` 與 text-layer 的引用檢查都不限
+      // slideId，共用 id 會讓兩頁互相鎖住彼此的版本。
+      const versionIdMap = new Map(source.versions.map((version) => [version.id, randomUUID()]));
       const duplicate = {
         ...structuredClone(source),
         id: randomUUID(),
-        versions: [],
+        // 資產路徑刻意共用、不複製檔案：所有寫入端（重生成、text-layer 重繪）都是產生
+        // 新檔而非就地覆寫，而回收一律重算全專案引用（見版本 DELETE），所以共用既不會
+        // 互相污染，也不會被誤刪。
+        versions: source.versions.map((version) => ({
+          ...structuredClone(version),
+          id: versionIdMap.get(version.id)!,
+          ...(version.textLayer
+            ? {
+                textLayer: {
+                  ...structuredClone(version.textLayer),
+                  // 指向同頁原圖版本的配對要跟著搬到複製出來的那一份；指到別頁的
+                  // （目前不會發生）維持原值，總比指向不存在的 id 好。
+                  originalVersionId:
+                    versionIdMap.get(version.textLayer.originalVersionId) ??
+                    version.textLayer.originalVersionId,
+                },
+              }
+            : {}),
+        })),
         order: index + 1,
       };
-      delete duplicate.currentVersionId;
+      if (source.currentVersionId) {
+        const currentVersionId = versionIdMap.get(source.currentVersionId);
+        if (currentVersionId) duplicate.currentVersionId = currentVersionId;
+        else delete duplicate.currentVersionId;
+      }
       current.slides.splice(index + 1, 0, duplicate);
       current.slides.forEach((slide, order) => {
         slide.order = order;
