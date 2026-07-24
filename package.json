@@ -17,7 +17,14 @@
     "smoke:deck:grok": "node scripts/live-grok-build-deck-e2e.mjs",
     "smoke:style-reference": "node scripts/live-style-reference-e2e.mjs",
     "smoke:parallel": "node scripts/live-codex-parallel-e2e.mjs",
-    "setup:ocr": "sh scripts/setup-ocr.sh"
+    "setup:ocr": "sh scripts/setup-ocr.sh",
+    "//e2e": "⚠️ e2e:all、e2e:l1、e2e:l2 為 live 測試，會消耗模型配額；絕不可進入 `pnpm check`。只有 e2e:l0 與 e2e:ui 是零配額。裸跑 `pnpm e2e` 涵蓋三層但 L1/L2 需 --yes 才真跑（見 run.mjs 的 live 閘）。e2e/ui 刻意不列為 workspace 成員，否則 `pnpm -r test`（即 `pnpm check`）會連帶跑 Playwright、替 check 加上 chromium 硬相依。",
+    "e2e": "node e2e/run.mjs",
+    "e2e:all": "node e2e/run.mjs --layers l0,l1,l2 --yes",
+    "e2e:l0": "node e2e/run.mjs --layers l0",
+    "e2e:l1": "node e2e/run.mjs --layers l1 --yes",
+    "e2e:l2": "node e2e/run.mjs --layers l2 --yes",
+    "e2e:ui": "node e2e/ui/setup.mjs && ./apps/editor/node_modules/.bin/playwright test --config e2e/ui/playwright.config.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.14",

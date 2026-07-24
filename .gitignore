@@ -1,9 +1,12 @@
 node_modules/
+# e2e/ui/setup.mjs 建的解析用 symlink（指向 apps/editor/node_modules），每次重建，不入版控
+e2e/ui/node_modules
 dist/
 dist-types/
 dist-lib/
 .data/
 .slide-maker-data/
+.e2e-data/
 .venv-ocr/
 artifacts/
 coverage/
