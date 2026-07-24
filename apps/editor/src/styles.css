@@ -3348,6 +3348,10 @@ header {
   transform-origin: center;
   cursor: move;
 }
+/* 已知落差：選取中的框被抬到最上層（縮放把手才不會被後面的框蓋住點不到），
+   但匯出端（SVG／PPTX）的疊層一律是陣列順序。兩個框重疊、又選到排在前面那個時，
+   畫布預覽會與匯出結果相反——取消選取就恢復。底色是實色之後這件事才看得出來，
+   要修的話得把把手／外框拆成獨立的高層 overlay，而不是抬整個框。 */
 .editable-text-box.selected {
   z-index: 4;
   border: 2px solid #3b9cff;
@@ -3566,6 +3570,22 @@ header {
 }
 .text-property-grid.detail-row {
   grid-template-columns: 52px 1.2fr 1fr 1fr;
+}
+/* 底色列：開關 ＋ 色票 ＋ 不透明度，開關要與另外兩欄的輸入框底部對齊。 */
+.text-property-grid.background-row {
+  grid-template-columns: 64px 1fr 1fr;
+}
+.text-property-grid.background-row .background-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: end;
+  margin-bottom: 23px;
+}
+.text-property-grid.background-row .background-toggle input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
 }
 .text-properties input[type="color"] {
   height: 30px;

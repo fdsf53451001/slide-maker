@@ -228,9 +228,115 @@ const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
 
 const TEXT_HISTORY_LIMIT = 60;
 
+/** 啟用文字框底色時的預設色；文字預設是白字，配黑底才看得見。 */
+const TEXT_BACKGROUND_DEFAULT_COLOR = "#000000";
+
+/**
+ * 貼上文字框時相對來源的位移（畫布座標）。
+ *
+ * 貼在原位的話副本會完全蓋住來源，使用者看不出貼上成功，也拖不到底下那一個。
+ */
+const TEXT_PASTE_OFFSET = 24;
+
+/**
+ * 貼上的副本在單一軸上的落點（`start` 是來源座標，`limit` 是該軸的畫布尺寸）。
+ *
+ * 正向位移優先，但夾在畫布內會有兩個退化情形，都會讓副本原地重疊、看不出貼上成功：
+ * 來源已貼齊右／下緣（右對齊頁尾、底部圖說很常見）時往回退同樣的距離；框本身就比
+ * 畫布寬／高時怎麼放都會溢出，維持正向位移，可見比夾回 0 更重要。
+ */
+function placePastedBox(start: number, size: number, limit: number, offset: number): number {
+  const forward = Math.min(Math.max(0, limit - size), start + offset);
+  if (forward > start) return forward;
+  return start >= offset ? start - offset : start + offset;
+}
+
+/**
+ * 連續貼上最多往下找幾階：框被夾在畫布邊緣時每一階都可能算出同一個點，不能無限找。
+ * 找滿了就讓它重疊——那已經是畫布放不下的情形，重疊比卡住好。
+ */
+const TEXT_PASTE_MAX_STEP = 40;
+
+/**
+ * 貼上的副本落點：從第一階開始往下找，直到那個點沒有被現有文字框佔住。
+ *
+ * 刻意不記「上一次貼到第幾階」。階數一旦要記，就得同時綁來源框與投影片，於是
+ * 換頁往返、或只是重新按一次 ⌘C（即使複製的是同一個框），都會把它重算成第一階——
+ * 而第一階的位置早被上一份副本佔走，新副本逐像素疊上去，使用者看到的是「⌘V 沒反應」。
+ * 改看實際佔用還順帶拿到兩件事：刪掉副本後空出來的位置會被重新使用，以及沒有任何
+ * 跨頁／跨專案的階梯狀態需要清除。
+ */
+function pastePosition(
+  source: EditableTextBox,
+  boxes: EditableTextBox[],
+  canvasWidth: number,
+  canvasHeight: number,
+): { x: number; y: number } {
+  let spot = { x: source.x, y: source.y };
+  for (let step = 1; step <= TEXT_PASTE_MAX_STEP; step += 1) {
+    const offset = step * TEXT_PASTE_OFFSET;
+    spot = {
+      x: placePastedBox(source.x, source.width, canvasWidth, offset),
+      y: placePastedBox(source.y, source.height, canvasHeight, offset),
+    };
+    if (!boxes.some((box) => box.x === spot.x && box.y === spot.y)) return spot;
+  }
+  return spot;
+}
+
+/**
+ * 這個 keydown 是否落在「使用者正在輸入」的地方，該原封不動交給瀏覽器。
+ *
+ * 與方向鍵換頁那條 handler 的判定刻意有兩處不同，寫在這裡免得日後被當成筆誤「修掉」：
+ * ・textarea 要看 `readOnly`——唯讀的那個就是尚未進入編輯的文字框本體，快捷鍵必須生效；
+ *   非唯讀代表使用者正在打字，這三個鍵是字元層級的複製／貼上／刪字，攔了連字都刪不掉。
+ * ・`button` 不放行——剛按完工具列按鈕（例如「＋ 文字框」）焦點還留在按鈕上，這時按
+ *   Delete 的意圖顯然是刪畫布上選取的框，而 Delete/Backspace 對按鈕本身沒有原生行為。
+ * `a` 則與那條一致放行：某些設定下 Backspace-on-link 是瀏覽器的上一頁手勢。
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target instanceof HTMLTextAreaElement) return !target.readOnly;
+  return target.matches("input, select, a") || target.isContentEditable;
+}
+
+/** 待寫入伺服器的文字圖層變更；`boxes` 直接存引用（文字框陣列一律不可變更新）。 */
+type PendingTextSave = {
+  projectId: string;
+  slideId: string;
+  versionId: string;
+  boxes: EditableTextBox[];
+  threshold: number;
+};
+
 // 文字框陣列一律以不可變方式更新，歷史可直接存引用，不需深拷貝。
 function pushHistory(history: EditableTextBox[][], boxes: EditableTextBox[]): EditableTextBox[][] {
   return [...history, boxes].slice(-TEXT_HISTORY_LIMIT);
+}
+
+/** 單一文字框的 key 順序無關序列化；見 {@link sameBoxes}。 */
+function stableBoxKey(box: EditableTextBox): string {
+  return JSON.stringify(
+    Object.fromEntries(Object.entries(box).sort(([a], [b]) => (a < b ? -1 : 1))),
+  );
+}
+
+/**
+ * 兩批文字框是否等價——**必須與 key 順序無關**，這是自動儲存唯一的守門員。
+ *
+ * 不能直接比 `JSON.stringify(boxes)`：optional 欄位（目前是底色那兩個）在本地是執行期
+ * 才被 spread 加上去的，會排在物件尾端；而伺服器回應是 zod 依 schema 宣告順序重建的，
+ * 同一個框的兩份字串永遠不相等。守門員一失效，自動儲存就進入
+ * 「存 → 收到新 project → effect 重跑 → 仍判定不相等 → 再存」的無限迴圈
+ * （`textDirty` 只在重新播種時歸零，PUT 不會清掉它），而每一輪伺服器都要重跑一次
+ * `renderComposite()` 並換掉 `imagePath`，畫布會跟著每秒重新載入。
+ */
+function sameBoxes(a: readonly EditableTextBox[], b: readonly EditableTextBox[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((box, index) => {
+    const other = b[index];
+    return other !== undefined && stableBoxKey(box) === stableBoxKey(other);
+  });
 }
 
 export function SystemSettingsDialog({
@@ -311,6 +417,19 @@ export function SystemSettingsDialog({
   );
 }
 
+/**
+ * 文字框底色的 CSS 值；沒設定底色就回 undefined（＝沿用 styles.css 的選取提示底）。
+ *
+ * 底色與文字的 `opacity` 是獨立的兩件事，所以透明度只能吃進色值本身，
+ * 不能用容器的 `opacity`（那會連帶把文字與選取外框一起變淡）。
+ */
+export function textBoxBackground(box: EditableTextBox): string | undefined {
+  if (!box.backgroundColor) return undefined;
+  const value = box.backgroundColor.slice(1);
+  const channel = (offset: number) => Number.parseInt(value.slice(offset, offset + 2), 16);
+  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${box.backgroundOpacity ?? 1})`;
+}
+
 export function TextLayerCanvas({
   background,
   boxes,
@@ -371,6 +490,11 @@ export function TextLayerCanvas({
     };
     if (editingId !== box.id) setEditingId(undefined);
     onSelect(box.id);
+    // 焦點主動搬到畫布：這裡的 preventDefault（拖曳必須擋掉原生的圖片拖放與文字選取）
+    // 同時也擋掉了瀏覽器移動焦點。剛在側邊面板改完欄位再回來點框時，焦點還留在那個
+    // input 上，接著按 Delete 會被 isTypingTarget 放行給輸入框——選了框卻刪不掉，
+    // 而且完全沒有回饋。放寬 isTypingTarget 不是辦法（那會讓面板裡刪字元變成刪框）。
+    stageRef.current?.focus({ preventScroll: true });
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
     } catch {
@@ -424,6 +548,12 @@ export function TextLayerCanvas({
     <div
       ref={stageRef}
       className="text-layer-canvas"
+      // 只為了「選取文字框時把焦點收回畫布」而可聚焦（見 begin）；-1 代表不進 Tab 順序，
+      // 鍵盤使用者的 Tab 巡覽維持原樣。焦點環要關掉：全域的 `[tabindex]:focus-visible`
+      // 會在「剛從面板欄位（鍵盤焦點）點回畫布」時整塊畫布亮一圈藍框，看起來像畫布被選取；
+      // 這個元素進不了 Tab 順序，只由程式聚焦，關掉不影響鍵盤巡覽。
+      tabIndex={-1}
+      style={{ outline: "none" }}
       onPointerMove={move}
       onPointerUp={() => finish(true)}
       onPointerCancel={() => finish(false)}
@@ -456,6 +586,10 @@ export function TextLayerCanvas({
                 width: `${(box.width / canvasWidth) * 100}%`,
                 height: `${(box.height / canvasHeight) * 100}%`,
                 transform: box.rotation ? `rotate(${box.rotation}deg)` : undefined,
+                // 底色畫在容器層（容器尺寸正好等於框），不能掛在裡面的 textarea 上：
+                // 非編輯狀態時那個 textarea 被刻意放大成 400% 用來顯示溢出文字，
+                // 底色跟著糊成四倍大就與 SVG／PPTX 兩端對不上。
+                background: textBoxBackground(box),
               }}
               onPointerDown={(event) => {
                 if (editing) {
@@ -1825,6 +1959,58 @@ function SetupFlow({
   );
 }
 
+/**
+ * 簡報模式滾輪換頁的門檻（正規化後的像素）。
+ *
+ * 取 40 是夾在兩個實測量級之間：滑鼠一格 notch 最小的情況是 Firefox 的
+ * `deltaMode=1`／3 行（正規化後 48px，Chrome 的像素模式一格是 100px），所以門檻低於 48
+ * 才能保證「轉一格＝換一頁」；而觸控板一個 frame 只送個位數 px，40px 又高到不會被
+ * 手指靠上去的微小位移誤觸。
+ */
+const WHEEL_PAGE_THRESHOLD_PX = 40;
+
+/** `deltaMode=1`（行）換算成像素用的行高；瀏覽器自己的預設行高也是這個量級。 */
+const WHEEL_LINE_HEIGHT_PX = 16;
+
+/**
+ * 換頁後的冷卻時間：這段時間內的滾輪事件一律丟棄。
+ *
+ * 觸控板一次輕滑會連送數十個事件，沒有這道鎖會一口氣跳完整份簡報。
+ * 320ms 與編輯區滾輪換頁（`handleStageWheel`）用同一個量級，兩處手感一致。
+ */
+const WHEEL_PAGE_LOCK_MS = 320;
+
+/**
+ * 判定「同一個手勢」的事件間隔。
+ *
+ * 慣性滾動的事件是 ~60Hz 連續進來的（間隔 <20ms），只要還沒斷過這麼久就當成同一次
+ * 手勢：冷卻期會被一路往後推，尾巴才不會在鎖解開後又湊滿門檻多切一頁。
+ * 反過來，間隔超過這個值代表使用者重新出手，累積量歸零，免得兩次沒湊滿門檻的
+ * 輕碰隔了幾秒還被加在一起。
+ */
+const WHEEL_GESTURE_GAP_MS = 140;
+
+/**
+ * 冷卻可以被慣性尾巴往後推的上限（自換頁那一刻起算）。
+ *
+ * 沒有這個上限的話，持續轉滾輪的使用者（notch 間隔可能只有幾十毫秒）會被判成
+ * 「同一個手勢永遠沒結束」而卡在同一頁；有了上限，最壞情況仍能每 900ms 換一頁，
+ * 而 900ms 足以蓋掉一般觸控板甩動的慣性尾巴。
+ */
+const WHEEL_MAX_LOCK_MS = 900;
+
+/**
+ * 把滾輪位移正規化成像素，並取軸向位移較大的那一軸。
+ *
+ * `deltaMode` 不同時 delta 的量級差很多（行／頁 vs 像素），不換算就沒辦法用同一個門檻比。
+ */
+function normalizeWheelDelta(event: WheelEvent): number {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+  if (event.deltaMode === 1) return delta * WHEEL_LINE_HEIGHT_PX;
+  if (event.deltaMode === 2) return delta * window.innerHeight;
+  return delta;
+}
+
 export function Editor() {
   const [route, setRoute] = useState(() => window.location.pathname);
   const [projects, setProjects] = useState<PresentationProject[]>([]);
@@ -1873,6 +2059,14 @@ export function Editor() {
   const [textBoxes, setTextBoxes] = useState<EditableTextBox[]>([]);
   // 使用者是否編輯過目前版本的文字圖層；未編輯前自動儲存不得寫回伺服器（見自動儲存 effect）。
   const textDirty = useRef(false);
+  /**
+   * 還沒送到伺服器的文字圖層變更（`undefined` ＝ 沒有待寫入的東西）。
+   *
+   * 連 slide／version id 一起記，是因為換頁時的 flush 會在 `textBoxes` 已經換成新頁之後
+   * 才有機會跑；只有這份快照能把「舊那頁」的內容送回「舊那頁」去。與 `textDirty`
+   * 是同一件事的兩面，重新播種時要一起歸零。
+   */
+  const pendingTextSave = useRef<PendingTextSave>(undefined);
   const [selectedTextId, setSelectedTextId] = useState<string>();
   const [textThreshold, setTextThreshold] = useState(0.75);
   const [showTextThreshold, setShowTextThreshold] = useState(false);
@@ -1881,10 +2075,22 @@ export function Editor() {
   const [textLayerBusy, setTextLayerBusy] = useState(false);
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
+  /**
+   * 文字框剪貼簿。放 ref 而不是 state：它不影響任何畫面，進 state 只是讓每次複製多跑一輪 render。
+   * 也刻意不隨投影片重置——使用者複製一個文字框後常常是要貼到別頁去。
+   */
+  const textClipboard = useRef<EditableTextBox>(undefined);
   // 縮圖列容器：切換投影片時把選取項捲進可視範圍。
   const railRef = useRef<HTMLDivElement>(null);
   // 編輯區滾輪切換頁面的冷卻時間戳，避免慣性滾動一次跳好幾頁。
   const wheelCooldown = useRef(0);
+  /**
+   * 簡報模式滾輪換頁的手勢狀態。
+   *
+   * 放在 ref 而不是 effect 的區域變數：換頁會改 `presentationIndex`，effect 因此重掛，
+   * 區域變數會連同冷卻與累積量一起被重置，慣性尾巴就攔不住了。
+   */
+  const presentationWheel = useRef({ accumulated: 0, lastEventAt: 0, lockUntil: 0, lockCap: 0 });
   /**
    * 頁碼設定的樂觀本地值（未定義代表「就用伺服器上那份」）。
    *
@@ -2051,6 +2257,9 @@ export function Editor() {
     setTextUndo([]);
     setTextRedo([]);
     textDirty.current = false;
+    // 待寫入的變更跟著作廢：重新播種的來源就是伺服器上的最新內容（重新抽離會沿用同一個
+    // version id，只換 extractedAt），這時把舊文字框 flush 回去會蓋掉剛抽出來的結果。
+    pendingTextSave.current = undefined;
     setTextBoxes(structuredClone(selectedVersion?.textLayer?.boxes ?? []));
     setTextThreshold(selectedVersion?.textLayer?.threshold ?? 0.75);
     // extractedAt 列入依賴：重新抽離會沿用同一個 version id（jobs.ts replaceVersionId），
@@ -2128,21 +2337,44 @@ export function Editor() {
     const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, [activeJob?.id]);
+  /**
+   * 送出一筆待寫入的文字圖層變更（debounce 到期與換頁 flush 共用這條路）。
+   *
+   * 以物件識別當閘門：兩條路都可能先到，後到的那個必須整筆讓掉，否則同一份內容會送兩次
+   * PUT——而每一次 PUT 伺服器都要重跑 `renderComposite()`。錯誤訊息也因此只有一份。
+   */
+  const saveTextLayer = (pending: PendingTextSave) => {
+    if (pendingTextSave.current !== pending) return;
+    pendingTextSave.current = undefined;
+    setTextLayerBusy(true);
+    void api
+      .updateTextLayer(
+        pending.projectId,
+        pending.slideId,
+        pending.versionId,
+        pending.boxes,
+        pending.threshold,
+      )
+      .then(setProject)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "文字圖層自動儲存失敗"),
+      )
+      .finally(() => setTextLayerBusy(false));
+  };
   useEffect(() => {
     // 只在使用者實際編輯過（textDirty）才儲存：常駐的文字圖層不能把重新播種前的舊狀態寫回伺服器。
     // 刻意不依賴 textEditing——進入歷史版本預覽時，尚未儲存的編輯仍要照常送出。
     if (!project || !selected || !selectedVersion?.textLayer || !textDirty.current) return;
-    if (JSON.stringify(textBoxes) === JSON.stringify(selectedVersion.textLayer.boxes)) return;
-    const timer = setTimeout(() => {
-      setTextLayerBusy(true);
-      void api
-        .updateTextLayer(project.id, selected.id, selectedVersion.id, textBoxes, textThreshold)
-        .then(setProject)
-        .catch((reason: unknown) =>
-          setError(reason instanceof Error ? reason.message : "文字圖層自動儲存失敗"),
-        )
-        .finally(() => setTextLayerBusy(false));
-    }, 650);
+    if (sameBoxes(textBoxes, selectedVersion.textLayer.boxes)) return;
+    const pending: PendingTextSave = {
+      projectId: project.id,
+      slideId: selected.id,
+      versionId: selectedVersion.id,
+      boxes: textBoxes,
+      threshold: textThreshold,
+    };
+    pendingTextSave.current = pending;
+    const timer = setTimeout(() => saveTextLayer(pending), 650);
     return () => clearTimeout(timer);
   }, [
     project?.id,
@@ -2152,6 +2384,24 @@ export function Editor() {
     textBoxes,
     textThreshold,
   ]);
+  /**
+   * 換頁／換版本（以及整個編輯器卸載）前，把待寫入的變更立刻送出。
+   *
+   * 少了這一刀，650ms 的 debounce 會在換頁時無聲蒸發：cleanup 先 clearTimeout，緊接著
+   * 重新播種的 effect 把 `textDirty` 設回 false、`textBoxes` 換成新頁的內容——那次編輯
+   * 既沒送出、也沒保留，更不會報錯。鍵盤快捷鍵讓「Delete → ArrowDown」變成很自然的節奏，
+   * 撞上這個空窗遠比用滑鼠點工具列容易。
+   *
+   * 寫在 cleanup 而不是換頁的 handler 裡，是為了涵蓋所有換頁入口（縮圖列、方向鍵、滾輪、
+   * 版本切換、離開專案）。順序是安全的：React 會先跑完整批 effect 的 cleanup 才跑 effect
+   * 本體，所以這裡讀到的 `pendingTextSave` 一定還是舊那頁的快照。
+   */
+  useEffect(() => {
+    return () => {
+      const pending = pendingTextSave.current;
+      if (pending) saveTextLayer(pending);
+    };
+  }, [selected?.id, selectedVersion?.id]);
   useEffect(() => {
     if (!textEditing) return;
     const onUndo = (event: KeyboardEvent) => {
@@ -2184,6 +2434,91 @@ export function Editor() {
     window.addEventListener("keydown", onUndo);
     return () => window.removeEventListener("keydown", onUndo);
   }, [textBoxes, selectedTextId, textEditing, textRedo, textUndo]);
+  /**
+   * 編輯畫布是不是使用者當下真正在互動的那一面。
+   *
+   * 全域 keydown listener 掛在 window 上，而覆蓋層（簡報模式、影像編輯／風格選擇對話框、
+   * 系統設定）與別條路由（模型庫、風格庫）都只是蓋住畫布，不會卸載專案狀態——
+   * `textEditing` 仍為 true。不 gate 的話，在簡報模式按 Backspace（PowerPoint／Keynote
+   * 的「上一頁」反射動作）會無聲刪掉編輯頁的文字框，650ms 後還自動存回伺服器，
+   * 而且簡報換頁改的是 `presentationIndex`、被刪的不一定是正在放映的那頁。
+   * 抽成一份共用判定，是為了不讓它和方向鍵換頁那條 handler 日後各自漂移。
+   */
+  const canvasIsActiveSurface =
+    !!project &&
+    project.workflowStage === "editing" &&
+    route.startsWith("/projects/") &&
+    presentationIndex === null &&
+    !showImageEdit &&
+    !stylePickerVersion &&
+    !showSystemSettings;
+  /**
+   * 文字框層級的複製／貼上／刪除。
+   *
+   * `changeTextBoxes` 宣告在這裡（而不是工具列附近）是為了避開 TDZ：`const` 若放在
+   * `/models` 那幾個提早 return 之後，走那條路的 render 根本不會初始化它，
+   * 而 effect 在那次 render 重新註冊的話，下一次 ⌘V 就會丟
+   * `ReferenceError: Cannot access 'changeTextBoxes' before initialization`。
+   */
+  const changeTextBoxes = (next: EditableTextBox[]) => {
+    setTextUndo((history) => pushHistory(history, textBoxes));
+    setTextRedo([]);
+    textDirty.current = true;
+    setTextBoxes(next);
+  };
+  useEffect(() => {
+    if (!textEditing || !project || !canvasIsActiveSurface) return;
+    const { width: canvasWidth, height: canvasHeight } = project.canvas;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 長按會以 ~30/s 重複觸發：壓兩秒就貼出數十個框，每個都推一筆 undo 歷史，
+      // 一次長按足以把 TEXT_HISTORY_LIMIT（60）筆歷史全擠掉——那正是出事時唯一的退路。
+      if (event.repeat) return;
+      if (isTypingTarget(event.target)) return;
+      const selectedBox = textBoxes.find((box) => box.id === selectedTextId);
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey || event.metaKey) {
+        // Ctrl+Shift+V 是「貼成純文字」、⌘⌥V 等組合另有其意，一律不搶。
+        if (event.shiftKey || event.altKey) return;
+        if (key === "c") {
+          // 使用者圈選了頁面文字時，要複製的是那段文字而不是整個文字框，放行給瀏覽器。
+          if (!selectedBox || window.getSelection()?.toString()) return;
+          event.preventDefault();
+          textClipboard.current = structuredClone(selectedBox);
+          return;
+        }
+        if (key !== "v") return;
+        const source = textClipboard.current;
+        if (!source) return; // 剪貼簿空的就放行，不吞掉瀏覽器原生的貼上
+        event.preventDefault();
+        // 落點由「這一頁現在有哪些框」決定（見 pastePosition）：階梯不記在任何狀態裡，
+        // 跨頁往返與重新複製都不會退回被佔住的第一階。
+        const copy: EditableTextBox = {
+          ...structuredClone(source),
+          id: crypto.randomUUID(),
+          ...pastePosition(source, textBoxes, canvasWidth, canvasHeight),
+        };
+        changeTextBoxes([...textBoxes, copy]);
+        setSelectedTextId(copy.id);
+        return;
+      }
+      if (event.altKey) return;
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (!selectedBox) return;
+      event.preventDefault();
+      changeTextBoxes(textBoxes.filter((box) => box.id !== selectedBox.id));
+      setSelectedTextId(undefined);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // 變更一律走 changeTextBoxes，Ctrl+Z 復原與自動儲存才吃得到這些操作。
+  }, [
+    textBoxes,
+    selectedTextId,
+    textEditing,
+    canvasIsActiveSurface,
+    project?.canvas.width,
+    project?.canvas.height,
+  ]);
   useEffect(() => {
     if (!project || project.workflowStage !== "editing") return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2227,6 +2562,9 @@ export function Editor() {
         setPresentationIndex(nextIndex);
         return;
       }
+      // 與文字框快捷鍵共用同一份「畫布是不是當前互動面」判定：這條原本漏掉系統設定
+      // 對話框與別條路由（模型庫、風格庫都不會清掉 project），方向鍵會在那些畫面上換頁。
+      if (!canvasIsActiveSurface) return;
       if (isFormControl || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
       const currentIndex = Math.max(
         0,
@@ -2243,7 +2581,15 @@ export function Editor() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [imageEditBusy, presentationIndex, project, selectedId, showImageEdit, stylePickerVersion]);
+  }, [
+    canvasIsActiveSurface,
+    imageEditBusy,
+    presentationIndex,
+    project,
+    selectedId,
+    showImageEdit,
+    stylePickerVersion,
+  ]);
   useEffect(() => {
     if (presentationIndex === null) return;
     const onFullscreenChange = () => {
@@ -2252,6 +2598,47 @@ export function Editor() {
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, [presentationIndex]);
+  // 簡報模式滾輪換頁：向下／向右一頁，向上／向左一頁，到頭到尾就停住不迴圈。
+  // listener 只在簡報模式期間存在（依賴 presentationIndex），離開後編輯畫面的滾輪完全不受影響。
+  useEffect(() => {
+    if (presentationIndex === null || !project) return;
+    const lastIndex = project.slides.length - 1;
+    const onWheel = (event: WheelEvent) => {
+      // Ctrl／⌘＋滾輪是瀏覽器的縮放手勢，不是換頁；連它一起擋掉會讓簡報模式無法縮放。
+      if (event.ctrlKey || event.metaKey) return;
+      // 簡報是覆蓋全螢幕的，滾輪不該讓底下的編輯畫面捲動；macOS 上不擋還會整頁彈跳。
+      // 要能 preventDefault 就必須以 passive: false 註冊。
+      event.preventDefault();
+      const gesture = presentationWheel.current;
+      const nowMs = Date.now();
+      const newGesture = nowMs - gesture.lastEventAt >= WHEEL_GESTURE_GAP_MS;
+      gesture.lastEventAt = nowMs;
+      if (newGesture) gesture.accumulated = 0;
+      if (nowMs < gesture.lockUntil) {
+        gesture.accumulated = 0;
+        // 事件還在連續進來 → 同一次手勢（含慣性尾巴）還沒結束，把鎖往後推；
+        // 但不超過 lockCap，否則一直轉滾輪的人會永遠停在同一頁。
+        gesture.lockUntil = Math.min(
+          gesture.lockCap,
+          Math.max(gesture.lockUntil, nowMs + WHEEL_GESTURE_GAP_MS),
+        );
+        return;
+      }
+      gesture.accumulated += normalizeWheelDelta(event);
+      if (Math.abs(gesture.accumulated) < WHEEL_PAGE_THRESHOLD_PX) return;
+      const forward = gesture.accumulated > 0;
+      gesture.accumulated = 0;
+      gesture.lockUntil = nowMs + WHEEL_PAGE_LOCK_MS;
+      gesture.lockCap = nowMs + WHEEL_MAX_LOCK_MS;
+      // 邊界夾住的做法與鍵盤換頁一致；到頭到尾時 nextIndex 不變，不迴圈。
+      const nextIndex = forward
+        ? Math.min(lastIndex, presentationIndex + 1)
+        : Math.max(0, presentationIndex - 1);
+      if (nextIndex !== presentationIndex) setPresentationIndex(nextIndex);
+    };
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [presentationIndex, project?.slides.length]);
   // 選取的縮圖若超出縮圖列可視範圍（例如以方向鍵切換），自動捲入視野。
   useEffect(() => {
     if (!selectedId) return;
@@ -2487,6 +2874,7 @@ export function Editor() {
       return undefined;
     }
   };
+  const textLayerHint = `${textBoxes.length} 個文字框 · ⌘/Ctrl+C 複製 · ⌘/Ctrl+V 貼上 · Delete 刪除 · 單擊選取 · 雙擊編輯文字`;
   // 面板與預覽一律讀樂觀值；只有它才會在滑桿還沒 debounce 出去時就跟著動。
   const pageNumber = pageNumberDraft ?? project.pageNumber;
   const pageNumberProject = pageNumberDraft ? { ...project, pageNumber: pageNumberDraft } : project;
@@ -2544,6 +2932,8 @@ export function Editor() {
       0,
       project.slides.findIndex((slide) => slide.id === selected?.id),
     );
+    // 手勢狀態跟著這次簡報從零開始：上一輪留下的冷卻會把進場後第一下滾輪吃掉。
+    presentationWheel.current = { accumulated: 0, lastEventAt: 0, lockUntil: 0, lockCap: 0 };
     setPresentationIndex(index);
     const request = document.documentElement.requestFullscreen?.();
     if (request) void request.catch(() => undefined);
@@ -2572,17 +2962,26 @@ export function Editor() {
       setStylePickerBusy(false);
     }
   };
-  const changeTextBoxes = (next: EditableTextBox[]) => {
-    setTextUndo((history) => pushHistory(history, textBoxes));
-    setTextRedo([]);
-    textDirty.current = true;
-    setTextBoxes(next);
-  };
   const selectedText = textBoxes.find((box) => box.id === selectedTextId);
   const patchSelectedText = (patch: Partial<EditableTextBox>) => {
     if (!selectedTextId) return;
     changeTextBoxes(
       textBoxes.map((box) => (box.id === selectedTextId ? { ...box, ...patch } : box)),
+    );
+  };
+  /**
+   * 關閉底色：把兩個 optional 欄位整個**移除**，而不是設成 undefined。
+   * `patchSelectedText` 的 `{ ...box, ...patch }` 只能覆寫既有 key，刪不掉欄位；
+   * 而 schema 開了 `exactOptionalPropertyTypes`，顯式指定 undefined 型別也不會過。
+   */
+  const clearSelectedTextBackground = () => {
+    if (!selectedTextId) return;
+    changeTextBoxes(
+      textBoxes.map((box) => {
+        if (box.id !== selectedTextId) return box;
+        const { backgroundColor: _color, backgroundOpacity: _opacity, ...rest } = box;
+        return rest;
+      }),
     );
   };
   const startTextExtraction = async () => {
@@ -2873,10 +3272,10 @@ export function Editor() {
         )}
         {activeTextLayer && (
           <div className="text-layer-toolbar">
-            <span>
-              {textLayerBusy
-                ? "正在重繪並自動儲存…"
-                : `${textBoxes.length} 個文字框 · 單擊選取 · 雙擊編輯文字`}
+            {/* 這個 span 是 nowrap + ellipsis：快捷鍵擺在字串尾端，畫布欄一窄就正好被吃掉，
+                而它是這個功能唯一的發現途徑，所以排在操作說明前面，另外用 title 補完整內容。 */}
+            <span title={textLayerHint}>
+              {textLayerBusy ? "正在重繪並自動儲存…" : textLayerHint}
             </span>
             <button
               onClick={() => {
@@ -3456,6 +3855,61 @@ export function Editor() {
                         />
                       </label>
                     </div>
+                    <div className="text-property-grid background-row">
+                      <label className="background-toggle">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selectedText.backgroundColor)}
+                          onChange={(event) => {
+                            if (!event.target.checked) {
+                              clearSelectedTextBackground();
+                              return;
+                            }
+                            patchSelectedText({
+                              backgroundColor: TEXT_BACKGROUND_DEFAULT_COLOR,
+                              backgroundOpacity: 1,
+                            });
+                          }}
+                        />
+                        底色
+                      </label>
+                      <label>
+                        色票
+                        <input
+                          type="color"
+                          aria-label="文字框底色"
+                          disabled={!selectedText.backgroundColor}
+                          value={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
+                          onChange={(event) =>
+                            patchSelectedText({ backgroundColor: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        底色不透明度
+                        <input
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          disabled={!selectedText.backgroundColor}
+                          value={selectedText.backgroundOpacity ?? 1}
+                          onChange={(event) => {
+                            // 數字框可以被清空或打進超界值；schema 只收 0–1，
+                            // 這裡先夾好再寫入，否則存檔時整批文字框會被伺服器擋下。
+                            // 清空／非數字一律保留原值：`Number("")` 是 0（而且是有限數），
+                            // 照寫回去等於底色無聲消失，勾選框卻還是勾的。
+                            const raw = event.target.value.trim();
+                            if (!raw) return;
+                            const next = Number(raw);
+                            if (!Number.isFinite(next)) return;
+                            patchSelectedText({
+                              backgroundOpacity: Math.min(1, Math.max(0, next)),
+                            });
+                          }}
+                        />
+                      </label>
+                    </div>
                   </>
                 )}
               </div>
@@ -3925,7 +4379,7 @@ export function Editor() {
             >
               →
             </button>
-            <small>方向鍵／Space 換頁 · Esc 離開</small>
+            <small>方向鍵／Space／滾輪 換頁 · Esc 離開</small>
             <button
               className="presentation-close"
               aria-label="離開簡報模式"

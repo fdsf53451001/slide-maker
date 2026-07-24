@@ -5,6 +5,7 @@ import {
   createProject,
   createDefaultStyle,
   createSlidesFromBrief,
+  editableTextBoxSchema,
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
@@ -2860,6 +2861,667 @@ describe("STEP 3 自動搜尋網路資源", () => {
   });
 });
 
+describe("文字圖層鍵盤快捷鍵", () => {
+  // 其中一條會開系統設定對話框；不重置的話設定會漏到後面的測試。
+  // 另有一條會把網址推到 /styles 去驗路由 gate：不推回來的話，後面測試裡新掛的 Editor
+  // 會以 /styles 當初始路由開在風格庫畫面，連專案都點不到。
+  afterEach(() => {
+    resetSystemSettings();
+    window.history.pushState({}, "", "/");
+  });
+
+  /** 兩頁都帶可編輯文字圖層的專案：進入專案就會直接是文字圖層編輯狀態。 */
+  function textLayerProject(
+    topic: string,
+    boxOverrides: Partial<import("@slide-maker/core").EditableTextBox> = {},
+  ) {
+    const project = createProject({ topic, brief: { desiredSlideCount: 2 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    for (const slide of project.slides) {
+      slide.versions = [
+        {
+          id: `${slide.id}-v1`,
+          imagePath: `assets/generated/${slide.id}.png`,
+          prompt: "",
+          providerId: "mock-image",
+          model: "mock",
+          parameters: {},
+          styleVersion: 1,
+          sources: [],
+          createdAt: now,
+          textLayer: {
+            originalVersionId: `${slide.id}-v0`,
+            backgroundPath: `assets/generated/${slide.id}-clean.png`,
+            compositePath: `assets/generated/${slide.id}-composite.png`,
+            threshold: 0.75,
+            renderRevision: 0,
+            boxes: [makeBox({ id: `${slide.id}-text-1`, ...boxOverrides })],
+            extractedAt: now,
+            updatedAt: now,
+          },
+        },
+      ];
+      slide.currentVersionId = `${slide.id}-v1`;
+    }
+    return project;
+  }
+
+  function stubTextLayerApi(
+    project: PresentationProject,
+    // 「編輯當頁圖片」按鈕要 provider 具備 imageEditing 才會啟用，開得了對話框才驗得到 gate。
+    capabilities: Record<string, boolean> = { fullSlideGeneration: true },
+  ) {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities,
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /**
+   * 會把 PUT /text-layer 的內容寫回專案物件的 stub。
+   *
+   * 切頁再切回來時文字框是從專案重新播種的；不落地的話，連「已經存好的編輯」在切回來時
+   * 都會憑空消失，就分不出哪些是真的沒存到。
+   */
+  function stubPersistingTextLayerApi(project: PresentationProject) {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      const written = /\/slides\/([^/]+)\/versions\/([^/]+)\/text-layer$/.exec(path);
+      if (written && init?.method === "PUT") {
+        const version = project.slides
+          .find((slide) => slide.id === decodeURIComponent(written[1]!))
+          ?.versions.find((candidate) => candidate.id === decodeURIComponent(written[2]!));
+        const body = JSON.parse(String(init.body)) as {
+          boxes: import("@slide-maker/core").EditableTextBox[];
+        };
+        if (version?.textLayer) version.textLayer = { ...version.textLayer, boxes: body.boxes };
+        return Response.json(project);
+      }
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** 等畫布真的換到指定那一頁；兩頁框數一樣時，只看框數是分不出來的。 */
+  const waitForSlide = (slideId: string) =>
+    waitFor(() =>
+      expect(document.querySelector<HTMLImageElement>(".text-layer-canvas img")!.src).toContain(
+        slideId,
+      ),
+    );
+
+  /** 進入專案並回傳畫布上的文字框元素（依 DOM 順序，與 textBoxes 陣列同序）。 */
+  const enterProject = async (topic: string) => {
+    fireEvent.click(await screen.findByText(topic));
+    await screen.findByLabelText("可編輯簡報文字");
+  };
+  const boxElements = () => [...document.querySelectorAll<HTMLElement>(".editable-text-box")];
+
+  it("複製再貼上會多一個文字框，且階梯式錯開不疊在原位", async () => {
+    const project = textLayerProject("文字框複製貼上");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("文字框複製貼上");
+    fireEvent.pointerDown(boxElements()[0]!);
+
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    // 位置以百分比定位；來源 x=100 → 副本 x=124（+24）。
+    expect(boxElements()[1]!.style.left).toBe(`${(124 / 1920) * 100}%`);
+    expect(boxElements()[1]!.style.top).toBe(`${(104 / 1080) * 100}%`);
+
+    // 連續貼上要再往下錯開一格，否則第二份會完全蓋住第一份。
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+    expect(boxElements()[2]!.style.left).toBe(`${(148 / 1920) * 100}%`);
+    expect(screen.getByText(/3 個文字框/)).toBeTruthy();
+  });
+
+  it("貼上的副本自己拿到新 id，並成為新的選取項", async () => {
+    const project = textLayerProject("貼上後選取副本");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("貼上後選取副本");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", metaKey: true });
+    fireEvent.keyDown(window, { key: "v", metaKey: true });
+
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    // 選取狀態跟著副本走；共用 id 的話兩個框會同時亮起來。
+    expect(boxElements()[0]!.className).not.toContain("selected");
+    expect(boxElements()[1]!.className).toContain("selected");
+  });
+
+  it("Delete 刪掉選取的文字框，Ctrl+Z 還救得回來", async () => {
+    const project = textLayerProject("文字框刪除");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("文字框刪除");
+    fireEvent.pointerDown(boxElements()[0]!);
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(0));
+
+    // 走 changeTextBoxes 才會推 undo 歷史。
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+  });
+
+  it("Backspace 與 Delete 等價，但沒有選取時不吞掉按鍵", async () => {
+    const project = textLayerProject("文字框退格刪除");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("文字框退格刪除");
+
+    // 未選取任何框：放行給瀏覽器（例如上一頁），文字框陣列不動。
+    const ignored = fireEvent.keyDown(window, { key: "Backspace" });
+    expect(ignored).toBe(true);
+    expect(boxElements()).toHaveLength(1);
+
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "Backspace" });
+    await waitFor(() => expect(boxElements()).toHaveLength(0));
+  });
+
+  it("正在編輯文字內容的框裡，這三個鍵維持瀏覽器原生行為", async () => {
+    const project = textLayerProject("編輯中不攔截");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("編輯中不攔截");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+
+    // 雙擊進入文字內容編輯：textarea 不再是 readOnly。
+    fireEvent.doubleClick(boxElements()[0]!);
+    const textarea = screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement;
+    expect(textarea.readOnly).toBe(false);
+
+    fireEvent.keyDown(textarea, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(textarea, { key: "Delete" });
+    fireEvent.keyDown(textarea, { key: "Backspace" });
+    // 三個鍵都不得改動文字框陣列——貼上沒有多一個框，刪除也沒有刪掉整個框。
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+    expect(screen.getByText(/1 個文字框/)).toBeTruthy();
+  });
+
+  it("剪貼簿跨投影片保留，貼到別頁時階梯重新從第一階算", async () => {
+    // 每貼一次就把剪貼簿換成剛貼上那份的話，同一份內容貼到第 2、3、4 頁會 +24／+48／+72
+    // 一路斜著漂移；階梯只該發生在同一頁重複貼上。
+    const project = textLayerProject("跨頁貼上");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("跨頁貼上");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(document.querySelector<HTMLImageElement>(".text-layer-canvas img")!.src).toContain(
+        project.slides[1]!.id,
+      ),
+    );
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(boxElements()[1]!.style.left).toBe(`${(124 / 1920) * 100}%`);
+  });
+
+  it("貼齊右下緣的框改成往回位移，副本不會原地重疊", async () => {
+    // 夾在畫布內會讓 x/y 原封不動，副本正好蓋在來源上；右對齊頁尾、底部圖說都是這種框。
+    const project = textLayerProject("貼齊邊緣", { x: 1920 - 300, y: 1080 - 60 });
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("貼齊邊緣");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(boxElements()[1]!.style.left).toBe(`${((1920 - 300 - 24) / 1920) * 100}%`);
+    expect(boxElements()[1]!.style.top).toBe(`${((1080 - 60 - 24) / 1080) * 100}%`);
+    // 連續貼上仍要一階一階退，不可停在同一點。
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+    expect(boxElements()[2]!.style.left).toBe(`${((1920 - 300 - 48) / 1920) * 100}%`);
+  });
+
+  it("比畫布還大的框也看得出位移，不會兩軸都被夾成 0", async () => {
+    const project = textLayerProject("超出畫布的框", { x: 0, y: 0, width: 2400, height: 1200 });
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("超出畫布的框");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(boxElements()[1]!.style.left).toBe(`${(24 / 1920) * 100}%`);
+    expect(boxElements()[1]!.style.top).toBe(`${(24 / 1080) * 100}%`);
+  });
+
+  it("剪貼簿為空時 ⌘V 放行，沒有選取時 ⌘C 放行", async () => {
+    const project = textLayerProject("空剪貼簿放行");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("空剪貼簿放行");
+
+    // 都不 preventDefault，瀏覽器原生的複製／貼上照常運作。
+    expect(fireEvent.keyDown(window, { key: "v", ctrlKey: true })).toBe(true);
+    expect(fireEvent.keyDown(window, { key: "c", ctrlKey: true })).toBe(true);
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("長按不會連發：event.repeat 一律忽略", async () => {
+    // 壓住 ⌘V 兩秒就是數十個框，每個都推一筆 undo 歷史，足以把 60 筆歷史全擠掉。
+    const project = textLayerProject("長按貼上");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("長按貼上");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    for (let i = 0; i < 10; i += 1)
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true, repeat: true });
+    fireEvent.keyDown(window, { key: "Delete", repeat: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+  });
+
+  it("⌘⇧V 與 ⌥ 組合不搶：那是貼成純文字等別的手勢", async () => {
+    const project = textLayerProject("修飾鍵組合");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("修飾鍵組合");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+
+    expect(fireEvent.keyDown(window, { key: "v", ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(fireEvent.keyDown(window, { key: "v", metaKey: true, altKey: true })).toBe(true);
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("簡報模式中按 Delete 不會偷偷刪掉編輯頁的文字框", async () => {
+    // 焦點停在「▶ 簡報模式」按鈕上，Backspace 是 PowerPoint／Keynote 的上一頁反射動作；
+    // 沒有 gate 的話會刪掉 selected 那頁的框（不一定是正在放映的那頁）並自動存回伺服器。
+    const project = textLayerProject("簡報模式不刪框");
+    const fetchMock = stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("簡報模式不刪框");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    await waitFor(() => expect(document.querySelector(".presentation-stage")).not.toBeNull());
+
+    fireEvent.keyDown(window, { key: "Backspace" });
+    fireEvent.keyDown(window, { key: "Delete" });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+    // 自動儲存也不該被觸發：沒有任何一筆 text-layer 寫入。
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/text-layer")),
+    ).toHaveLength(0);
+  });
+
+  it("系統設定對話框開著時，快捷鍵不會打到底下的畫布", async () => {
+    const project = textLayerProject("對話框擋住畫布");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("對話框擋住畫布");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "系統設定" }));
+    expect(await screen.findByLabelText("Web Search")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("焦點停在唯讀 textarea 上時快捷鍵照樣生效", async () => {
+    // 單擊選取走的是 pointerdown + preventDefault，焦點不會移到畫布；而剛結束編輯的那個
+    // textarea 仍握著焦點、只是變回唯讀。真實瀏覽器裡 keydown 的 target 常常就是它，
+    // 不是 window——這正是 isTypingTarget 對 textarea 要看 readOnly 的理由。
+    // 其餘測試一律往 window 派事件，走不到這條分支。
+    const project = textLayerProject("唯讀 textarea 焦點");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("唯讀 textarea 焦點");
+    fireEvent.pointerDown(boxElements()[0]!);
+    const textarea = screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement;
+    expect(textarea.readOnly).toBe(true);
+
+    fireEvent.keyDown(textarea, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(textarea, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    fireEvent.keyDown(screen.getAllByLabelText("可編輯簡報文字")[1]!, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+  });
+
+  it("面板輸入框還握著焦點時，Delete 留給輸入框、不刪掉選取的文字框", async () => {
+    // isTypingTarget 放行 input/select 的那一段：面板欄位裡的 Delete 是刪字元，
+    // 攔下來會讓數字欄位變成刪不掉。
+    const project = textLayerProject("面板欄位焦點");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("面板欄位焦點");
+    fireEvent.pointerDown(boxElements()[0]!);
+    const lineHeight = screen.getByLabelText("行高");
+
+    expect(fireEvent.keyDown(lineHeight, { key: "Delete" })).toBe(true);
+    expect(fireEvent.keyDown(lineHeight, { key: "v", ctrlKey: true })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("點選文字框會把焦點收回畫布：剛改完面板欄位，Delete 照樣刪得掉", async () => {
+    // 選取走 pointerdown + preventDefault（拖曳必須擋掉原生行為），連帶擋掉瀏覽器移動焦點：
+    // 焦點還留在剛才那個面板欄位上，接著按 Delete 會被 isTypingTarget 放行，什麼都不會發生
+    // 也沒有任何回饋——使用者體感是「時靈時不靈」。修法是選取時主動把焦點搬到畫布容器，
+    // 而不是放寬 isTypingTarget（那會讓面板欄位裡的刪字元變成刪框）。
+    const project = textLayerProject("選取時收回焦點");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("選取時收回焦點");
+    fireEvent.pointerDown(boxElements()[0]!);
+    const lineHeight = screen.getByLabelText("行高") as HTMLInputElement;
+    lineHeight.focus();
+    expect(document.activeElement).toBe(lineHeight);
+
+    fireEvent.pointerDown(boxElements()[0]!);
+    const canvas = document.querySelector(".text-layer-canvas");
+    expect(document.activeElement).toBe(canvas);
+    // 真實瀏覽器的 keydown target 就是這個容器（測試其餘處一律往 window 派事件）。
+    fireEvent.keyDown(canvas!, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(0));
+  });
+
+  it("圖片編輯對話框開著時，快捷鍵不會打到底下的畫布", async () => {
+    const project = textLayerProject("圖片編輯對話框擋住畫布");
+    stubTextLayerApi(project, { fullSlideGeneration: true, imageEditing: true });
+
+    render(<Editor />);
+    await enterProject("圖片編輯對話框擋住畫布");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "編輯當頁圖片" }));
+    expect(await screen.findByRole("dialog", { name: "編輯當頁圖片" })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("風格選擇對話框開著時，快捷鍵不會打到底下的畫布", async () => {
+    const project = textLayerProject("風格選擇器擋住畫布");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("風格選擇器擋住畫布");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "＋ 將圖片加入風格庫" }));
+    expect(await screen.findByRole("dialog", { name: "選擇風格" })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("切到別條路由（風格庫）後，快捷鍵不會打到還留著的專案狀態", async () => {
+    // /styles 與 /models 都只是提早 return 換一個畫面，project 與 textEditing 都還在、
+    // effect 也還掛著；少了路由那一項，在風格庫按 Delete 會刪掉背景那頁的文字框。
+    const project = textLayerProject("風格庫路由");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("風格庫路由");
+    fireEvent.pointerDown(boxElements()[0]!);
+    window.history.pushState({}, "", "/styles");
+    fireEvent.popState(window);
+    await waitFor(() => expect(document.querySelector(".text-layer-canvas")).toBeNull());
+
+    fireEvent.keyDown(window, { key: "Delete" });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    window.history.pushState({}, "", `/projects/${project.id}`);
+    fireEvent.popState(window);
+    await screen.findByLabelText("可編輯簡報文字");
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("使用者圈選了頁面文字時，⌘C 讓給瀏覽器、剪貼簿不被換掉", async () => {
+    const project = textLayerProject("圈選文字時不搶複製");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("圈選文字時不搶複製");
+    fireEvent.pointerDown(boxElements()[0]!);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      toString: () => "使用者圈起來的一段字",
+    } as unknown as Selection);
+
+    expect(fireEvent.keyDown(window, { key: "c", ctrlKey: true })).toBe(true);
+    // 剪貼簿沒被寫入，所以 ⌘V 也一併放行、不會多出框。
+    expect(fireEvent.keyDown(window, { key: "v", ctrlKey: true })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(1);
+  });
+
+  it("重新按 ⌘C 不會把副本壓回第一階（那一階已經被佔住）", async () => {
+    // 落點看的是「這一階有沒有被佔住」而不是記著的階數，所以重新複製同一個框不會讓
+    // 下一份副本疊回第一份上——使用者看到的會是「⌘V 沒反應」，要拖走才發現有兩個。
+    const project = textLayerProject("重新複製歸零");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("重新複製歸零");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+    expect(boxElements()[2]!.style.left).toBe(`${(148 / 1920) * 100}%`);
+
+    // 重新複製同一個來源框：第一、二階都有人了，副本接著落到第三階。
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(4));
+    expect(boxElements()[3]!.style.left).toBe(`${(172 / 1920) * 100}%`);
+
+    // 把中間那份刪掉，空出來的位置會被下一份副本重新使用。
+    fireEvent.pointerDown(boxElements()[1]!);
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(4));
+    expect(boxElements()[3]!.style.left).toBe(`${(124 / 1920) * 100}%`);
+  });
+
+  it("貼上與刪除的復原：工具列按鈕與 Ctrl+Z 走同一條歷史", async () => {
+    const project = textLayerProject("復原一致性");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("復原一致性");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+
+    // 按鈕復原 → 鍵盤復原 → 按鈕重做 → 鍵盤重做，四者必須在同一條堆疊上前後接得起來。
+    fireEvent.click(screen.getByRole("button", { name: "復原" }));
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "重做" }));
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    // 再重做一次是把那次刪除也重做回來，所以回到 1 個框。
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+  });
+
+  it("有文字圖層時進簡報模式：滾輪只換頁，文字框一個都沒動", async () => {
+    // 兩條 handler 同時掛在 window 上；滾輪換的是 presentationIndex，而文字快捷鍵改的是
+    // 編輯頁那份 textBoxes。互相踩到的話會是「放映時滑一下，編輯頁的字就少一塊」。
+    const project = textLayerProject("簡報滾輪與文字層並存");
+    const fetchMock = stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("簡報滾輪與文字層並存");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+    expect(screen.getByText("1 / 2")).toBeTruthy();
+
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("2 / 2")).toBeTruthy();
+    // 滾輪期間夾雜的複製／貼上／刪除同樣不得生效。
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "Delete" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/text-layer")),
+    ).toHaveLength(0);
+
+    // 離開簡報模式後兩者都回到正常：快捷鍵生效，滾輪不再被攔。
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(fireEvent.wheel(window, { deltaY: 200, cancelable: true })).toBe(true);
+  });
+
+  it("回到前一頁再貼上會接著往下疊，不會與該頁既有副本重疊", async () => {
+    // 離開該頁再回來時，落點仍要看「這一頁現在有哪些框」：退回第一階的話新副本會逐像素
+    // 疊在上一次貼的那份上，畫面上完全看不出 ⌘V 有作用。
+    const project = textLayerProject("階梯跨頁往返");
+    stubPersistingTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("階梯跨頁往返");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    // 等自動儲存把副本落地，切回這一頁時它才還在。
+    await waitFor(() => expect(project.slides[0]!.versions[0]!.textLayer!.boxes).toHaveLength(2), {
+      timeout: 3_000,
+    });
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    await waitForSlide(project.slides[1]!.id);
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    await waitForSlide(project.slides[0]!.id);
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+
+    // 第三個框往下疊一階，不與第二個重疊。
+    expect(boxElements()[2]!.style.left).not.toBe(boxElements()[1]!.style.left);
+    expect(boxElements()[2]!.style.left).toBe(`${(148 / 1920) * 100}%`);
+    expect(boxElements()[2]!.style.top).toBe(`${(128 / 1080) * 100}%`);
+  });
+
+  it("刪除後在 650ms 內切頁，這一刀會在換頁前送出", async () => {
+    // 自動儲存的 debounce 綁在 selected.id 上：切頁時 cleanup 把計時器清掉，重新播種又把
+    // textDirty 設回 false。沒有換頁前的 flush，這次刪除就既沒送出也沒保留、還不會報錯；
+    // 鍵盤快捷鍵讓「Delete 之後馬上按方向鍵」變成很自然的節奏，撞上的機率遠高於用按鈕操作。
+    const project = textLayerProject("刪除後立刻切頁");
+    const fetchMock = stubPersistingTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("刪除後立刻切頁");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(boxElements()).toHaveLength(0));
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    await waitForSlide(project.slides[1]!.id);
+    // 送的必須是「舊那頁」：debounce 到期前就已經寫進第一頁的版本裡。
+    await waitFor(() => expect(project.slides[0]!.versions[0]!.textLayer!.boxes).toHaveLength(0));
+    expect(project.slides[1]!.versions[0]!.textLayer!.boxes).toHaveLength(1);
+
+    // 換頁 flush 與原本的 debounce 不得各送一次。
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/text-layer")),
+    ).toHaveLength(1);
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    await waitForSlide(project.slides[0]!.id);
+    expect(boxElements()).toHaveLength(0);
+  });
+});
+
 describe("系統設定對話框", () => {
   afterEach(() => resetSystemSettings());
 
@@ -2905,5 +3567,470 @@ describe("系統設定對話框", () => {
       "cached",
       "disabled",
     ]);
+  });
+});
+
+describe("簡報模式滾輪換頁", () => {
+  function wheelProject(topic: string) {
+    const project = createProject({ topic, brief: { desiredSlideCount: 3 } });
+    project.workflowStage = "editing";
+    return project;
+  }
+
+  function stubWheelApi(project: PresentationProject) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const raw =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const path = new URL(raw, "http://local.test").pathname;
+        if (path === "/api/projects") return Response.json([project]);
+        if (path === "/api/providers")
+          return Response.json([
+            {
+              id: "mock-image",
+              name: "Mock",
+              availability: { status: "available" },
+              capabilities: { fullSlideGeneration: true },
+            },
+          ]);
+        if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+        if (path === "/api/model-library")
+          return Response.json({ connections: [], models: [], combinations: [] });
+        return Response.json(project);
+      }),
+    );
+  }
+
+  /**
+   * 節流是以 `Date.now()` 的時間戳判斷的；真的去等 320ms 會讓測試又慢又飄，
+   * 所以把時鐘接管過來，由測試決定「經過了多久」。
+   */
+  function fakeClock() {
+    let current = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => current);
+    return (ms: number) => {
+      current += ms;
+    };
+  }
+
+  /** 進入專案並開啟簡報模式；回傳時畫面上已經是全螢幕簡報，停在第 1 頁。 */
+  const enterPresentation = async (project: PresentationProject) => {
+    fireEvent.click(await screen.findByText(project.name));
+    expect(await screen.findByDisplayValue(project.slides[0]!.purpose)).toBeTruthy();
+    fireEvent.click(await screen.findByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+  };
+
+  it("向下／向右滾動切下一頁，向上／向左切上一頁", async () => {
+    const project = wheelProject("滾輪換頁");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+
+    fireEvent.wheel(window, { deltaY: 120 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    advance(500);
+    fireEvent.wheel(window, { deltaY: -120 });
+    expect(await screen.findByText("1 / 3")).toBeTruthy();
+
+    // 橫向滾動（觸控板左右滑）也要能換頁：取絕對值較大的那一軸。
+    advance(500);
+    fireEvent.wheel(window, { deltaX: 120, deltaY: 0 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+  });
+
+  it("滑鼠一格 notch（deltaMode=1，以行為單位）就能換一頁", async () => {
+    const project = wheelProject("滾輪一格換頁");
+    stubWheelApi(project);
+    fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // Firefox 一格 notch 是 3 行；正規化成 48px 才過得了 40px 的門檻。
+    fireEvent.wheel(window, { deltaY: 3, deltaMode: 1 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+  });
+
+  it("到頭到尾就停住，不會迴圈到另一端", async () => {
+    const project = wheelProject("滾輪邊界");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    fireEvent.wheel(window, { deltaY: -300 });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+
+    for (let step = 0; step < 4; step += 1) {
+      advance(500);
+      fireEvent.wheel(window, { deltaY: 300 });
+    }
+    expect(await screen.findByText("3 / 3")).toBeTruthy();
+  });
+
+  it("一次觸控板手勢只切一頁，慣性尾巴不會連跳", async () => {
+    const project = wheelProject("滾輪節流");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // 60Hz 的慣性事件流：第一批湊滿門檻換一頁後，剩下的全被冷卻鎖吃掉。
+    for (let step = 0; step < 30; step += 1) {
+      fireEvent.wheel(window, { deltaY: 60 });
+      advance(16);
+    }
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    // 手勢結束後重新出手才會再切一頁。
+    advance(500);
+    fireEvent.wheel(window, { deltaY: 120 });
+    expect(await screen.findByText("3 / 3")).toBeTruthy();
+  });
+
+  it("沒湊滿門檻的輕碰不換頁，也不會跨手勢累加", async () => {
+    const project = wheelProject("滾輪門檻");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // 單次 30px 不到 40px 的門檻。
+    fireEvent.wheel(window, { deltaY: 30 });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+    // 隔了一段時間的第二次輕碰算新手勢，殘量歸零；兩次相加雖然過門檻也不該換頁。
+    advance(500);
+    fireEvent.wheel(window, { deltaY: 30 });
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+  });
+
+  it("離開簡報模式後不再攔截滾輪", async () => {
+    const project = wheelProject("滾輪離場");
+    stubWheelApi(project);
+    fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // 簡報模式中要擋掉預設捲動，否則 macOS 上整頁會跟著彈跳。
+    expect(fireEvent.wheel(window, { deltaY: 200, cancelable: true })).toBe(false);
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
+
+    // listener 已經拆掉：事件不再被 preventDefault，也不會再開回簡報模式。
+    expect(fireEvent.wheel(window, { deltaY: 200, cancelable: true })).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull();
+  });
+
+  it("Ctrl／⌘＋滾輪是瀏覽器縮放手勢，不攔也不換頁", async () => {
+    const project = wheelProject("滾輪縮放放行");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // 無條件 preventDefault 會連瀏覽器縮放一起擋掉，簡報中就再也放大不了。
+    expect(fireEvent.wheel(window, { deltaY: 200, ctrlKey: true, cancelable: true })).toBe(true);
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+    advance(500);
+    expect(fireEvent.wheel(window, { deltaY: 200, metaKey: true, cancelable: true })).toBe(true);
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+
+    // 一般滾輪不受影響，照常換頁。
+    advance(500);
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+  });
+
+  it("換頁後的冷卻窗：220ms 的下一下不算數，再等一下才算", async () => {
+    // 只有「間隔 500ms 一定換頁」的測試時，冷卻長度在 100ms 與 480ms 之間怎麼改都不會轉紅
+    // （手勢間隔會一路把鎖往後推，蓋掉短冷卻的差別）。這條把冷卻夾在 140ms 與 400ms 之間。
+    const project = wheelProject("滾輪冷卻窗");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    // 220ms：已經是新手勢（>140ms）但還在冷卻裡，不換頁。
+    advance(220);
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+
+    // 再 200ms（距換頁 420ms）冷卻已解，這一下要算數。
+    advance(200);
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("3 / 3")).toBeTruthy();
+  });
+
+  it("一直轉滾輪不會卡在同一頁：冷卻最多被慣性尾巴推到 900ms", async () => {
+    // 冷卻上限若被放大（或拿掉），持續進來的事件會把鎖無限往後推，使用者會發現滾輪
+    // 換完第一頁之後就再也沒有反應。
+    const project = wheelProject("滾輪冷卻上限");
+    stubWheelApi(project);
+    const advance = fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+
+    // 60Hz 連續事件持續 1.1 秒，中間一次都沒有斷過。
+    for (let step = 0; step < 70; step += 1) {
+      fireEvent.wheel(window, { deltaY: 60 });
+      advance(16);
+    }
+    // 第一頁在一開始就換掉，第二次要等冷卻上限（900ms）到期才會發生。
+    expect(await screen.findByText("3 / 3")).toBeTruthy();
+  });
+
+  it("重新進入簡報模式時手勢狀態歸零，第一下滾輪就有反應", async () => {
+    // 上一輪換頁留下的冷卻是掛在 ref 上的，不重置的話重新進場的第一下會被默默吃掉。
+    const project = wheelProject("重新進場");
+    stubWheelApi(project);
+    fakeClock();
+
+    render(<Editor />);
+    await enterPresentation(project);
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    // 完全不推進時鐘就離開再進來：冷卻若沒歸零，下一下必然落在鎖裡。
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+
+    fireEvent.wheel(window, { deltaY: 200 });
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+  });
+});
+
+describe("文字框底色", () => {
+  afterEach(() => {
+    resetSystemSettings();
+    window.history.pushState({}, "", "/");
+  });
+
+  const backgroundBoxes = () => [...document.querySelectorAll<HTMLElement>(".editable-text-box")];
+
+  it("畫布把底色畫在文字框容器上（不是放大成 400% 的 textarea）", () => {
+    render(
+      <TextLayerCanvas
+        background="/clean.png"
+        boxes={[makeBox({ backgroundColor: "#112233", backgroundOpacity: 0.5 })]}
+        canvasWidth={1920}
+        canvasHeight={1080}
+        selectedId={undefined}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    );
+    const container = backgroundBoxes()[0]!;
+    expect(container.style.background).toBe("rgba(17, 34, 51, 0.5)");
+    // 容器尺寸就是框本身；底色若掛在 textarea 上會跟著放大顯示區糊成四倍大。
+    expect(container.style.width).toBe(`${(300 / 1920) * 100}%`);
+    expect((screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement).style.background).toBe(
+      "",
+    );
+  });
+
+  it("沒設定底色的框不寫 inline 背景，選取提示底維持既有樣式", () => {
+    render(
+      <TextLayerCanvas
+        background="/clean.png"
+        boxes={[makeBox()]}
+        canvasWidth={1920}
+        canvasHeight={1080}
+        selectedId="text-1"
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    );
+    const container = backgroundBoxes()[0]!;
+    expect(container.style.background).toBe("");
+    expect(container.className).toContain("selected");
+  });
+
+  it("省略 backgroundOpacity 時視為不透明，且不影響文字自身的 opacity", () => {
+    render(
+      <TextLayerCanvas
+        background="/clean.png"
+        boxes={[makeBox({ backgroundColor: "#ff0000", opacity: 0.25 })]}
+        canvasWidth={1920}
+        canvasHeight={1080}
+        selectedId={undefined}
+        onSelect={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(backgroundBoxes()[0]!.style.background).toBe("rgb(255, 0, 0)");
+    expect((screen.getByLabelText("可編輯簡報文字") as HTMLTextAreaElement).style.opacity).toBe(
+      "0.25",
+    );
+  });
+
+  /** 一頁帶可編輯文字圖層的專案；進專案就直接是文字圖層編輯狀態，屬性面板才會出現。 */
+  function backgroundProject(topic: string) {
+    const project = createProject({ topic, brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    for (const slide of project.slides) {
+      slide.versions = [
+        {
+          id: `${slide.id}-v1`,
+          imagePath: `assets/generated/${slide.id}.png`,
+          prompt: "",
+          providerId: "mock-image",
+          model: "mock",
+          parameters: {},
+          styleVersion: 1,
+          sources: [],
+          createdAt: now,
+          textLayer: {
+            originalVersionId: `${slide.id}-v0`,
+            backgroundPath: `assets/generated/${slide.id}-clean.png`,
+            compositePath: `assets/generated/${slide.id}-composite.png`,
+            threshold: 0.75,
+            renderRevision: 0,
+            boxes: [makeBox({ id: `${slide.id}-text-1` })],
+            extractedAt: now,
+            updatedAt: now,
+          },
+        },
+      ];
+      slide.currentVersionId = `${slide.id}-v1`;
+    }
+    return project;
+  }
+
+  /** 回傳所有 PUT /text-layer 送出的框；欄位有沒有被刪掉只有這裡看得出來。 */
+  function stubBackgroundApi(project: PresentationProject) {
+    const written: import("@slide-maker/core").EditableTextBox[][] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      const target = /\/slides\/([^/]+)\/versions\/([^/]+)\/text-layer$/.exec(path);
+      if (target && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as {
+          boxes: import("@slide-maker/core").EditableTextBox[];
+        };
+        written.push(body.boxes);
+        // 存過的內容要落地：不落地的話伺服器回來的專案永遠是初始狀態，
+        // 下一次編輯會被「與已存內容相同」的比對擋掉，第二筆 PUT 就永遠不會送出。
+        // 落地前**必須**跑一次 schema.parse，因為真正的伺服器就是這樣重建物件的：
+        // 回應裡的 key 順序是 schema 的宣告順序，而不是客戶端送出的物件順序
+        //（本地新加的 optional 欄位排在尾端）。假伺服器若直接回存 body.boxes，
+        // 「本地與伺服器是否一致」的比對在測試裡永遠成立，正式環境卻永遠不成立——
+        // 自動儲存會無限迴圈，而測試全綠。
+        const stored = body.boxes.map((box) => editableTextBoxSchema.parse(box));
+        const version = project.slides
+          .find((slide) => slide.id === decodeURIComponent(target[1]!))
+          ?.versions.find((candidate) => candidate.id === decodeURIComponent(target[2]!));
+        if (version?.textLayer) version.textLayer = { ...version.textLayer, boxes: stored };
+        return Response.json(project);
+      }
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return written;
+  }
+
+  const enterAndSelect = async (topic: string) => {
+    fireEvent.click(await screen.findByText(topic));
+    await screen.findByLabelText("可編輯簡報文字");
+    fireEvent.pointerDown(backgroundBoxes()[0]!);
+  };
+
+  it("屬性面板勾選底色會給預設黑底，取消勾選則把兩個欄位整個移除", async () => {
+    const project = backgroundProject("屬性面板底色");
+    const written = stubBackgroundApi(project);
+
+    render(<Editor />);
+    await enterAndSelect("屬性面板底色");
+
+    const toggle = screen.getByLabelText("底色") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    // 沒啟用底色時色票與不透明度都是停用的，避免改了看不出效果。
+    expect((screen.getByLabelText("文字框底色") as HTMLInputElement).disabled).toBe(true);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(backgroundBoxes()[0]!.style.background).toBe("rgb(0, 0, 0)"));
+    expect((screen.getByLabelText("文字框底色") as HTMLInputElement).value).toBe("#000000");
+    await waitFor(() => expect(written.at(-1)?.[0]?.backgroundColor).toBe("#000000"), {
+      timeout: 3000,
+    });
+    expect(written.at(-1)?.[0]?.backgroundOpacity).toBe(1);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(backgroundBoxes()[0]!.style.background).toBe(""));
+    // 關閉必須是「移除 key」而不是寫 undefined：schema 開了 exactOptionalPropertyTypes。
+    await waitFor(
+      () => {
+        const box = written.at(-1)?.[0];
+        expect(box && "backgroundColor" in box).toBe(false);
+        expect(box && "backgroundOpacity" in box).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("啟用底色只送出一筆自動儲存，不會被伺服器回應的欄位順序帶進無限迴圈", async () => {
+    const project = backgroundProject("底色自動儲存");
+    const written = stubBackgroundApi(project);
+
+    render(<Editor />);
+    await enterAndSelect("底色自動儲存");
+    fireEvent.click(screen.getByLabelText("底色"));
+
+    await waitFor(() => expect(written).toHaveLength(1), { timeout: 3000 });
+    // 每一輪迴圈是 650ms 的 debounce＋一次伺服器往返；等兩輪還是 1 筆才算真的停住。
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    expect(written).toHaveLength(1);
+  });
+
+  it("改色票與不透明度會即時反映在畫布的底色上", async () => {
+    const project = backgroundProject("底色色票");
+    stubBackgroundApi(project);
+
+    render(<Editor />);
+    await enterAndSelect("底色色票");
+
+    fireEvent.click(screen.getByLabelText("底色"));
+    fireEvent.change(screen.getByLabelText("文字框底色"), { target: { value: "#ff0000" } });
+    await waitFor(() => expect(backgroundBoxes()[0]!.style.background).toBe("rgb(255, 0, 0)"));
+
+    fireEvent.change(screen.getByLabelText("底色不透明度"), { target: { value: "0.4" } });
+    await waitFor(() =>
+      expect(backgroundBoxes()[0]!.style.background).toBe("rgba(255, 0, 0, 0.4)"),
+    );
   });
 });
