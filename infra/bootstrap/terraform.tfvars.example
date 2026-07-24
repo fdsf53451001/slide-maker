@@ -1,0 +1,5 @@
+# 複製成 terraform.tfvars 再填。這份 config 由使用者本機以 owner 權限 apply 一次。
+project_id        = "slide-maker-503201"
+region            = "asia-east1"
+github_repository = "fdsf53451001/slide-maker"
+state_bucket_name = "slide-maker-503201-tfstate"

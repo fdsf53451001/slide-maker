@@ -12,12 +12,18 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 
-# Terraform: state stays local on purpose (see README). Commit .terraform.lock.hcl.
+# Terraform. App state (infra/) now lives in a GCS backend; bootstrap state stays
+# local. Commit .terraform.lock.hcl and the committed infra/prod.tfvars.
 infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.*
 infra/*.tfplan
 infra/terraform.tfvars
+infra/bootstrap/.terraform/
+infra/bootstrap/*.tfstate
+infra/bootstrap/*.tfstate.*
+infra/bootstrap/*.tfplan
+infra/bootstrap/terraform.tfvars
 
 # cli-switch managed entries (per-CLI private fixtures)
 .claude/

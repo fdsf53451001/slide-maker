@@ -32,25 +32,66 @@ Nothing here is required to run Slide Maker locally — see the [README](../READ
 Until IAP is configured the service simply rejects everyone: no `roles/run.invoker` binding is
 granted to `allUsers`, so unauthenticated requests get a 403.
 
-## Deploy
+## Continuous deployment (GitHub Actions)
+
+Pushing to `main` builds the image and runs `terraform apply` automatically via
+`.github/workflows/deploy.yml`. The workflow authenticates to GCP with Workload Identity
+Federation (no long-lived key), builds the image natively on the amd64 runner (no QEMU, so
+minutes not the emulated 30–60 min), tags it with the commit SHA, and applies the App config.
+
+Terraform state lives in a GCS bucket (`infra/versions.tf` `backend "gcs"`) so the CI runner
+and your laptop share one state. The build/deploy identity is split into a separate
+`infra/bootstrap/` config so the CI deployer service account never has permission to change
+its own IAM.
+
+### One-time setup (run once, locally, with owner credentials)
+
+```sh
+# 1. Create WIF pool/provider, the deployer SA + its roles, and the state bucket.
+cd infra/bootstrap
+cp terraform.tfvars.example terraform.tfvars   # then edit it
+terraform init
+terraform apply
+#    Note the three outputs: wif_provider, deploy_sa_email, state_bucket.
+
+# 2. Point GitHub at the deployer identity (repo variables, not secrets — none are secret).
+gh variable set WIF_PROVIDER --body "$(terraform output -raw wif_provider)"
+gh variable set DEPLOY_SA    --body "$(terraform output -raw deploy_sa_email)"
+
+# 3. Migrate the existing App state from your laptop up to the GCS backend.
+cd ../                                          # into infra/
+terraform init -migrate-state                   # answer "yes" to copy state to GCS
+
+# 4. Push to main (or run the workflow manually from the Actions tab).
+```
+
+After this, every push to `main` deploys. The deployer SA is scoped to exactly what the App
+config touches (Cloud Run, the data + state buckets, Artifact Registry, creating the runtime
+SA, and `actAs` on it) — deliberately no project IAM admin.
+
+## Deploy (manual fallback)
+
+You never need this once CI is set up, but it still works — the local `terraform` shares the
+same GCS state as CI, so a manual `apply` and a CI `apply` cannot diverge.
 
 ```sh
 # 1. Build and push (linux/amd64; Cloud Run does not run arm64).
 IMAGE=asia-east1-docker.pkg.dev/<project>/slide-maker/server:$(date +%Y-%m-%d)
 docker buildx build --platform linux/amd64 -t "$IMAGE" --push .
 
-# 2. Apply. The Cloud Run hostname is not known until the service exists, so the first
-#    apply leaves trusted_hosts empty and every request is refused; fill in the hostname
-#    from the service_url output and apply again.
+# 2. Apply. Non-secret values live in the committed infra/prod.tfvars; only the image
+#    changes per deploy. (On a brand-new project the Cloud Run hostname is not known until
+#    the service exists, so trusted_hosts starts empty and every request is refused; fill in
+#    the hostname from the service_url output and apply again.)
 cd infra
-cp terraform.tfvars.example terraform.tfvars   # then edit it
-terraform init
-terraform apply -var="image=$IMAGE"
+terraform init                                 # uses the GCS backend from bootstrap
+terraform apply -var-file=prod.tfvars -var="image=$IMAGE"
 ```
 
-The first build takes 30–60 minutes because the amd64 layers are emulated and the image
-bundles the PaddleOCR virtualenv plus its pre-downloaded model weights (~2GB total). Later
-builds only re-run the source layer.
+Building locally on Apple Silicon takes 30–60 minutes because the amd64 layers are emulated;
+the CI runner builds them natively in minutes. Either way the image bundles the PaddleOCR
+virtualenv plus its pre-downloaded model weights (~2GB total), and later builds only re-run
+the source layer.
 
 Always pass an explicit tag or digest. Cloud Run does not create a new revision when the
 image reference is unchanged.
