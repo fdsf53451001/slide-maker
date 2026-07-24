@@ -2402,8 +2402,30 @@ export function Editor() {
       if (pending) saveTextLayer(pending);
     };
   }, [selected?.id, selectedVersion?.id]);
+  /**
+   * 編輯畫布是不是使用者當下真正在互動的那一面。
+   *
+   * 全域 keydown listener 掛在 window 上，而覆蓋層（簡報模式、影像編輯／風格選擇對話框、
+   * 系統設定）與別條路由（模型庫、風格庫）都只是蓋住畫布，不會卸載專案狀態——
+   * `textEditing` 仍為 true。不 gate 的話，在簡報模式按 Backspace（PowerPoint／Keynote
+   * 的「上一頁」反射動作）會無聲刪掉編輯頁的文字框，650ms 後還自動存回伺服器，
+   * 而且簡報換頁改的是 `presentationIndex`、被刪的不一定是正在放映的那頁。
+   * Cmd/Ctrl+Z 還原／重做同理：非畫布焦點下誤按會靜默改動並自動存回，覆蓋既有資料。
+   * 抽成一份共用判定，是為了不讓它和方向鍵換頁那條 handler 日後各自漂移。
+   */
+  const canvasIsActiveSurface =
+    !!project &&
+    project.workflowStage === "editing" &&
+    route.startsWith("/projects/") &&
+    presentationIndex === null &&
+    !showImageEdit &&
+    !stylePickerVersion &&
+    !showSystemSettings;
   useEffect(() => {
     if (!textEditing) return;
+    // 與 Delete／複製貼上、方向鍵換頁共用同一份「畫布是不是當前互動面」判定：漏掉這道
+    // gate 時，簡報模式或別條路由誤按 Cmd/Ctrl+Z 會靜默 undo／redo 並自動存回，覆蓋資料。
+    if (!canvasIsActiveSurface) return;
     const onUndo = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
       const target = event.target;
@@ -2433,25 +2455,7 @@ export function Editor() {
     };
     window.addEventListener("keydown", onUndo);
     return () => window.removeEventListener("keydown", onUndo);
-  }, [textBoxes, selectedTextId, textEditing, textRedo, textUndo]);
-  /**
-   * 編輯畫布是不是使用者當下真正在互動的那一面。
-   *
-   * 全域 keydown listener 掛在 window 上，而覆蓋層（簡報模式、影像編輯／風格選擇對話框、
-   * 系統設定）與別條路由（模型庫、風格庫）都只是蓋住畫布，不會卸載專案狀態——
-   * `textEditing` 仍為 true。不 gate 的話，在簡報模式按 Backspace（PowerPoint／Keynote
-   * 的「上一頁」反射動作）會無聲刪掉編輯頁的文字框，650ms 後還自動存回伺服器，
-   * 而且簡報換頁改的是 `presentationIndex`、被刪的不一定是正在放映的那頁。
-   * 抽成一份共用判定，是為了不讓它和方向鍵換頁那條 handler 日後各自漂移。
-   */
-  const canvasIsActiveSurface =
-    !!project &&
-    project.workflowStage === "editing" &&
-    route.startsWith("/projects/") &&
-    presentationIndex === null &&
-    !showImageEdit &&
-    !stylePickerVersion &&
-    !showSystemSettings;
+  }, [textBoxes, selectedTextId, textEditing, textRedo, textUndo, canvasIsActiveSurface]);
   /**
    * 文字框層級的複製／貼上／刪除。
    *
