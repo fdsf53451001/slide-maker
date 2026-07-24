@@ -34,15 +34,25 @@ export default async function run({ client }) {
   assertEq(library.defaultCombinationId, "e2e-mock", "預設組合應為 e2e-mock");
 
   // ── 連線 CRUD ──────────────────────────────────────────────────────────────
+  // 帶一個非空 apiKey：redactLibrary 對非空 key 一律換成 REDACTED 佔位符（見
+  // packages/core/src/model-library.ts），庫回應**絕不可**外洩明文。舊版本連線未帶 key，
+  // redact 對空 key 恆回 ""，於是 REDACTED 分支從沒被測到（斷言恆真）。
+  const plaintextKey = "sk-e2e-super-secret-DO-NOT-LEAK-123";
   library = (
     await client.post("/api/model-library/connections", {
-      json: { name: "throwaway", baseUrl: "http://127.0.0.1:9/v1", protocol: "openai" },
+      json: {
+        name: "throwaway",
+        baseUrl: "http://127.0.0.1:9/v1",
+        protocol: "openai",
+        apiKey: plaintextKey,
+      },
     })
   ).body;
   const conn = library.connections.find((c) => c.name === "throwaway");
   assert(conn, "連線建立後應出現在庫中");
-  // redact：庫回應不得外洩明文 key（此連線未設 key → 空字串）。
-  assert(conn.apiKey === "" || conn.apiKey === "••••••••", "apiKey 應被 redact");
+  // redact：設了 key 的連線，庫回應必須是遮罩佔位符，且不得含明文。
+  assertEq(conn.apiKey, "••••••••", "非空 apiKey 應被遮罩成 REDACTED 佔位符");
+  assert(!conn.apiKey.includes("secret"), "遮罩後的 apiKey 不得殘留任何明文片段");
 
   library = (
     await client.patch(`/api/model-library/connections/${conn.id}`, {
