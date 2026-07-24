@@ -195,16 +195,23 @@ describe("三模式合約快照", () => {
 });
 
 describe("編輯模式不得帶生成模式的規則", () => {
-  // 這四條在真實 API 上實測會讓模型重排整張投影片（或直接放棄不動手），
+  // 前四條在真實 API 上實測會讓模型重排整張投影片（或直接放棄不動手），
   // 是疊字、殘影與卡片邊框跑進遮罩框的直接來源。
+  // 其後是 structured-blocks 的 generate-only 渲染規則關鍵詞：snapshot 擋得住這些
+  // 洩入編輯模式，但擋不住 `vitest -u` 盲更——這份清單才是最後一道。
   const FORBIDDEN = [
     "brand-new slide",
     "TYPOGRAPHY FLOOR",
     "only inside the masked region",
     "Every word rendered on the slide must originate",
+    "slide.content is a list of typed blocks",
+    "A block's emphasis array",
+    "Markup symbols are never glyphs",
+    "A block marked unparsed",
+    "A table block in slide.content is a real table",
   ];
 
-  it("四條污染指標在每個編輯情境都不存在", () => {
+  it("污染指標在每個編輯情境都不存在", () => {
     for (const spec of CASES.filter((candidate) => candidate.mode !== "generate")) {
       const prompt = buildImageGenerationContract(buildCase(spec));
       for (const phrase of FORBIDDEN)
@@ -218,7 +225,7 @@ describe("編輯模式不得帶生成模式的規則", () => {
     expect(prompt).not.toContain("STYLE FIDELITY CONTRACT FOR NEW GENERATION");
     expect(prompt).not.toContain("DESIGN SYSTEM AUTHORITY");
     expect(prompt).not.toContain("slide.content field is the authoritative visible copy");
-    expect(prompt).not.toContain("pipe tables");
+    expect(prompt).not.toContain("A table block in slide.content is a real table");
     expect(prompt).not.toContain("no chart values");
   });
 
