@@ -65,6 +65,8 @@ import {
   parseOpenAiTimeoutMs,
   parseOptionalString,
   parseTrustedHosts,
+  parseWebRenderEngine,
+  parseWebRenderTimeoutMs,
 } from "./config.js";
 import { ProviderReadinessGateError, ProviderReadinessService } from "./readiness.js";
 import { FileStyleRepository } from "./styles.js";
@@ -94,8 +96,9 @@ import {
 import { sendChunked } from "./http-stream.js";
 import { SqliteFtsRetriever } from "./retriever.js";
 import { knownSourceContext } from "./source-context.js";
-import { isReadableWebUrl } from "@slide-maker/core/url-safety";
+import { assertPublicHttpUrl, isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { captureWebPage, type WebSearchResult } from "./web-capture.js";
+import { createHtmlRenderer, type HtmlRenderer } from "./web-render.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask } from "./text-layers.js";
 import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
@@ -411,6 +414,15 @@ export async function createApp(
   );
   const openAiBaseUrl = parseOpenAiBaseUrl(process.env.SLIDE_MAKER_OPENAI_BASE_URL);
   const openAiApiKey = parseOptionalString(process.env.SLIDE_MAKER_OPENAI_API_KEY);
+  // 「貼上網址」通道專用的第三方 render fallback（engine=none 時為 undefined）。
+  // 只有 /url-sources 會傳給 captureWebPage；搜尋擷取路徑刻意不碰它。
+  const htmlRenderer = createHtmlRenderer(
+    parseWebRenderEngine(process.env.SLIDE_MAKER_WEB_RENDER_ENGINE),
+    {
+      apiKey: parseOptionalString(process.env.SLIDE_MAKER_JINA_API_KEY),
+      timeoutMs: parseWebRenderTimeoutMs(process.env.SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS),
+    },
+  );
 
   // 模型庫：首次開機由 env seed 一份，之後以 DATA_ROOT/models.json 為單一真實來源。
   const libraryRepository = new ModelLibraryRepository(dataRoot);
@@ -519,10 +531,20 @@ export async function createApp(
     return runtime.resolveImageEntryId(project.combinationId);
   };
   const capturePage = dependencies.captureWebPage ?? captureWebPage;
+  /**
+   * 把一批網頁結果落地成專案來源（同 URL 更新既有筆、否則新增），只收抓得到正文的。
+   *
+   * 搜尋擷取與「貼上網址」兩條入口共用這一份，差別只在 `options`：
+   * - `renderer`：交給 `captureWebPage` 的第三方 render fallback。**搜尋路徑不傳**——
+   *   那些網址是模型給的，使用者沒有逐筆同意把它們送去第三方。
+   * - `refresh`：略過「已存在且是 full 就不重抓」的捷徑。使用者手動貼上網址，意思就是
+   *   「現在去抓這一頁」，回一份舊快取等於沒做事。
+   */
   const materializeWebSources = async (
     projectId: string,
     existingSources: readonly SourceAsset[],
     foundSources: readonly WebSearchResult[],
+    options: { renderer?: HtmlRenderer; refresh?: boolean } = {},
   ) => {
     const sourceByUrl = new Map(
       existingSources
@@ -532,9 +554,11 @@ export async function createApp(
     const addedSources: SourceAsset[] = [];
     const refreshedSources: SourceAsset[] = [];
     const verifiedResults: WebSearchResult[] = [];
+    /** 抓不到正文而被丟掉的網址（呼叫端要逐筆回報失敗時才用得到）。 */
+    const unverifiedUrls: string[] = [];
     for (const found of foundSources.slice(0, 20)) {
       const existing = sourceByUrl.get(found.url);
-      if (existing?.metadata.contentStatus === "full") {
+      if (!options.refresh && existing?.metadata.contentStatus === "full") {
         verifiedResults.push({
           url: existing.metadata.url ?? found.url,
           title: existing.metadata.title ?? found.title,
@@ -543,8 +567,11 @@ export async function createApp(
         continue;
       }
       const capturedAt = new Date().toISOString();
-      const captured = await capturePage(found, capturedAt);
-      if (captured.metadata.contentStatus !== "full") continue;
+      const captured = await capturePage(found, capturedAt, undefined, options.renderer);
+      if (captured.metadata.contentStatus !== "full") {
+        unverifiedUrls.push(found.url);
+        continue;
+      }
       const verified = {
         ...found,
         url: captured.metadata.url ?? found.url,
@@ -576,7 +603,9 @@ export async function createApp(
       } else {
         const source = await ingestSource(
           {
-            name: `${safeFilename(found.title)}.md`,
+            // 搜尋路徑的 metadata.title 就是 found.title（檔名不變）；手貼網址沒有標題，
+            // 由 captureWebPage 從網頁本身推導後放進 metadata。
+            name: `${safeFilename(captured.metadata.title || found.title)}.md`,
             mediaType: "text/markdown",
             usage: "content",
             allowModelAccess: true,
@@ -597,7 +626,7 @@ export async function createApp(
       }
       verifiedResults.push(verified);
     }
-    return { sourceByUrl, addedSources, refreshedSources, verifiedResults };
+    return { sourceByUrl, addedSources, refreshedSources, verifiedResults, unverifiedUrls };
   };
   // 依 brief.webSearchMode 決定是否用 WebSearchProvider 抓取來源；搜尋後端不可用時優雅降級為無來源。
   // 搜尋不可默默降級成無來源，否則後續文字模型會用記憶補資料，造成看似完成但內容失真。
@@ -2623,6 +2652,77 @@ export async function createApp(
     });
     retriever.index(project.id, project.sources);
     response.status(201).json(project);
+  });
+
+  /**
+   * 使用者手動貼上的網址 → 專案來源。
+   *
+   * 與 /web-sources 的差別只在入口：這裡沒有搜尋摘要可以退回，所以「抓不到正文」＝這一筆
+   * 失敗（CLAUDE.md：未驗證摘要不得作為來源），而不是存成一筆只有摘要的空來源。落地、
+   * 去重與索引全部走 materializeWebSources，沒有第二份實作。
+   */
+  app.post("/api/projects/:projectId/url-sources", async (request, response) => {
+    const projectId = idSchema.parse(request.params.projectId);
+    const { urls } = z
+      .object({ urls: z.array(z.string().trim().min(1).max(2_000)).min(1).max(10) })
+      .parse(request.body);
+    const before = await repository.loadProject(projectId);
+    if (!before) throw new Error("Project not found");
+    const failures: { url: string; reason: string }[] = [];
+    const accepted: WebSearchResult[] = [];
+    const seen = new Set<string>();
+    for (const raw of urls) {
+      try {
+        // SSRF 防線在抓取之前先擋一次：這裡的網址完全由使用者輸入。
+        const url = assertPublicHttpUrl(raw).toString();
+        if (seen.has(url)) continue;
+        seen.add(url);
+        // 標題留白，由 captureWebPage 從網頁本身推導；摘要沒有來源，一律空字串。
+        accepted.push({ url, title: "", summary: "" });
+      } catch (reason) {
+        const code = reason instanceof Error ? reason.message : "";
+        failures.push({
+          url: raw,
+          reason: /^WEB_SOURCE_/.test(code) ? code : "WEB_SOURCE_URL_INVALID",
+        });
+      }
+    }
+    const materialized = accepted.length
+      ? await materializeWebSources(projectId, before.sources, accepted, {
+          renderer: htmlRenderer,
+          refresh: true,
+        })
+      : { addedSources: [], refreshedSources: [], unverifiedUrls: [] };
+    for (const url of materialized.unverifiedUrls)
+      failures.push({ url, reason: "WEB_SOURCE_CONTENT_UNVERIFIED" });
+    if (!materialized.addedSources.length && !materialized.refreshedSources.length) {
+      // 全軍覆沒不能回 201：前端會以為來源已經進去了。
+      return response.status(400).json({
+        error: "URL_SOURCES_UNVERIFIED",
+        message: "沒有任何網址取得可驗證的正文，因此未加入專案。",
+        failures,
+      });
+    }
+    const project = await repository.updateProject(projectId, (current) => {
+      for (const refreshed of materialized.refreshedSources) {
+        const index = current.sources.findIndex((source) => source.id === refreshed.id);
+        if (index >= 0) current.sources[index] = refreshed;
+      }
+      for (const added of materialized.addedSources) {
+        if (
+          current.sources.length >= 100 ||
+          current.sources.reduce((sum, source) => sum + source.sizeBytes, 0) + added.sizeBytes >
+            1024 ** 3
+        )
+          throw new Error("SOURCE_PROJECT_LIMIT");
+        if (!current.sources.some((source) => source.metadata.url === added.metadata.url))
+          current.sources.push(added);
+      }
+      current.updatedAt = new Date().toISOString();
+      return structuredClone(current);
+    });
+    retriever.index(project.id, project.sources);
+    return response.status(201).json({ project, failures });
   });
 
   app.patch("/api/projects/:projectId/sources/:sourceId", async (request, response) => {
