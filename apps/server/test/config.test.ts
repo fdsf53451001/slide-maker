@@ -23,6 +23,12 @@ import {
   parseOpenAiTimeoutMs,
   parseOptionalString,
   parseTrustedHosts,
+  parseWebRenderEngine,
+  parseWebRenderTimeoutMs,
+  DEFAULT_WEB_RENDER_ENGINE,
+  DEFAULT_WEB_RENDER_TIMEOUT_MS,
+  MAX_WEB_RENDER_TIMEOUT_MS,
+  MIN_WEB_RENDER_TIMEOUT_MS,
   LOCAL_HOSTNAMES,
 } from "../src/config.js";
 
@@ -173,4 +179,33 @@ describe("trusted host configuration", () => {
 
   it("keeps the local names available for the guard to merge in", () =>
     expect(LOCAL_HOSTNAMES).toEqual(["localhost", "127.0.0.1", "::1"]));
+});
+
+describe("web render configuration", () => {
+  it("預設走 jina：動態網頁抓不到正文是貼網址通道最常見的失敗", () => {
+    expect(parseWebRenderEngine(undefined)).toBe(DEFAULT_WEB_RENDER_ENGINE);
+    expect(parseWebRenderEngine("")).toBe("jina");
+  });
+
+  it("none 可完全停用第三方 render", () => expect(parseWebRenderEngine("none")).toBe("none"));
+
+  it.each(["jina ", "JINA", "browserless", "off"])("rejects invalid engine %s", (value) =>
+    expect(() => parseWebRenderEngine(value)).toThrow(/SLIDE_MAKER_WEB_RENDER_ENGINE/),
+  );
+
+  it("timeout 預設 30 秒並接受邊界值", () => {
+    expect(parseWebRenderTimeoutMs(undefined)).toBe(DEFAULT_WEB_RENDER_TIMEOUT_MS);
+    expect(parseWebRenderTimeoutMs(String(MIN_WEB_RENDER_TIMEOUT_MS))).toBe(
+      MIN_WEB_RENDER_TIMEOUT_MS,
+    );
+    expect(parseWebRenderTimeoutMs(String(MAX_WEB_RENDER_TIMEOUT_MS))).toBe(
+      MAX_WEB_RENDER_TIMEOUT_MS,
+    );
+  });
+
+  it.each(["0", "-1", "1.5", "30s", String(MAX_WEB_RENDER_TIMEOUT_MS + 1)])(
+    "rejects invalid timeout %s",
+    (value) =>
+      expect(() => parseWebRenderTimeoutMs(value)).toThrow(/SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS/),
+  );
 });
