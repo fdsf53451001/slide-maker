@@ -115,15 +115,21 @@ function sameTarget(requested: URL, reported: string): boolean {
 export function createJinaRenderer({
   apiKey,
   timeoutMs = DEFAULT_WEB_RENDER_TIMEOUT_MS,
-  fetcher = fetch,
+  fetcher,
 }: HtmlRendererOptions = {}): HtmlRenderer {
   return {
     name: "jina",
     async render(url: URL): Promise<RenderedPage> {
+      // 沒注入 fetcher 時在**呼叫時**解析全域 fetch，而不是建構時就綁定 `= fetch`。
+      // `createApp` 在開機時就建好 renderer，若此刻綁定，之後任何換掉 `globalThis.fetch`
+      // 的機制都失效——最實際的後果是 E2E 的 L0 零配額 guard（在 createApp 之後才裝）攔不住
+      // 這條 render fallback，一個合法網址就會真的打到 r.jina.ai。呼叫時解析與 `captureWebPage`
+      // 的 fetch 處理一致。
+      const doFetch = fetcher ?? globalThis.fetch;
       const target = assertPublicHttpUrl(url.toString());
       target.username = "";
       target.password = "";
-      const response = await fetcher(`${JINA_READER_ENDPOINT}${target.toString()}`, {
+      const response = await doFetch(`${JINA_READER_ENDPOINT}${target.toString()}`, {
         signal: AbortSignal.timeout(timeoutMs),
         headers: {
           Accept: "text/plain",
