@@ -76,8 +76,12 @@ export function flattenMaskToBlack(
 ): Uint8Array {
   assertSupportedRaster(mediaType);
   const dataUri = `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`;
+  // preserveAspectRatio="none"（拉伸）而非 slice（cover／裁切）：遮罩最終要與
+  // compositeMaskedEdit 的 fit:"fill" 對齊，兩邊的重取樣語意必須相同。遮罩目前都已在
+  // 存檔時正規化成 canvas 尺寸、這裡是 no-op，但那個不變式一旦破例（出現非 canvas 比例的
+  // 遮罩），slice 會讓模型看到的區域與 composite 實際切的區域無聲地錯開。
   return renderCanvasSvgToPng(
-    `<rect width="${width}" height="${height}" fill="black"/><image href="${dataUri}" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`,
+    `<rect width="${width}" height="${height}" fill="black"/><image href="${dataUri}" width="${width}" height="${height}" preserveAspectRatio="none"/>`,
     width,
     height,
     "遮罩攤平失敗。",
@@ -87,6 +91,10 @@ export function flattenMaskToBlack(
 /**
  * 視覺通道用：若 index 是 masked edit 的遮罩，把 data URL 換成攤平後的黑底 PNG；
  * 其餘影像（含 base 圖）原樣回傳。
+ *
+ * 判斷仍以 `edit.maskImageIndex` 為準而非 `role === "mask"`：index 是 provider 驗證與
+ * 傳輸層一路使用的唯一指標（`validateEditReferences` 也看它），role 只是合約用來寫說明
+ * 文字的中繼資料。兩者若不一致，攤平錯一張圖等於把真正的素材塗黑。
  */
 export function maskAwareDataUrl(
   url: string,

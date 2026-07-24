@@ -7,6 +7,7 @@ import {
   type GenerationJob,
   type EditableTextBox,
   type ImageGenerationProgress,
+  type ImageReferenceRole,
   type ImageProvider,
   type SlideOutlineSnapshot,
   type SlideSpec,
@@ -672,10 +673,15 @@ export class JobRunner {
             ? "style"
             : source.usage === "direct-asset"
               ? "direct-asset"
-              : "content") as "style" | "content" | "direct-asset",
+              : "content") as ImageReferenceRole,
           name: source.name,
         }));
-      const references = [...styleReferences, ...contentReferences];
+      const references: Array<{
+        path: string;
+        mediaType: string;
+        role: ImageReferenceRole;
+        name?: string;
+      }> = [...styleReferences, ...contentReferences];
       let edit;
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
@@ -686,10 +692,12 @@ export class JobRunner {
             : baseVersion.imagePath;
         const baseRelative = basePath.replace(/^assets\//, "");
         const baseMediaType = /\.jpe?g$/i.test(baseRelative) ? "image/jpeg" : "image/png";
+        // 底圖與遮罩是編輯任務的內建輸入，必須標成 base／mask：標成 content 會讓合約
+        // 的「參考圖不得把文字帶進輸出」等生成專用禁令誤傷這張要保留的原圖。
         references.unshift({
           path: this.repository.assetPath(projectId, baseRelative),
           mediaType: baseMediaType,
-          role: "content",
+          role: "base",
           name: "Current slide image",
         });
         const baseImageIndex = 0;
@@ -698,7 +706,7 @@ export class JobRunner {
           references.splice(1, 0, {
             path: this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, "")),
             mediaType: "image/png",
-            role: "content",
+            role: "mask",
             name: "Edit mask",
           });
           maskImageIndex = 1;
@@ -709,6 +717,12 @@ export class JobRunner {
           ...(maskImageIndex === undefined ? {} : { maskImageIndex }),
           ...(job.operation === "extract-text" ? { purpose: "text-removal" as const } : {}),
         };
+        // index 與 role 分歧會是無聲的：合約會同時印出「Image 1 是你要編輯的投影片」與
+        // 「Image 1: role=style，只取它的配色」，模型收到互相打架的兩句話而我們一無所知。
+        if (references[baseImageIndex]?.role !== "base")
+          throw new Error("EDIT_BASE_REFERENCE_ROLE_MISMATCH");
+        if (maskImageIndex !== undefined && references[maskImageIndex]?.role !== "mask")
+          throw new Error("EDIT_MASK_REFERENCE_ROLE_MISMATCH");
       }
       // Base/mask images are intrinsic edit inputs, not optional reference-image
       // capability. Only gate supplemental style/content references here.
