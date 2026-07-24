@@ -29,9 +29,16 @@ os.dup2(2, 1)
 # 結構像素誤差 29.6 → 3.7、遮罩外被改動像素 13445 → 0、殘字 5.6 → 1.2。
 # JPEG q95／q88／q75 往返後同樣領先，故不因壓縮雜訊放寬 FLOOD_TOLERANCE。
 #
-# FLOOD_TOLERANCE：flood 的逐鄰居容差。太大（≥10）會沿反鋸齒爬進低對比文字造成
-# 殘字；太小（≤4）則紋理／顆粒背景蔓延不進去，背景會被誤判成墨。
+# FLOOD_TOLERANCE：flood 的逐鄰居容差，平坦底色用的下限。太大（≥10）會沿反鋸齒
+# 爬進低對比文字造成殘字；太小（≤4）則連平坦底色的編碼雜訊都蔓延不過去。
 FLOOD_TOLERANCE = 6
+# 顆粒／照片背景的相鄰像素差本來就大於平坦底色，固定容差會讓整片背景蔓延不進去、
+# 被當成墨抹平（σ=16 的顆粒實測損壞 38% 的乾淨區域）。改為每個遮罩各自估：取框外
+# 背景相鄰差的中位數（平坦底色≈0，且框外少數幾條線與邊緣拉不動中位數）乘上係數，
+# 夾在下限與 FLOOD_TOLERANCE_MAX 之間。上限只在顆粒背景生效——平坦底色估出來就是
+# 下限，柔邊低對比字仍由第二道「顏色歸屬」擋著，不會因為這個上限爬回來。
+FLOOD_NOISE_FACTOR = 1.5
+FLOOD_TOLERANCE_MAX = 48
 # 種子取樣間隔：沿遮罩框外每 3 個像素取一點，確保框外每種結構（底色、線、色塊）
 # 都至少有一個種子。總 flood 工作量由影像面積封頂——flood mask 已標記處不會重入，
 # 所以種子數量再多也不會變成 O(種子 × 面積)。
@@ -45,7 +52,8 @@ CUBE_BITS = 3
 CUBE_DILATE = 1
 # 貫穿檢查：遮罩若切在筆劃中間，字會從缺口沿自身蔓延成「背景」。真結構（軸線、
 # 格線、邊框、色塊）在框外有本體，一路延伸到 ROI 外緣；洩漏的字團塊困在 ROI 內。
-# 只檢查與框外平坦底色差距超過 LEAK_DELTA 的團塊，漸層與紋理不受影響。
+# 只檢查「跨過遮罩邊界、且與框外平坦底色差距超過門檻」的團塊：不跨邊界的排除掉
+# 顆粒雜訊，門檻本身也會跟著顆粒程度放大（見 _flood_tolerance）。
 LEAK_HALO = 20
 LEAK_DELTA = 24
 # 墨膨脹：ink 已精確到像素，只需 3×3 一次蓋住反鋸齒殘緣（舊版 7×7 兩次會外擴
@@ -54,11 +62,16 @@ DILATE_KERNEL_SIZE = 3
 DILATE_ITERATIONS = 1
 INPAINT_RADIUS = 3
 # 軸向橋接：抹除帶兩端各取 BRIDGE_PROBE 像素的中位色，色差在 BRIDGE_TOLERANCE
-# 內才視為「同一條線／同一片底色被文字截斷」並線性插值接回；超過 BRIDGE_MAX_GAP
-# 的帶不橋接（兩端同色也可能只是巧合）。
+# 內才視為「同一條線／同一片底色被文字截斷」並線性插值接回。超過 BRIDGE_MAX_GAP
+# 的帶不是直接拒絕（整行標題壓在表格線上輕易就超過，硬拒等於那條線永遠接不回），
+# 而是要自證承載結構——見 BRIDGE_STRUCTURE_MIN。
 BRIDGE_MAX_GAP = 420
 BRIDGE_PROBE = 4
 BRIDGE_TOLERANCE = 12
+# 沒有對手的插值要多一道把關：另一軸不能橋接（探針被鄰近抹除帶佔住）或這是寬帶時，
+# 插值色至少要離框外底色這麼遠才准覆蓋 inpaint 結果。少了這道，被文字壓住的水平線
+# 會被垂直方向的底色整條塗白（實測 400px 的線 100% 被塗掉）。
+BRIDGE_STRUCTURE_MIN = 24
 # textMask 產物是「白色矩形＋透明底」的 RGBA PNG：alpha > 128 即為矩形區。
 ALPHA_THRESHOLD = 128
 
@@ -106,6 +119,24 @@ def _colour_cube(samples):
     return cube
 
 
+def _flood_tolerance(roi, outside):
+    """依框外背景的顆粒程度決定 flood 容差。
+
+    取相鄰像素差的中位數：平坦底色（含編碼雜訊）≈0，照片／顆粒背景則明顯大於零，
+    而框外少數幾條線與邊緣拉不動中位數，所以不會因為框外有邊框就整個放寬。
+    """
+    import numpy as np
+
+    if roi.shape[1] < 2:
+        return FLOOD_TOLERANCE
+    step = np.abs(np.diff(roi.astype(np.int16), axis=1)).max(axis=2)
+    sample = step[outside[:, :-1] & outside[:, 1:]]
+    if sample.size == 0:
+        return FLOOD_TOLERANCE
+    noise = int(np.median(sample) * FLOOD_NOISE_FACTOR)
+    return max(FLOOD_TOLERANCE, min(FLOOD_TOLERANCE_MAX, noise))
+
+
 def background_by_flood(base, region, labels, stats, count):
     """從遮罩框外蔓延、且顏色屬於框外樣本的像素＝背景。
 
@@ -118,7 +149,6 @@ def background_by_flood(base, region, labels, stats, count):
     height, width = base.shape[:2]
     reached = np.zeros((height + 2, width + 2), dtype=np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | (255 << 8)
-    tolerance = (FLOOD_TOLERANCE,) * 3
     cubes = {}
     for index in range(1, count):
         rows, cols = _roi_bounds(stats, index, (height, width), HALO)
@@ -126,7 +156,9 @@ def background_by_flood(base, region, labels, stats, count):
         outside = region[rows, cols] == 0
         if not outside.any():
             continue
-        cubes[index] = _colour_cube(base[rows, cols][outside])
+        roi = base[rows, cols]
+        cubes[index] = _colour_cube(roi[outside])
+        tolerance = (_flood_tolerance(roi, outside),) * 3
         seed_y, seed_x = np.nonzero(outside)
         for k in range(0, len(seed_y), SEED_STEP):
             y, x = int(seed_y[k]) + rows.start, int(seed_x[k]) + cols.start
@@ -188,7 +220,10 @@ def drop_leaked_ink(base, region, background, labels, stats, count):
         flat = _outer_flat_colour(roi, roi_region, roi_background)
         if flat is None:
             continue
-        suspect = roi_background & (np.abs(roi.astype(np.int32) - flat).max(axis=2) > LEAK_DELTA)
+        # 顆粒背景本來就處處偏離底色，門檻要跟著顆粒程度放大，否則每一撮雜訊都會
+        # 進入 suspect、再因為湊不出貫穿路徑而被當成洩漏抹掉。
+        delta = max(LEAK_DELTA, _flood_tolerance(roi, ~roi_region))
+        suspect = roi_background & (np.abs(roi.astype(np.int32) - flat).max(axis=2) > delta)
         if not suspect.any():
             continue
         total, components = cv2.connectedComponents(suspect.astype(np.uint8), connectivity=8)
@@ -200,7 +235,12 @@ def drop_leaked_ink(base, region, background, labels, stats, count):
         spanning = np.zeros(total, dtype=bool)
         spanning[np.unique(components[edge])] = True
         spanning[0] = True
-        leaked = ~spanning[components] & roi_region
+        # 洩漏一定是從遮罩外走進來的，團塊必須跨過遮罩邊界。少了這個條件，顆粒背景
+        # 裡每一撮偏離底色的雜訊都會被當成洩漏抹掉（σ=16 實測 38% 的乾淨區域受損）。
+        crosses = np.zeros(total, dtype=bool)
+        crosses[np.unique(components[~roi_region])] = True
+        crosses[0] = False
+        leaked = (~spanning & crosses)[components] & roi_region
         if leaked.any():
             roi_background[leaked] = False
     return background
@@ -230,11 +270,17 @@ def ink_mask(base, region):
 
 
 def _bridge_axis(base, ink):
-    """逐列掃描抹除帶，回傳 (插值顏色, 兩端色差)；色差 255 代表該像素不可橋接。"""
+    """逐列掃描抹除帶，回傳 (插值顏色, 兩端色差, 是否為寬帶)。
+
+    色差 255 代表該像素不可橋接；寬帶（超過 BRIDGE_MAX_GAP）不是直接拒絕，而是
+    交給呼叫端要求它自證承載結構——整行標題壓在表格線上時，抹除帶輕易就超過上限，
+    硬拒會讓那條線永遠接不回來。
+    """
     import numpy as np
 
     fill = np.zeros_like(base)
     score = np.full(base.shape[:2], 255, dtype=np.int16)
+    wide = np.zeros(base.shape[:2], dtype=bool)
     mask = ink > 0
     width = base.shape[1]
     for y in range(base.shape[0]):
@@ -244,7 +290,7 @@ def _bridge_axis(base, ink):
         edges = np.diff(np.concatenate(([0], row.view(np.int8), [0])))
         for x0, x1 in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1):
             span = x1 - x0 + 1
-            if span > BRIDGE_MAX_GAP or x0 - BRIDGE_PROBE < 0 or x1 + BRIDGE_PROBE + 1 > width:
+            if x0 - BRIDGE_PROBE < 0 or x1 + BRIDGE_PROBE + 1 > width:
                 continue
             left_slice = slice(x0 - BRIDGE_PROBE, x0)
             right_slice = slice(x1 + 1, x1 + 1 + BRIDGE_PROBE)
@@ -258,7 +304,9 @@ def _bridge_axis(base, ink):
             ramp = (np.arange(span, dtype=np.float32) + 0.5)[:, None] / span
             fill[y, x0 : x1 + 1] = np.clip(left * (1 - ramp) + right * ramp, 0, 255)
             score[y, x0 : x1 + 1] = delta
-    return fill, score
+            if span > BRIDGE_MAX_GAP:
+                wide[y, x0 : x1 + 1] = True
+    return fill, score, wide
 
 
 def bridge_lines(base, ink, inpainted, flat):
@@ -275,24 +323,30 @@ def bridge_lines(base, ink, inpainted, flat):
     """
     import numpy as np
 
-    horizontal_fill, horizontal_score = _bridge_axis(base, ink)
-    vertical_fill, vertical_score = _bridge_axis(
+    horizontal_fill, horizontal_score, horizontal_wide = _bridge_axis(base, ink)
+    vertical_fill, vertical_score, vertical_wide = _bridge_axis(
         np.transpose(base, (1, 0, 2)).copy(), ink.T.copy()
     )
     vertical_fill = np.transpose(vertical_fill, (1, 0, 2))
     vertical_score = vertical_score.T
+    vertical_wide = vertical_wide.T
     inked = ink > 0
     horizontal_ok = (horizontal_score < 255) & inked
     vertical_ok = (vertical_score < 255) & inked
     reference = flat.astype(np.int16)
     horizontal_structure = np.abs(horizontal_fill.astype(np.int16) - reference).max(axis=2)
     vertical_structure = np.abs(vertical_fill.astype(np.int16) - reference).max(axis=2)
-    horizontal_wins = np.where(
-        horizontal_ok & vertical_ok, horizontal_structure >= vertical_structure, horizontal_ok
-    )
+    both = horizontal_ok & vertical_ok
+    # 沒有對手的插值不可信：另一軸不能橋接（探針被鄰近抹除帶佔住），或這一軸是寬帶
+    # （兩端同色也可能只是巧合）時，它若給的只是底色，就會把垂直於它的線整條塗掉。
+    # 這兩種情況下要自己證明「承載結構」（插值色明顯不同於框外底色）才准覆蓋。
+    confident_h = horizontal_structure >= BRIDGE_STRUCTURE_MIN
+    confident_v = vertical_structure >= BRIDGE_STRUCTURE_MIN
+    eligible_h = horizontal_ok & (both & ~horizontal_wide | confident_h)
+    eligible_v = vertical_ok & (both & ~vertical_wide | confident_v)
     out = inpainted.copy()
-    use_horizontal = horizontal_ok & horizontal_wins
-    use_vertical = vertical_ok & ~horizontal_wins
+    use_horizontal = eligible_h & (~eligible_v | (horizontal_structure >= vertical_structure))
+    use_vertical = eligible_v & (~eligible_h | (vertical_structure > horizontal_structure))
     out[use_horizontal] = horizontal_fill[use_horizontal]
     out[use_vertical] = vertical_fill[use_vertical]
     return out

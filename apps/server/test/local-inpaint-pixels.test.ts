@@ -20,7 +20,7 @@ const PYTHON = join(ROOT, ".venv-ocr", "bin", "python");
 const SCRIPT = join(ROOT, "scripts", "local_inpaint.py");
 const HAS_OCR_VENV = existsSync(PYTHON) && existsSync(SCRIPT);
 
-const WIDTH = 240;
+const WIDTH = 480;
 const HEIGHT = 120;
 const BACKGROUND = { r: 255, g: 255, b: 255 };
 const LINE = { r: 37, g: 99, b: 235 };
@@ -232,15 +232,96 @@ describe.skipIf(!HAS_OCR_VENV)("local_inpaint.py 抹字精準度", () => {
       ],
       { mask },
     );
+    // 排除緊貼遮罩邊界的 6px：墨跨出遮罩時框外那半依不變量①不能動，內側這幾個
+    // 像素抹掉只會留下一道銳利切口，留著反而自然。整條墨沒被抹的回歸是數百 px 級，
+    // 這個排除範圍擋不住它。
+    const skin = 6;
     let ghosts = 0;
     for (let y = mask.y; y < mask.y + mask.height; y += 1) {
-      for (let x = mask.x; x < mask.x + mask.width; x += 1) {
+      for (let x = mask.x; x < mask.x + mask.width - skin; x += 1) {
         if (y >= LINE_TOP - 2 && y <= LINE_TOP + LINE_HEIGHT + 1) continue;
         const wasInk = distance(at(before, x, y), BACKGROUND) > 20;
         if (wasInk && distance(at(after, x, y), BACKGROUND) > 20) ghosts += 1;
       }
     }
     expect(ghosts).toBe(0);
+  });
+
+  it("鄰接的抹除帶不會讓另一軸把線整條塗掉", async () => {
+    // 第二塊落在第一塊右探針（4px）的範圍內 → 水平軸整條 run 都無法取樣。剩下的
+    // 垂直軸兩端都是白底，若讓它無條件覆蓋，就會把藍線塗成一條白帶。
+    const mask = { x: 40, y: 40, width: 190, height: 40 };
+    const { after } = await erase(
+      "probe-contamination",
+      [
+        { x: 60, y: 50, w: 120, h: 20 },
+        { x: 185, y: 50, w: 30, h: 20 },
+      ],
+      { mask },
+    );
+    for (let x = 60; x < 180; x += 1) {
+      expect(distance(at(after, x, LINE_TOP), LINE)).toBeLessThan(24);
+    }
+  });
+
+  it("超過 BRIDGE_MAX_GAP 的抹除帶仍接得回線（寬帶只需自證承載結構）", async () => {
+    // 整行標題壓在表格線上時抹除帶輕易超過上限；硬拒會讓那條線永遠接不回來。
+    // 遮罩左右各留 20px，讓藍線在框外仍有本體（全寬遮罩會落入「結構完全被遮罩
+    // 包住」的已知限制，測到的就不是寬帶了）。
+    const wide = { x: 20, y: 40, width: WIDTH - 40, height: 40 };
+    const block = { x: 30, y: 50, w: WIDTH - 60, h: 20 };
+    expect(block.w + 2).toBeGreaterThan(420); // 膨脹後的抹除帶確實超過上限
+    const { after } = await erase("wide-span", [block], { mask: wide });
+    for (let x = block.x; x < block.x + block.w; x += 1) {
+      expect(distance(at(after, x, LINE_TOP), LINE)).toBeLessThan(24);
+    }
+  });
+
+  it("顆粒背景不會被整片當成字墨抹平", async () => {
+    // 固定容差對照片／顆粒背景蔓延不進去，整塊乾淨背景會被判成墨再填平。
+    const basePath = join(dir, "grain.base.png");
+    const maskPath = join(dir, "grain.mask.png");
+    const outPath = join(dir, "grain.out.png");
+    const noise = Buffer.alloc(WIDTH * HEIGHT * 3);
+    let seed = 12345;
+    for (let i = 0; i < noise.length; i += 1) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff; // 可重現的偽亂數
+      noise[i] = 120 + (((seed >> 16) % 21) - 10); // ±10：照片級顆粒，固定容差 6 蔓延不過去
+    }
+    const grain = await sharp(noise, { raw: { width: WIDTH, height: HEIGHT, channels: 3 } })
+      .png()
+      .toBuffer();
+    const before = await sharp(grain).raw().toBuffer({ resolveWithObject: true });
+    await writeFile(
+      basePath,
+      await sharp(grain)
+        .composite([
+          {
+            input: Buffer.from(
+              `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
+                <rect x="90" y="45" width="60" height="30" fill="#ffffff"/>
+              </svg>`,
+            ),
+            top: 0,
+            left: 0,
+          },
+        ])
+        .png()
+        .toBuffer(),
+    );
+    await writeFile(maskPath, await maskImage());
+    await runScript(basePath, maskPath, outPath);
+    const after = await readPixels(outPath);
+    const original: Pixels = { data: before.data, channels: before.info.channels };
+    // 遮罩內、離「文字」至少 5px 的顆粒背景應該原封不動（容 JPEG 級的微小誤差）。
+    let damaged = 0;
+    for (let y = MASK.y; y < MASK.y + MASK.height; y += 1) {
+      for (let x = MASK.x; x < MASK.x + MASK.width; x += 1) {
+        if (x >= 85 && x <= 155 && y >= 40 && y <= 80) continue;
+        if (distance(at(original, x, y), at(after, x, y)) > 24) damaged += 1;
+      }
+    }
+    expect(damaged).toBe(0);
   });
 
   it("遮罩蓋滿整張圖時明確失敗，而不是靜默回傳原圖", async () => {
