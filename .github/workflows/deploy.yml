@@ -1,0 +1,79 @@
+name: Deploy to Cloud Run
+
+# push 到 main 自動部署；也可在 Actions 頁手動 workflow_dispatch。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 串行化部署：Cloud Run 只允許單一實例、Terraform state 也不容並發 apply。
+# cancel-in-progress: false —— 讓進行中的 apply 跑完，不半途砍斷 state。
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+# id-token: write 是 WIF（OIDC）換取 GCP 權杖的必要權限。
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: slide-maker-503201
+  REGION: asia-east1
+  REPOSITORY: slide-maker
+  IMAGE_NAME: server
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PaddleOCR venv + 模型權重讓映像 ~2GB，建置期峰值更大。清掉 runner 上用不到
+      # 的預裝 SDK，避免 buildx 撞 ENOSPC。
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        id: build
+        env:
+          # commit SHA 當 tag：保證唯一，Cloud Run 才會開新 revision（見 DEPLOYMENT.md）。
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          CACHE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:buildcache
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE" \
+            --cache-to "type=registry,ref=$CACHE,mode=max" \
+            --push .
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      # google provider 與 GCS backend 都自動吃 auth step 設好的 ADC，無需額外憑證。
+      - name: Terraform apply
+        working-directory: infra
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var-file=prod.tfvars \
+            -var="image=${{ steps.build.outputs.image }}"
