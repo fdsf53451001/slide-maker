@@ -26,6 +26,9 @@ export interface ImageProviderCapabilities {
 export type ProviderAvailability =
   { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
 
+/** 附加影像的角色。合約依此決定每張圖的說明文字與適用的規則。 */
+export type ImageReferenceRole = "style" | "content" | "direct-asset" | "base" | "mask";
+
 export interface ImageGenerationRequest {
   projectId: string;
   slide: SlideSpec;
@@ -35,7 +38,13 @@ export interface ImageGenerationRequest {
   references: ReadonlyArray<{
     path: string;
     mediaType: string;
-    role: "style" | "content" | "direct-asset";
+    /**
+     * `base`／`mask` 是編輯任務的內建輸入（被 `edit.baseImageIndex`／`maskImageIndex`
+     * 指到的那兩張），必須與補充參考圖分開標記：把底圖標成 `content` 會讓它落入
+     * 「參考圖不得把文字帶進輸出」這類**全新生成**專用的禁令，等於叫模型丟掉原圖上
+     * 的所有文字（916fa47 的成因）。
+     */
+    role: ImageReferenceRole;
     name?: string;
   }>;
   model: string;
