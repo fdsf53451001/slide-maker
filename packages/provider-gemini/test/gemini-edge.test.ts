@@ -479,6 +479,60 @@ describe("transport error classification", () => {
     });
   });
 
+  it("rejects a streamed over-sized body with no content-length before draining it", async () => {
+    // chunked／串流回應沒有 content-length：舊實作會先 arrayBuffer() 把整個 body 讀進
+    // 記憶體才檢查大小，上限形同虛設。逐塊累計版應在讀滿上限時就丟並取消串流。
+    const state = { pulls: 0, cancelled: false };
+    const chunk = new Uint8Array(4 * 1024 * 1024); // 4 MiB／塊；上限 32 MiB，第 9 塊過線
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            state.pulls += 1;
+            // 遠多於過線所需的塊數（200 × 4 MiB = 800 MiB）：正確實作絕不會全部拉完。
+            if (state.pulls > 200) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk);
+          },
+          cancel() {
+            state.cancelled = true;
+          },
+        }),
+        { status: 200 }, // 無 content-length
+      )) as typeof fetch;
+    await expect(listGeminiModelIds(config)).rejects.toMatchObject({
+      code: "GEMINI_RESPONSE_TOO_LARGE",
+    });
+    // 讀到剛過 32 MiB（約 9 塊）就停手並取消，而非把 800 MiB 全吞下。
+    expect(state.pulls).toBeLessThan(20);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("rejects a streamed body that lies about a small content-length", async () => {
+    // 謊報 content-length=10：預檢放行，逐塊累計仍要在超過 32 MiB 時擋下。
+    const chunk = new Uint8Array(4 * 1024 * 1024);
+    let pulls = 0;
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            if (pulls > 40) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+        { status: 200, headers: { "content-length": "10" } },
+      )) as typeof fetch;
+    await expect(listGeminiModelIds(config)).rejects.toMatchObject({
+      code: "GEMINI_RESPONSE_TOO_LARGE",
+    });
+  });
+
   it("rejects a 200 body that is not JSON", async () => {
     mockFetch(() => ({ text: "<html>gateway</html>" }));
     await expect(listGeminiModelIds(config)).rejects.toMatchObject({
