@@ -343,6 +343,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 20px;
 }
@@ -360,6 +361,50 @@
 }
 .setup-materials-actions .setup-submit {
   margin-top: 0;
+}
+.setup-materials-submit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+/* 群組內的送出鈕改成內容寬，否則 .setup-submit 的 width:100% 會把 checkbox 擠掉 */
+.setup-materials-submit .setup-submit {
+  width: auto;
+}
+/* 需壓過 .setup-card label 的欄位標籤字級／灰階 */
+.setup-card .setup-websearch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* .setup-card input 是 block + width:100%，checkbox 要各自還原成原生尺寸 */
+.setup-websearch-toggle input[type="checkbox"] {
+  display: inline-block;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+/* .setup-card input:focus 把 outline 清掉、只留 border 光暈，但原生 checkbox 不畫 border，
+   焦點會等同不可見；比照 .source-chip 還原焦點環。 */
+.setup-websearch-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.setup-websearch-toggle:has(input:disabled) {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+.setup-card > .setup-materials-hint {
+  margin: 14px 0 0;
+  color: var(--warning);
+  font-size: 12px;
 }
 .outline-actions {
   display: flex;
