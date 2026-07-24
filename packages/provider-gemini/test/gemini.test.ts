@@ -167,6 +167,46 @@ describe("GeminiImageProvider", () => {
     expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
   });
 
+  it("markdown 標記一個都不會出現在真正送上線的 prompt 裡", async () => {
+    // 觸發這次改動的就是 Gemini 影像模型：它會把 ### 與 ** 當字面文字畫上投影片。合約
+    // 組裝在 core，但這條守在傳輸層——哪天有 transport 自己去讀 slide.content 拼 payload，
+    // core 的測試不會紅，這條會。
+    const calls = mockFetch(() => ({
+      json: {
+        candidates: [
+          { content: { parts: [{ inlineData: { mimeType: "image/png", data: REAL_PNG } }] } },
+        ],
+      },
+    }));
+    const request = imageRequest();
+    request.slide.content = [
+      "### 導入成果",
+      "",
+      "**交付時間**下降 79%，成本 -18%。",
+      "",
+      "- 前置作業 *自動化*",
+      "",
+      "| 指標 | 導入前 | 導入後 |",
+      "| --- | --- | --- |",
+      "| 交付 | 14 天 | 3 天 |",
+    ].join("\n");
+    await new GeminiImageProvider({ config, model: "gemini-3.1-flash-image" }).generate(request);
+
+    const prompt = requestParts(calls[0]!)[0]!.text ?? "";
+    for (const marker of ["###", "**", "| ---", "| 指標"]) expect(prompt).not.toContain(marker);
+    for (const fragment of [
+      "導入成果",
+      "交付時間",
+      "79%",
+      "-18%",
+      "前置作業",
+      "自動化",
+      "導入前",
+      "14 天",
+    ])
+      expect(prompt).toContain(fragment);
+  });
+
   it("appends references as inlineData parts in manifest order after the contract text", async () => {
     const refPath = await writeReference("ref");
     const calls = mockFetch(() => ({

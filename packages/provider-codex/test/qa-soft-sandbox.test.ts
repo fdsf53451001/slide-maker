@@ -120,7 +120,11 @@ async function audit(workspaceRoot: string) {
   const value = JSON.parse(await readFile(join(workspace, "qa-audit.json"), "utf8")) as {
     argv: string[];
     cwd: string;
-    input: { slide: { content: string; imagePrompt: string }; style: { promptTemplate: string } };
+    // content 是解析後的 blocks（見 slide-content.ts），不再是原始 markdown 字串。
+    input: {
+      slide: { content: { blocks: unknown[] }; imagePrompt: string };
+      style: { promptTemplate: string };
+    };
   };
   return { workspace, ...value };
 }
@@ -204,7 +208,10 @@ describe("QA Codex soft-isolation integration", () => {
     expect(captured.argv[10]).toContain("$imagegen");
     expect(captured.argv).not.toContain("--search");
     expect(captured.argv[10]).not.toContain(injection);
-    expect(captured.input.slide.content).toBe(injection);
+    // content 送的是解析後的 blocks（markdown 標記不進 prompt），酬載仍原樣留在 input.json。
+    expect(captured.input.slide.content).toEqual({
+      blocks: [{ type: "paragraph", text: injection }],
+    });
     expect(captured.input.slide.imagePrompt).toBe(injection);
     expect(captured.input.style.promptTemplate).toBe(injection);
   });

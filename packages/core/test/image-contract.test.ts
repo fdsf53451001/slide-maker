@@ -8,6 +8,7 @@ import {
   outlineContentLength,
   outlineDataFidelityInstruction,
   outlineOverflowRetryInstruction,
+  serializeImageGenerationInput,
   type ImageGenerationRequest,
 } from "../src/index.js";
 
@@ -355,14 +356,61 @@ describe("shared image-generation contract", () => {
     expect(buildImageGenerationContract(input)).toContain("FACTUAL GROUNDING CONTRACT");
   });
 
-  it("renders pipe tables as tables instead of drawing their syntax", () => {
+  it("describes slide.content as typed blocks and how each type reads visually", () => {
     const prompt = buildImageGenerationContract(request());
-    expect(prompt).toContain("pipe tables");
+    expect(prompt).toContain("slide.content is a list of typed blocks under slide.content.blocks");
+    for (const type of ["heading", "paragraph", "quote", "bullets", "steps", "table"])
+      expect(prompt).toContain(type);
+    // 有序清單的順序由陣列承載，序號字元已被拿掉，模型不能期待在文字裡看到它們。
+    expect(prompt).toMatch(/never by numbering characters in the text/);
+    // emphasis／code 是指向既有文字的索引，不是要模型再加一份文案。
+    expect(prompt).toContain("A block's emphasis array lists words");
+    expect(prompt).toContain("never by drawing marks around them");
+    expect(prompt).toContain("A block's code array lists inline code");
+    expect(prompt).toMatch(/Neither array is extra copy to add/);
+  });
+
+  it("separates a lone punctuation symbol from leftover markup instead of licensing both", () => {
+    // 早期版本寫成「殘留在文字裡的符號都是字面標點」，等於授權模型把未收尾的 `**`
+    // 畫上投影片；反過來一律禁畫又會吃掉乘號與破折號。兩者必須分開講。
+    const prompt = buildImageGenerationContract(request());
     expect(prompt).toContain("never draw the raw #, *, -, backtick, or pipe characters");
-    expect(prompt).toContain("render it as a designed table with aligned columns");
+    expect(prompt).toMatch(/One symbol standing alone between words/);
+    expect(prompt).toMatch(/ordinary punctuation of the copy and stays exactly as written/);
+    expect(prompt).toMatch(/A run of two or more such symbols/);
+    expect(prompt).toMatch(/leftover markup: read them as formatting and leave them undrawn/);
+    // 禁令必須覆蓋所有 untrusted slide 欄位，不只 slide.content。
+    expect(prompt).toMatch(/every untrusted slide field, not just slide.content/);
+  });
+
+  it("tells the model what an unparsed block means", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toContain("A block marked unparsed: true");
+    expect(prompt).toMatch(/treat every markup-looking sequence as formatting to interpret/);
+    expect(prompt).toMatch(/draw none of those characters/);
+  });
+
+  it("explains steps.start and codeBlock, which change what gets drawn", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toMatch(/when it carries start, its visible numbering begins at that value/);
+    expect(prompt).toMatch(/codeBlock \(a verbatim listing/);
+  });
+
+  it("softens emphasis into first-occurrence, since the array carries no position", () => {
+    // emphasis 只有詞、沒有位置：要求「全部出現處都加粗」會讓 11 裡的 1 也變粗。
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toMatch(/Emphasizing the first occurrence of each listed word is enough/);
+    expect(prompt).toMatch(/never emphasize a fragment that merely sits inside a longer word/);
+  });
+
+  it("renders table blocks as tables built from header and rows", () => {
+    const prompt = buildImageGenerationContract(request());
+    expect(prompt).toContain("A table block in slide.content is a real table");
+    expect(prompt).toContain("header holds the header-row cells and rows holds the body rows");
+    expect(prompt).toContain("Render it as a designed table with aligned columns");
     // 表格被壓縮或攤平回條列，等於把大綱好不容易結構化的資訊又丟掉一次。
     expect(prompt).toContain("never flatten the table back into bullets or prose");
-    expect(prompt).toMatch(/separator row of dashes is layout syntax/);
+    expect(prompt).toMatch(/no pipes or dashed separator row exist to draw/);
   });
 
   it("makes decoration yield to a table that will not fit, not the other way round", () => {
@@ -373,7 +421,9 @@ describe("shared image-generation contract", () => {
   it("keeps the table contract out of edits, which must preserve the current image", () => {
     const input = request();
     input.edit = { instruction: "Remove masked text", purpose: "text-removal", baseImageIndex: 0 };
-    expect(buildImageGenerationContract(input)).not.toContain("pipe tables");
+    expect(buildImageGenerationContract(input)).not.toContain(
+      "A table block in slide.content is a real table",
+    );
   });
 
   it("sets a canvas-relative type floor and forbids shrinking to fit", () => {
@@ -420,6 +470,235 @@ describe("shared image-generation contract", () => {
     expect(prompt).not.toContain("slide.content field is the authoritative visible copy");
     // 文字移除不渲染任何字，接地合約在此無意義且會與「不要重畫文字」相衝。
     expect(prompt).not.toContain("FACTUAL GROUNDING CONTRACT");
+  });
+});
+
+describe("markdown 標記不得進入影像 prompt", () => {
+  const markdown = [
+    "### 導入成果",
+    "",
+    "**交付時間**下降 79%，整體成本 -18%。",
+    "",
+    "- 前置作業 *自動化*",
+    "- 佈署改用 `pnpm deploy`",
+    "",
+    "| 指標 | 導入前 | 導入後 |",
+    "| --- | --- | --- |",
+    "| 交付時間 | 14 天 | 3 天 |",
+  ].join("\n");
+
+  function withMarkdown(): ImageGenerationRequest {
+    const input = request();
+    input.slide.content = markdown;
+    return input;
+  }
+
+  function slideOf(input: ImageGenerationRequest): Record<string, unknown> {
+    return (imageGenerationInput(input) as { slide: Record<string, unknown> }).slide;
+  }
+
+  it("送出的是結構化 blocks，序列化後看不到任何標記字元", () => {
+    // 根因：Gemini 影像模型會把 ### 與 ** 當字面文字畫上投影片，prompt 指令擋不住。
+    // 標記字元不進 prompt，模型就不可能畫出來。
+    const serialized = serializeImageGenerationInput(withMarkdown());
+    expect(serialized).not.toContain("###");
+    expect(serialized).not.toContain("**");
+    const content = JSON.stringify(slideOf(withMarkdown()).content);
+    for (const marker of ["#", "*", "`", "|"]) expect(content).not.toContain(marker);
+  });
+
+  it("不附上原始 markdown 字串——附了就等於把標記又送回去", () => {
+    const content = slideOf(withMarkdown()).content;
+    expect(content).toEqual({ blocks: expect.any(Array) });
+  });
+
+  it("解析不吃掉任何可見文字", () => {
+    const serialized = serializeImageGenerationInput(withMarkdown());
+    for (const fragment of [
+      "導入成果",
+      "交付時間",
+      "79%",
+      "-18%",
+      "前置作業",
+      "自動化",
+      "pnpm deploy",
+      "導入前",
+      "導入後",
+      "14 天",
+      "3 天",
+    ])
+      expect(serialized).toContain(fragment);
+  });
+
+  it("表格成為 header/rows 陣列，強調詞另外列出", () => {
+    const blocks = (slideOf(withMarkdown()).content as { blocks: unknown[] }).blocks;
+    expect(blocks).toEqual([
+      { type: "heading", level: 3, text: "導入成果" },
+      {
+        type: "paragraph",
+        text: "交付時間下降 79%，整體成本 -18%。",
+        emphasis: ["交付時間"],
+      },
+      {
+        type: "bullets",
+        items: ["前置作業 自動化", "佈署改用 pnpm deploy"],
+        emphasis: ["自動化"],
+        code: ["pnpm deploy"],
+      },
+      {
+        type: "table",
+        header: ["指標", "導入前", "導入後"],
+        rows: [["交付時間", "14 天", "3 天"]],
+      },
+    ]);
+  });
+
+  it("narrative 與 dataBasis 只去標記、型別不變", () => {
+    // 這兩欄不直接畫上投影片，但模型仍會把裡面的強調字搬上畫布。
+    const input = request();
+    input.slide.narrative = "重點是**成本**與 `latency` 的取捨";
+    input.slide.dataBasis = ["**採用率** 80%", "延遲 *下降* 一半"];
+    const slide = slideOf(input);
+    expect(slide.narrative).toBe("重點是成本與 latency 的取捨");
+    expect(slide.dataBasis).toEqual(["採用率 80%", "延遲 下降 一半"]);
+  });
+
+  it("narrative 與 dataBasis 的行級 markup 也不進 prompt", () => {
+    // 只做行內正規化時，`### 講者重點`、`| A | B |` 會原樣抵達模型並被搬上畫布。
+    const input = request();
+    input.slide.narrative = "### 講者重點\n- 先講成本\n- 再講交期";
+    input.slide.dataBasis = ["| 指標 | 值 |", "| --- | --- |", "1. 來源 A"];
+    const slide = slideOf(input);
+    for (const value of [slide.narrative as string, ...(slide.dataBasis as string[])])
+      for (const marker of ["#", "|", "- "]) expect(value).not.toContain(marker);
+    expect(slide.narrative).toContain("講者重點");
+    expect(slide.narrative).toContain("先講成本");
+    expect((slide.dataBasis as string[]).join(" ")).toContain("來源 A");
+  });
+
+  it("purpose、layoutHint、imagePrompt 的行內標記一併剝掉", () => {
+    const input = request();
+    input.slide.purpose = "解釋 **代理式 AI**";
+    input.slide.layoutHint = "左文右圖，*圖佔六成*";
+    input.slide.imagePrompt = "明亮 `企業` 攝影";
+    const slide = slideOf(input);
+    expect(slide.purpose).toBe("解釋 代理式 AI");
+    expect(slide.layoutHint).toBe("左文右圖，圖佔六成");
+    expect(slide.imagePrompt).toBe("明亮 企業 攝影");
+  });
+
+  it("空 content 送出空陣列而不是空字串", () => {
+    const input = request();
+    input.slide.content = "";
+    expect(slideOf(input).content).toEqual({ blocks: [] });
+  });
+});
+
+/**
+ * 端對端：影像 provider 真正送出去的字串就是 serializeImageGenerationInput() 的輸出，
+ * 所以這裡直接對那個字串把關，而不是只看 blocks 結構。
+ */
+describe("序列化後的影像輸入不得帶著 markdown 語法", () => {
+  const realisticOutline = [
+    "### 導入成果 **摘要**",
+    "",
+    "**交付時間**下降 79%，整體成本 -18%；QA 佔比 2/5。",
+    "",
+    "- 前置作業 *自動化*（含 `pnpm check`）",
+    "  - CI 佈署改用 blue/green，the **critical path** shrank to 3 days",
+    "",
+    "1. 盤點現況",
+    "2) 導入工具",
+    "",
+    "| 指標 | 2023 | 2024 | 2025E | 年複合成長 |",
+    "| --- | ---: | :---: | ---: | --- |",
+    "| 營收（億元） | 12.4 | 18.9 | 27.5 | +49% |",
+    "| 毛利率 | 38.2% | 41.0% | 43.5% | +2.7pp |",
+    "| 客戶數 | 120 | 210 | 350 | +71% |",
+    "| NPS | 32 | 41 | 48 | — |",
+    "| 流失率 | 8.1% | 6.4% | 4.9% | -1.6pp |",
+    "| 人均產值 | 210 萬 | 265 萬 | 320 萬 | +23% |",
+  ].join("\n");
+
+  function outlineInput(): ImageGenerationRequest {
+    const input = request();
+    input.slide.content = realisticOutline;
+    input.slide.narrative = "重點是**成本**與 `latency` 的取捨";
+    input.slide.dataBasis = ["**採用率** 80%", "來源：`ops-dashboard`"];
+    return input;
+  }
+
+  function contentJson(input: ImageGenerationRequest): string {
+    const slide = (imageGenerationInput(input) as { slide: { content: unknown } }).slide;
+    return JSON.stringify(slide.content);
+  }
+
+  it("content 區段一個標記字元都不剩", () => {
+    const content = contentJson(outlineInput());
+    for (const marker of ["#", "*", "`", "|", "_"]) expect(content).not.toContain(marker);
+    // 表格語法整列都不該出現，包含對齊冒號那一版。
+    expect(content).not.toContain("---");
+    expect(content).not.toContain(":---:");
+  });
+
+  it("整份序列化字串看不到 ###、** 與 pipe 表格語法", () => {
+    const serialized = serializeImageGenerationInput(outlineInput());
+    for (const marker of ["###", "**", "| ---", "---:", "```"])
+      expect(serialized).not.toContain(marker);
+  });
+
+  it("每一段可見文字都還在序列化結果裡", () => {
+    const serialized = serializeImageGenerationInput(outlineInput());
+    for (const fragment of [
+      "導入成果",
+      "摘要",
+      "交付時間",
+      "79%",
+      "-18%",
+      "QA 佔比 2/5",
+      "前置作業",
+      "自動化",
+      "pnpm check",
+      "blue/green",
+      "critical path",
+      "盤點現況",
+      "導入工具",
+      "指標",
+      "2025E",
+      "年複合成長",
+      "營收（億元）",
+      "27.5",
+      "+49%",
+      "+2.7pp",
+      "-1.6pp",
+      "人均產值",
+      "320 萬",
+      "採用率",
+      "latency",
+      "ops-dashboard",
+    ])
+      expect(serialized).toContain(fragment);
+  });
+
+  it("五欄六列的表格原封不動送到 blocks，沒有被壓縮或攤平", () => {
+    const blocks = (
+      imageGenerationInput(outlineInput()) as { slide: { content: { blocks: unknown[] } } }
+    ).slide.content.blocks;
+    const table = blocks.find(
+      (block): block is { type: "table"; header: string[]; rows: string[][] } =>
+        (block as { type: string }).type === "table",
+    );
+    expect(table?.header).toHaveLength(5);
+    expect(table?.rows).toHaveLength(6);
+    expect(table?.rows.every((row) => row.length === 5)).toBe(true);
+    expect(table?.rows[5]).toEqual(["人均產值", "210 萬", "265 萬", "320 萬", "+23%"]);
+  });
+
+  it("原文的字面星號與管線句子照樣送達，不被誤判成語法", () => {
+    const input = request();
+    input.slide.content = "成本 2 * 3 * 4 = 24；決策樹 A | B | C 三選一。";
+    const serialized = serializeImageGenerationInput(input);
+    expect(serialized).toContain("成本 2 * 3 * 4 = 24；決策樹 A | B | C 三選一。");
   });
 });
 
