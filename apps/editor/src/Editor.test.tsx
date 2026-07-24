@@ -3363,6 +3363,54 @@ describe("文字圖層鍵盤快捷鍵", () => {
     ).toHaveLength(0);
   });
 
+  it("簡報模式按 Cmd/Ctrl+Z 不還原也不重做，更不自動存回", async () => {
+    // 焦點停在「▶ 簡報模式」按鈕或投影片上時，Cmd/Ctrl+Z 是「上一步」的反射動作；
+    // 少了 canvasIsActiveSurface gate，還原／重做會照常改動編輯頁的文字框，650ms 後還把
+    // 覆蓋後的結果自動存回伺服器——使用者在放映情境誤按就悄悄改了資料。
+    // 用會把 boxes 寫回專案的 stub：非持久化的 stub 會讓「伺服器回應蓋回舊 boxes → 再存一次」
+    // 無限循環，text-layer 寫入次數永遠對不準；持久化後 sameBoxes 成立、自動儲存才會收斂。
+    const project = textLayerProject("簡報模式不還原");
+    const fetchMock = stubPersistingTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("簡報模式不還原");
+
+    // 先在畫布作用中堆出 undo 與 redo 兩條非空歷史：貼兩次到三個框，再還原回兩個框。
+    // 兩條都要非空，否則簡報模式下的按鍵會撞上「空堆疊放行」而分不出有沒有 gate。
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(3));
+    // 正對照：畫布作用中時 Ctrl+Z 照常還原（3 → 2），redo 堆疊同時被填上三框那份快照。
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    // 沖掉 setup 期間的自動儲存 debounce，之後 text-layer 寫入次數才數得準。
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    await waitFor(() => expect(document.querySelector(".presentation-stage")).not.toBeNull());
+    const textLayerCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/text-layer")).length;
+    const callsBefore = textLayerCalls();
+
+    // 還原：非畫布焦點下不得把三框那步倒回來（沒 gate 的話會退成 1 個框）。
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(2);
+    // 重做：redo 堆疊仍非空，沒 gate 的話 ⇧Cmd+Z 會把第三個框加回來（變 3 個框）。
+    // 分兩段各自斷言，避免「先錯還原成 1、再錯重做回 2」互相抵銷而漏判。
+    fireEvent.keyDown(window, { key: "z", metaKey: true, shiftKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(boxElements()).toHaveLength(2);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    // 自動儲存也不該被觸發：presentation 期間沒有任何新的 text-layer 寫入。
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(textLayerCalls()).toBe(callsBefore);
+  });
+
   it("系統設定對話框開著時，快捷鍵不會打到底下的畫布", async () => {
     const project = textLayerProject("對話框擋住畫布");
     stubTextLayerApi(project);
