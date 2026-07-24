@@ -26,6 +26,7 @@ const BACKGROUND = { r: 255, g: 255, b: 255 };
 const LINE = { r: 37, g: 99, b: 235 };
 const LINE_TOP = 60;
 const LINE_HEIGHT = 2;
+const VERTICAL_LINE_LEFT = 120;
 /** 遮罩矩形：上下都切過藍線所在的列，左右也伸出「文字」之外。 */
 const MASK = { x: 70, y: 30, width: 100, height: 60 };
 
@@ -47,22 +48,47 @@ function distance(a: { r: number; g: number; b: number }, b: { r: number; g: num
   return Math.max(Math.abs(a.r - b.r), Math.abs(a.g - b.g), Math.abs(a.b - b.b));
 }
 
-/** 白底 + 橫貫的藍線 + 若干黑色方塊（模擬字墨）。 */
-async function baseImage(blocks: readonly { x: number; y: number; w: number; h: number }[]) {
+interface Block {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill?: string;
+}
+
+/** 白底 + 橫貫的藍線 + 若干色塊（模擬字墨）。`blur` 模擬重新編碼過的柔邊文字。 */
+async function baseImage(blocks: readonly Block[], options: { blur?: number } = {}) {
   const rects = blocks
-    .map((b) => `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="#000000"/>`)
+    .map(
+      (b) =>
+        `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${b.fill ?? "#000000"}"/>`,
+    )
     .join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
     <rect width="${WIDTH}" height="${HEIGHT}" fill="#ffffff"/>
     <rect x="0" y="${LINE_TOP}" width="${WIDTH}" height="${LINE_HEIGHT}" fill="#2563eb"/>
     ${rects}
   </svg>`;
+  const image = sharp(Buffer.from(svg));
+  return (options.blur ? image.blur(options.blur) : image).png().toBuffer();
+}
+
+/** 白底 + 一條垂直藍線（測橋接的另一軸）。 */
+async function verticalBase(blocks: readonly Block[]) {
+  const rects = blocks
+    .map((b) => `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="#000000"/>`)
+    .join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
+    <rect width="${WIDTH}" height="${HEIGHT}" fill="#ffffff"/>
+    <rect x="${VERTICAL_LINE_LEFT}" y="0" width="${LINE_HEIGHT}" height="${HEIGHT}" fill="#2563eb"/>
+    ${rects}
+  </svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-async function maskImage() {
+async function maskImage(rect: { x: number; y: number; width: number; height: number } = MASK) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
-    <rect x="${MASK.x}" y="${MASK.y}" width="${MASK.width}" height="${MASK.height}" fill="#ffffff"/>
+    <rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" fill="#ffffff"/>
   </svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
@@ -101,13 +127,17 @@ describe.skipIf(!HAS_OCR_VENV)("local_inpaint.py 抹字精準度", () => {
 
   async function erase(
     name: string,
-    blocks: readonly { x: number; y: number; w: number; h: number }[],
+    blocks: readonly Block[],
+    options: { blur?: number; vertical?: boolean; mask?: typeof MASK } = {},
   ) {
     const basePath = join(dir, `${name}.base.png`);
     const maskPath = join(dir, `${name}.mask.png`);
     const outPath = join(dir, `${name}.out.png`);
-    await writeFile(basePath, await baseImage(blocks));
-    await writeFile(maskPath, await maskImage());
+    await writeFile(
+      basePath,
+      options.vertical ? await verticalBase(blocks) : await baseImage(blocks, options),
+    );
+    await writeFile(maskPath, await maskImage(options.mask));
     await runScript(basePath, maskPath, outPath);
     return { before: await readPixels(basePath), after: await readPixels(outPath) };
   }
@@ -131,25 +161,97 @@ describe.skipIf(!HAS_OCR_VENV)("local_inpaint.py 抹字精準度", () => {
   });
 
   it("穿過遮罩的線原樣保留，字墨被抹成背景", async () => {
+    // 上方方塊底邊壓在線上（y 58..75 蓋過 y 60..61），確保線所在的列真的落在字墨
+    // 判定範圍內——否則這個案例只驗到膨脹沒有外擴，等於沒測到結構保留。
     const { after } = await erase("keep-line", [
-      { x: 80, y: 40, w: 40, h: 18 },
-      { x: 120, y: 64, w: 40, h: 18 },
+      { x: 80, y: 40, w: 30, h: 18 },
+      { x: 120, y: 58, w: 30, h: 18 },
     ]);
     for (let x = MASK.x; x < MASK.x + MASK.width; x += 1) {
       expect(distance(at(after, x, LINE_TOP), LINE)).toBeLessThan(24);
     }
     // 字墨原位置回到白底（取方塊中心，避開與線相接的邊緣）。
-    expect(distance(at(after, 100, 48), BACKGROUND)).toBeLessThan(16);
-    expect(distance(at(after, 140, 74), BACKGROUND)).toBeLessThan(16);
+    expect(distance(at(after, 95, 48), BACKGROUND)).toBeLessThan(16);
+    expect(distance(at(after, 135, 70), BACKGROUND)).toBeLessThan(16);
   });
 
   it("被文字蓋住的線會被接回，而不是留下缺口", async () => {
     // 方塊完整覆蓋藍線的 x=100..139 一段：輸入影像裡那段線根本不存在。
     const { after } = await erase("bridge", [{ x: 100, y: 50, w: 40, h: 24 }]);
     for (let x = 100; x < 140; x += 1) {
-      expect(distance(at(after, x, LINE_TOP), LINE)).toBeLessThan(24);
+      expect(distance(at(after, x, LINE_TOP), LINE)).toBeLessThan(8);
     }
     expect(distance(at(after, 120, 44), BACKGROUND)).toBeLessThan(16);
     expect(distance(at(after, 120, 80), BACKGROUND)).toBeLessThan(16);
+  });
+
+  it("被文字蓋住的『垂直』線同樣接回（橋接不可固定偏好水平軸）", async () => {
+    // 兩軸都能橋接：水平方向兩端是白底、垂直方向兩端是藍線，兩者色差都是 0。
+    // 若 tie-break 固定給水平，這條線會被整段塗成白底。
+    const { after } = await erase("bridge-vertical", [{ x: 100, y: 45, w: 44, h: 30 }], {
+      vertical: true,
+    });
+    for (let y = 45; y < 75; y += 1) {
+      expect(distance(at(after, VERTICAL_LINE_LEFT, y), LINE)).toBeLessThan(8);
+    }
+    expect(distance(at(after, 105, 60), BACKGROUND)).toBeLessThan(16);
+  });
+
+  it("柔邊低對比文字仍被抹掉，不留輪廓殘影", async () => {
+    // 重新編碼／縮放過的投影片，字緣 ramp 每像素只差幾級，flood 容差擋不住；
+    // 背景還必須「顏色出現在框外樣本裡」這道才攔得下來。
+    const { before, after } = await erase(
+      "soft-edge",
+      [{ x: 85, y: 40, w: 70, h: 30, fill: "#b9b9b9" }],
+      { blur: 1.6 },
+    );
+    let ghosts = 0;
+    for (let y = MASK.y; y < MASK.y + MASK.height; y += 1) {
+      for (let x = MASK.x; x < MASK.x + MASK.width; x += 1) {
+        if (y >= LINE_TOP - 2 && y <= LINE_TOP + LINE_HEIGHT + 1) continue; // 線本來就該留著
+        const wasInk = distance(at(before, x, y), BACKGROUND) > 20;
+        if (wasInk && distance(at(after, x, y), BACKGROUND) > 20) ghosts += 1;
+      }
+    }
+    expect(ghosts).toBe(0);
+  });
+
+  it("遮罩切在筆劃中間時，框內那半不會被當成背景留下來", async () => {
+    // 一整條連通的墨（模擬底線相連的文字）從遮罩右緣露出 2px：字會沿著自己
+    // 蔓延成「背景」而完全不被抹掉，除非另外檢查團塊有沒有貫穿到框外。
+    // 刻意讓它不碰到藍線——墨若與貫穿結構相連就分不開了，那是已知限制，
+    // 不是這條測試要釘的行為。
+    const mask = { x: 60, y: 20, width: 100, height: 34 };
+    const { before, after } = await erase(
+      "boundary-leak",
+      [
+        { x: 70, y: 26, w: 92, h: 6 },
+        { x: 70, y: 26, w: 6, h: 22 },
+        { x: 100, y: 26, w: 6, h: 22 },
+        { x: 130, y: 26, w: 6, h: 22 },
+      ],
+      { mask },
+    );
+    let ghosts = 0;
+    for (let y = mask.y; y < mask.y + mask.height; y += 1) {
+      for (let x = mask.x; x < mask.x + mask.width; x += 1) {
+        if (y >= LINE_TOP - 2 && y <= LINE_TOP + LINE_HEIGHT + 1) continue;
+        const wasInk = distance(at(before, x, y), BACKGROUND) > 20;
+        if (wasInk && distance(at(after, x, y), BACKGROUND) > 20) ghosts += 1;
+      }
+    }
+    expect(ghosts).toBe(0);
+  });
+
+  it("遮罩蓋滿整張圖時明確失敗，而不是靜默回傳原圖", async () => {
+    // 沒有框外樣本就無從判斷背景；若照樣 exit 0，呼叫端會把「還有字的原圖」
+    // 當成去字背景存起來，編輯器再把文字層疊上去 → 使用者看到雙重文字。
+    const basePath = join(dir, "full.base.png");
+    const maskPath = join(dir, "full.mask.png");
+    await writeFile(basePath, await baseImage([{ x: 80, y: 40, w: 40, h: 18 }]));
+    await writeFile(maskPath, await maskImage({ x: 0, y: 0, width: WIDTH, height: HEIGHT }));
+    await expect(runScript(basePath, maskPath, join(dir, "full.out.png"))).rejects.toThrow(
+      /no background to sample/,
+    );
   });
 });

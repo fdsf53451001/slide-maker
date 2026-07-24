@@ -72,7 +72,7 @@ function maskedEditRequest(basePath: string, maskPath: string): ImageGenerationR
       { path: basePath, mediaType: "image/png", role: "content" },
       { path: maskPath, mediaType: "image/png", role: "content" },
     ],
-    model: "opencv-inpaint-telea",
+    model: "opencv-inpaint-telea-v2",
     parameters: {},
     edit: {
       instruction: "erase text",
@@ -93,7 +93,7 @@ describe("LocalInpaintProvider", () => {
       const result = await provider.generate(maskedEditRequest(png, png));
       expect(result.mediaType).toBe("image/png");
       expect(result.extension).toBe("png");
-      expect(result.model).toBe("opencv-inpaint-telea");
+      expect(result.model).toBe("opencv-inpaint-telea-v2");
       // PNG magic bytes：jobs.ts 的 validatedOutput 也用同一個檢查。
       expect([...result.bytes.subarray(0, 4)]).toEqual([137, 80, 78, 71]);
     });
