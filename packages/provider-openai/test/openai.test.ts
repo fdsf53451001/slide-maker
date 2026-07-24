@@ -89,12 +89,62 @@ function pixelAt(image: { pixels: Buffer; width: number }, x: number, y: number)
   return [...image.pixels.subarray(offset, offset + 4)];
 }
 
+/**
+ * 解析 multipart/form-data 的原始 bytes。
+ *
+ * 逐 part 掃描 boundary，只在 header 區段上比對欄位名（不掃整份 body——二進位內容裡
+ * 出現 `name="..."` 的 bytes 會誤判成欄位），part 內容保留原 bytes（不經 utf8）。
+ * `order` 是有序的 `name::filename` 序列：append 的先後正是這次改動的重點，用無序的
+ * Map 斷言會讓兩張圖對調也照樣通過。
+ */
+function parseMultipart(raw: Buffer): {
+  files: Map<string, Uint8Array>;
+  order: string[];
+  fieldNames: string[];
+} {
+  const text = raw.toString("latin1");
+  const files = new Map<string, Uint8Array>();
+  const order: string[] = [];
+  const fieldNames: string[] = [];
+  const boundaryMatch = /^--([^\r\n]+)\r\n/.exec(text);
+  const marker = boundaryMatch?.[1];
+  if (marker === undefined) return { files, order, fieldNames };
+  const boundary = `--${marker}`;
+  let cursor = 0;
+  for (;;) {
+    const start = text.indexOf(boundary, cursor);
+    if (start === -1) break;
+    const headerStart = start + boundary.length;
+    if (text.startsWith("--", headerStart)) break; // 結尾 boundary
+    const headerEnd = text.indexOf("\r\n\r\n", headerStart);
+    if (headerEnd === -1) break;
+    const header = text.slice(headerStart, headerEnd);
+    const bodyStart = headerEnd + 4;
+    const bodyEnd = text.indexOf(`\r\n${boundary}`, bodyStart);
+    if (bodyEnd === -1) break;
+    const name = /name="([^"]*)"/.exec(header)?.[1];
+    const filename = /filename="([^"]*)"/.exec(header)?.[1];
+    if (name !== undefined) {
+      fieldNames.push(name);
+      if (filename !== undefined) {
+        const key = `${name}::${filename}`;
+        order.push(key);
+        files.set(key, raw.subarray(bodyStart, bodyEnd));
+      }
+    }
+    cursor = bodyEnd;
+  }
+  return { files, order, fieldNames };
+}
+
 // ---- fake OpenAI-compatible server -------------------------------------------
 
 interface Captured {
   method: string;
   path: string;
   body: unknown;
+  /** 原始請求 bytes，保留給 multipart 測試逐 part 取回二進位（body 的 utf8 會毀掉 PNG）。 */
+  rawBuffer: Buffer;
 }
 
 interface FakeServer {
@@ -111,14 +161,15 @@ async function startFake(responder: Responder): Promise<FakeServer> {
     const chunks: Buffer[] = [];
     req.on("data", (part: Buffer) => chunks.push(part));
     req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
+      const rawBuffer = Buffer.concat(chunks);
+      const raw = rawBuffer.toString("utf8");
       let body: unknown;
       try {
         body = raw ? JSON.parse(raw) : undefined;
       } catch {
         body = raw;
       }
-      const captured: Captured = { method: req.method ?? "", path: req.url ?? "", body };
+      const captured: Captured = { method: req.method ?? "", path: req.url ?? "", body, rawBuffer };
       requests.push(captured);
       const result = responder(captured);
       res.writeHead(result.status, { "content-type": "application/json" });
@@ -313,8 +364,8 @@ describe("OpenAiCompatibleImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: refPath, mediaType: "image/png", role: "content", name: "Current slide" },
-        { path: refPath, mediaType: "image/png", role: "content", name: "Mask" },
+        { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
+        { path: refPath, mediaType: "image/png", role: "mask", name: "Mask" },
         { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
       ],
       edit: {
@@ -367,8 +418,8 @@ describe("OpenAiCompatibleImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: basePath, mediaType: "image/png", role: "content", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "content", name: "Mask" },
+        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
       ],
       edit: {
         instruction: "Remove text",
@@ -396,10 +447,21 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
   });
 
-  it("images shape reaches /images/edits with intrinsic base and mask inputs", async () => {
+  it("images shape sends base and a flattened mask through image[], not the mask field", async () => {
+    // gpt 走 /images/edits 時，官方 `mask` 欄位模型讀不到（實測對這條 gateway 也無約束
+    // 力），合約的「Image 2 is a locator ... Read it」因此形同虛設。base 與攤平後的 mask
+    // 都放進 image[]（模型可讀），順序對齊合約 Image 1 / Image 2；不再送 `mask` 欄位。
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
-    const refPath = join(tmpdir(), `openai-native-edit-${process.pid}.png`);
-    await writeFile(refPath, Buffer.from(b64, "base64"));
+    const basePath = join(tmpdir(), `openai-native-edit-base-${process.pid}.png`);
+    await writeFile(basePath, Buffer.from(b64, "base64"));
+    // 遮罩：白框＋透明底（textMask 的形狀），送出前必須攤成不透明黑底白框。
+    const maskBytes = renderSvgPng(
+      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+      1920,
+      1080,
+    );
+    const maskPath = join(tmpdir(), `openai-native-edit-mask-${process.pid}.png`);
+    await writeFile(maskPath, Buffer.from(maskBytes));
     active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
     const provider = new OpenAiCompatibleImageProvider({
       config: active.config,
@@ -409,13 +471,94 @@ describe("OpenAiCompatibleImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: refPath, mediaType: "image/png", role: "content", name: "Current slide" },
-        { path: refPath, mediaType: "image/png", role: "content", name: "Mask" },
+        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
       ],
       edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
     });
-    expect(active.requests[0]!.path).toBe("/v1/images/edits");
-    expect(String(active.requests[0]!.body)).toContain("This is an image editing task");
+    const captured = active.requests[0]!;
+    expect(captured.path).toBe("/v1/images/edits");
+    expect(String(captured.body)).toContain("This is an image editing task");
+    const { files, order, fieldNames } = parseMultipart(captured.rawBuffer);
+    // 順序即合約的 Image 1 / Image 2；沒有獨立的 mask 欄位。
+    expect(order).toEqual(["image[]::image.png", "image[]::mask.png"]);
+    expect(fieldNames).not.toContain("mask");
+    const baseSent = files.get("image[]::image.png")!;
+    const maskSent = files.get("image[]::mask.png")!;
+    // base 原樣送出。
+    expect(Buffer.from(baseSent).equals(Buffer.from(b64, "base64"))).toBe(true);
+    // 遮罩已攤平：非原檔 bytes，透明處變不透明黑、白框仍是白，尺寸為 canvas。
+    expect(Buffer.from(maskSent).equals(Buffer.from(maskBytes))).toBe(false);
+    const image = decodePixels(new Uint8Array(maskSent));
+    expect(image.width).toBe(1920);
+    expect(image.height).toBe(1080);
+    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+  });
+
+  it("images shape attaches every reference in manifest order, so Image N stays aligned", async () => {
+    // 合約會把 request.references 逐筆列成 Image N。只送 base+mask 的話，有風格參考圖的
+    // 專案 prompt 會說「Image 3: role=style」卻沒有第三張圖，編號從那裡起全部錯位。
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    const refPath = join(tmpdir(), `openai-edit-order-${process.pid}.png`);
+    await writeFile(refPath, Buffer.from(b64, "base64"));
+    const maskBytes = renderSvgPng(
+      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+      1920,
+      1080,
+    );
+    const maskPath = join(tmpdir(), `openai-edit-order-mask-${process.pid}.png`);
+    await writeFile(maskPath, Buffer.from(maskBytes));
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    await provider.generate({
+      ...imageRequest(),
+      // jobs.ts 實際組出的形狀：base、mask，接著才是補充參考圖。
+      references: [
+        { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
+        { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
+        { path: refPath, mediaType: "image/png", role: "direct-asset", name: "Panel" },
+      ],
+      edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
+    });
+    const { order, fieldNames } = parseMultipart(active.requests[0]!.rawBuffer);
+    expect(order).toEqual([
+      "image[]::image.png",
+      "image[]::mask.png",
+      "image[]::reference-2.png",
+      "image[]::reference-3.png",
+    ]);
+    expect(fieldNames.filter((name) => name === "image[]")).toHaveLength(4);
+    // 合約列到 Image 4，附圖就必須有 4 張。
+    expect(String(active.requests[0]!.body)).toContain('Image 4: role=direct-asset; name="Panel"');
+  });
+
+  it("images shape rejects more references than the endpoint's image[] limit", async () => {
+    const refPath = join(tmpdir(), `openai-edit-limit-${process.pid}.png`);
+    await writeFile(refPath, Buffer.from(png(1920, 1080)));
+    active = await startFake(() => ({ status: 200, json: { data: [] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+      apiShape: "images",
+    });
+    await expect(
+      provider.generate({
+        ...imageRequest(),
+        references: Array.from({ length: 17 }, () => ({
+          path: refPath,
+          mediaType: "image/png",
+          role: "style" as const,
+          name: "Style",
+        })),
+      }),
+    ).rejects.toMatchObject({ code: "OPENAI_IMAGE_REFERENCES_LIMIT" });
+    expect(active.requests).toHaveLength(0);
   });
 
   it("images shape declares reference-image support (via /images/edits image[])", () => {
@@ -546,8 +689,8 @@ describe("OpenAiCompatibleImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: basePath, mediaType: "image/png", role: "content", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "content", name: "Mask" },
+        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
       ],
       edit: {
         instruction: "Remove text",

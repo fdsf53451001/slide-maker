@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -69,8 +69,8 @@ function maskedEditRequest(basePath: string, maskPath: string): ImageGenerationR
     width: 1920,
     height: 1080,
     references: [
-      { path: basePath, mediaType: "image/png", role: "content" },
-      { path: maskPath, mediaType: "image/png", role: "content" },
+      { path: basePath, mediaType: "image/png", role: "base" },
+      { path: maskPath, mediaType: "image/png", role: "mask" },
     ],
     model: "opencv-inpaint-telea",
     parameters: {},
@@ -261,6 +261,118 @@ describe("extract-text route with local-inpaint (default engine)", () => {
       expect(((await denied.json()) as { error?: string }).error).toBe(
         "FULL_SLIDE_GENERATION_UNSUPPORTED",
       );
+    });
+  }, 30_000);
+});
+
+describe("edit-image route mask normalization", () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+  });
+
+  it("把前端送來的 960×540 遮罩正規化成 canvas 尺寸後才存檔", async () => {
+    // OpenAI /images/edits 要求 mask 與 image 同尺寸，下游各通道也才不必各自 resize。
+    // saveAsset 在 jobs.enqueue 之前執行，所以 202 之後遮罩檔就已經落地，不需要等 job。
+    await withFakeEngine("", async (dir) => {
+      const png = await smallPng(dir);
+      await writeFile(join(dir, "fake-inpaint.sh"), `#!/bin/sh\ncp "${png}" "$3"\n`, "utf8");
+      const dataRoot = await mkdtemp(join(tmpdir(), "slide-maker-mask-normalize-"));
+      const app = await createApp(dataRoot, stubEditorDist());
+      await new Promise<void>((resolve, reject) => {
+        server = app.listen(0, "127.0.0.1", (error?: Error) => (error ? reject(error) : resolve()));
+      });
+      const baseUrl = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
+      const json = async <T>(path: string, init?: RequestInit): Promise<T> => {
+        const response = await fetch(`${baseUrl}${path}`, init);
+        const body = (await response.json()) as T & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? String(response.status));
+        return body;
+      };
+      let project = await json<PresentationProject>("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ topic: "遮罩正規化", brief: { desiredSlideCount: 1 } }),
+      });
+      await json<PresentationProject>(`/api/projects/${project.id}/outline`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ replace: true }),
+      });
+      const slideId = (await json<PresentationProject>(`/api/projects/${project.id}`)).slides[0]!
+        .id;
+      await json<GenerationJob>(`/api/projects/${project.id}/slides/${slideId}/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "mock-image" }),
+      });
+      await waitFor(async () => {
+        project = await json<PresentationProject>(`/api/projects/${project.id}`);
+        return project.slides[0]!.versions.length === 1;
+      });
+
+      // 半尺寸遮罩：透明底＋白色塗抹區，塗抹區在 960×540 座標的 (240,135)-(720,405)。
+      const halfMask = await sharp({
+        create: {
+          width: 960,
+          height: 540,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+      })
+        .composite([
+          {
+            input: {
+              create: { width: 480, height: 270, channels: 4, background: "#ffffff" },
+            },
+            left: 240,
+            top: 135,
+          },
+        ])
+        .png()
+        .toBuffer();
+      const response = await fetch(
+        `${baseUrl}/api/projects/${project.id}/slides/${slideId}/edit-image`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: "local-inpaint",
+            instruction: "只改遮罩標到的區域",
+            maskDataUrl: `data:image/png;base64,${halfMask.toString("base64")}`,
+          }),
+        },
+      );
+      expect(response.status).toBe(202);
+      // 這裡驗的是「存檔前有沒有正規化」，job 成敗無關（saveAsset 在 enqueue 之前）。
+      // 但仍等它進入終態，免得假引擎的目錄被 finally 移除後才跑，噴出無關的 stderr。
+      const { id: editJobId } = (await response.json()) as GenerationJob;
+      await waitFor(async () => {
+        const current = await json<PresentationProject>(`/api/projects/${project.id}`);
+        const job = current.jobs.find((candidate) => candidate.id === editJobId);
+        return !!job && ["completed", "failed", "cancelled"].includes(job.status);
+      });
+
+      const maskDir = join(dataRoot, "projects", project.id, "assets", "edit-masks");
+      const [stored] = await readdir(maskDir);
+      expect(stored).toBeDefined();
+      const normalized = sharp(join(maskDir, stored!));
+      const metadata = await normalized.metadata();
+      expect({ width: metadata.width, height: metadata.height }).toEqual({
+        width: 1920,
+        height: 1080,
+      });
+      // 塗抹區放大兩倍後是 (480,270)-(1440,810)：角落仍透明、中心不透明。
+      const { data, info } = await normalized.raw().toBuffer({ resolveWithObject: true });
+      const alphaAt = (x: number, y: number) =>
+        data[(y * info.width + x) * info.channels + (info.channels - 1)];
+      expect(alphaAt(5, 5)).toBe(0);
+      expect(alphaAt(960, 540)).toBe(255);
+      // kernel:"nearest" 的重點：邊界不得出現半透明過渡帶，否則 compositeMaskedEdit 的
+      // dest-in 之後會變成邊界鬼影。跨越邊界的相鄰像素只能是 0 或 255。
+      for (let x = 470; x < 495; x += 1) expect([0, 255]).toContain(alphaAt(x, 540));
     });
   }, 30_000);
 });

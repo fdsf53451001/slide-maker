@@ -2059,7 +2059,20 @@ export async function createApp(
         metadata.height > 4096
       )
         throw new Error("EDIT_MASK_INVALID");
-      maskPath = await repository.saveAsset(projectId, `edit-masks/${randomUUID()}.png`, bytes);
+      // 正規化到 canvas 尺寸：前端可能送 960×540，而 OpenAI /images/edits 要求 mask 與
+      // image 同尺寸，下游各通道也才不必各自 resize。kernel:"nearest" 是必要的——遮罩是
+      // 二值的，而放大（960→1920）走的是 bicubic，會在邊緣 overshoot 出半透明過渡帶，
+      // 那些半透明像素在 compositeMaskedEdit 的 dest-in 之後會變成邊界鬼影。
+      // 格式／尺寸驗證在正規化之前。
+      const normalized = await sharp(bytes)
+        .resize(project.canvas.width, project.canvas.height, { fit: "fill", kernel: "nearest" })
+        .png()
+        .toBuffer();
+      maskPath = await repository.saveAsset(
+        projectId,
+        `edit-masks/${randomUUID()}.png`,
+        new Uint8Array(normalized),
+      );
     }
     const job = await jobs.enqueue(projectId, slideId, providerId, {
       instruction,

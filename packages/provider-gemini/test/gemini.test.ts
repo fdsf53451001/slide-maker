@@ -209,8 +209,8 @@ describe("GeminiImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: refPath, mediaType: "image/png", role: "content" as const, name: "Current slide" },
-        { path: refPath, mediaType: "image/png", role: "content" as const, name: "Mask" },
+        { path: refPath, mediaType: "image/png", role: "base" as const, name: "Current slide" },
+        { path: refPath, mediaType: "image/png", role: "mask" as const, name: "Mask" },
         { path: refPath, mediaType: "image/png", role: "style" as const, name: "Style A" },
       ],
       edit: {
@@ -239,8 +239,8 @@ describe("GeminiImageProvider", () => {
     }));
     const provider = new GeminiImageProvider({ config, model: "gemini-3.1-flash-image" });
     const references = [
-      { path: refPath, mediaType: "image/png", role: "content" as const, name: "Current slide" },
-      { path: refPath, mediaType: "image/png", role: "content" as const, name: "Mask" },
+      { path: refPath, mediaType: "image/png", role: "base" as const, name: "Current slide" },
+      { path: refPath, mediaType: "image/png", role: "mask" as const, name: "Mask" },
     ];
     // 1) text-removal masked edit → temperature 0（實測可大幅降低漏抹率）。
     await provider.generate({
@@ -282,8 +282,8 @@ describe("GeminiImageProvider", () => {
     await provider.generate({
       ...imageRequest(),
       references: [
-        { path: basePath, mediaType: "image/png", role: "content" as const, name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "content" as const, name: "Mask" },
+        { path: basePath, mediaType: "image/png", role: "base" as const, name: "Current slide" },
+        { path: maskPath, mediaType: "image/png", role: "mask" as const, name: "Mask" },
       ],
       edit: {
         instruction: "Remove text",

@@ -77,11 +77,7 @@ export function pageNumberSvg(project: PresentationProject, order: number): Buff
  * 把頁碼疊圖接到底圖上，但**不決定輸出編碼**——由呼叫端接 `.png()` 或 `compressSlideImage()`
  * 收尾，避免「先編一次 PNG 再解開重編 JPEG」那份立刻被丟棄的中間產物。
  */
-function compositePageNumber(
-  project: PresentationProject,
-  bytes: Uint8Array,
-  svg: Buffer,
-): Sharp {
+function compositePageNumber(project: PresentationProject, bytes: Uint8Array, svg: Buffer): Sharp {
   return (
     sharp(bytes)
       // 幾何是畫布座標系的，底圖必須先對齊畫布尺寸——比 renderComposite 少這一步的話，

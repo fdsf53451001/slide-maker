@@ -276,6 +276,53 @@ describe("QA job persistence contract", () => {
     });
     expect(provider.captured?.references).toHaveLength(1);
     expect(provider.captured?.references[0]?.name).toBe("Current slide image");
+    // 底圖必須是 base 而非 content：標成 content 會讓共用合約把「參考圖的文字不得帶進
+    // 輸出」這條全新生成的禁令套到要保留的原圖上。
+    expect(provider.captured?.references[0]?.role).toBe("base");
+  });
+
+  it("labels the mask reference with the mask role at the index the edit points at", async () => {
+    // role 與 index 分歧會是無聲的：合約會同時說「Image 2 是定位圖」與「Image 2 是風格
+    // 參考圖，取它的配色」。這裡把 jobs.ts 實際組出的形狀釘住。
+    const provider = new QaTextExtractionProvider();
+    const { repository, project, runner } = await fixture(provider);
+    const slide = project.slides[0]!;
+    const generated = await runner.enqueue(project.id, slide.id, provider.id);
+    const first = await waitForTerminalJob(repository, project.id, generated.id);
+    expect(first.job.status).toBe("completed");
+    const maskBytes = await sharp({
+      create: {
+        width: project.canvas.width,
+        height: project.canvas.height,
+        channels: 4,
+        background: "#ffffff",
+      },
+    })
+      .png()
+      .toBuffer();
+    const maskPath = await repository.saveAsset(
+      project.id,
+      "edit-masks/qa-mask.png",
+      new Uint8Array(maskBytes),
+    );
+
+    const edited = await runner.enqueue(project.id, slide.id, provider.id, {
+      instruction: "只改遮罩標到的那張卡片",
+      baseVersionId: first.job.resultVersionId!,
+      maskPath,
+    });
+    const second = await waitForTerminalJob(repository, project.id, edited.id);
+
+    expect(second.job.status).toBe("completed");
+    const captured = provider.captured!;
+    expect(captured.references[captured.edit!.baseImageIndex]).toMatchObject({
+      name: "Current slide image",
+      role: "base",
+    });
+    expect(captured.references[captured.edit!.maskImageIndex!]).toMatchObject({
+      name: "Edit mask",
+      role: "mask",
+    });
   });
 
   it("deletes superseded text-extraction assets after replacing the version", async () => {
