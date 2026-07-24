@@ -25,6 +25,11 @@ editing, or the extracted text layer — not by dragging text boxes.
 
 ## Features
 
+![Uploading 截圖 2026-07-24 下午2.50.55.png…]()
+
+<img width="1134" height="688" alt="截圖 2026-07-24 下午2 50 33" src="https://github.com/user-attachments/assets/8d8f0cda-9e69-4bc8-af64-e3805407bd98" />
+
+
 **Authoring workflow**
 
 - Two-step persisted flow: **brief → outline**, then **settings → generate deck**. The
