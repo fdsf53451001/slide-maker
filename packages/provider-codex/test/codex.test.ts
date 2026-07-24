@@ -8,6 +8,7 @@ import {
   informationDensityInstruction,
   spawnWithArgv,
 } from "../src/index.js";
+import { CODEX_PROBE_TIMEOUT_MS, requireResponsiveCodexCli } from "./support/codex-cli-probe.js";
 
 function request(parameters: Record<string, unknown> = {}): ImageGenerationRequest {
   const project = createProject({ topic: "Codex 軟隔離測試" });
@@ -94,26 +95,26 @@ describe("Codex image soft sandbox", () => {
     expect(instruction).toContain("Never invent unsupported facts");
   });
 
-  it("recognizes the required flags in an installed Codex CLI without running a turn", async (context) => {
-    let result;
-    try {
-      result = await spawnWithArgv("codex", ["exec", "--help"], { timeoutMs: 5_000 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return context.skip();
-      throw error;
-    }
-    expect(result.exitCode).toBe(0);
-    for (const flag of [
-      "--json",
-      "--ephemeral",
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--sandbox",
-      "--cd",
-    ]) {
-      expect(result.stdout).toContain(flag);
-    }
-  });
+  it(
+    "recognizes the required flags in an installed Codex CLI without running a turn",
+    { timeout: CODEX_PROBE_TIMEOUT_MS + 8_000 },
+    async (context) => {
+      // Skips (with a reason) when the real CLI is missing or unresponsive; the
+      // captured `codex exec --help` result is reused so we never spawn twice.
+      const result = await requireResponsiveCodexCli(context);
+      expect(result.exitCode).toBe(0);
+      for (const flag of [
+        "--json",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--sandbox",
+        "--cd",
+      ]) {
+        expect(result.stdout).toContain(flag);
+      }
+    },
+  );
 
   it("is quota-safe and unavailable by default", async () => {
     const provider = new CodexImageSpikeProvider();
