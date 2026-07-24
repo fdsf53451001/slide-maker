@@ -2798,9 +2798,19 @@ header {
   color: var(--text-2);
   cursor: pointer;
 }
+/* 舞台寬度必須由「對話框剩下多少高度」反推，否則 1440×900 這種常見視窗下整份對話框
+ * 就會高出約 30px，讓 `.image-edit-dialog` 長出側邊捲軸。--image-edit-chrome 是舞台以外
+ * 的固定高度：header＋說明＋控制列＋按鈕列＋內距約 348px，再加 backdrop 上下各 28px，
+ * 取 412px 留一點餘裕。不可改成 aspect-ratio 搭 max-height／height: 100%——那會讓舞台盒
+ * 與圖片比例脫鉤（object-fit: contain 產生 letterbox），框選座標是相對舞台盒換算的，
+ * 一旦有邊條遮罩範圍就會整個歪掉。480px 是下限：再矮的視窗寧可讓對話框自己捲，也不要把
+ * 圖縮到框選不了。 */
 .image-mask-stage {
+  --image-edit-chrome: 412px;
   position: relative;
   overflow: hidden;
+  width: clamp(480px, calc((100vh - var(--image-edit-chrome)) * 16 / 9), 100%);
+  margin-inline: auto;
   aspect-ratio: 16/9;
   border: 1px solid #2e394f;
   border-radius: 8px;
