@@ -2028,7 +2028,8 @@ header {
 }
 .upload-source,
 .add-text-source,
-.add-web-source {
+.add-web-source,
+.add-url-source {
   display: grid;
   gap: 5px;
   border: 1px dashed var(--accent);
@@ -2042,12 +2043,14 @@ header {
 }
 .upload-source:hover:not(.disabled),
 .add-text-source:hover:not(:disabled),
-.add-web-source:hover:not(:disabled) {
+.add-web-source:hover:not(:disabled),
+.add-url-source:hover:not(:disabled) {
   background: rgba(var(--accent-rgb), 0.08);
 }
 .upload-source span,
 .add-text-source span,
-.add-web-source span {
+.add-web-source span,
+.add-url-source span {
   color: var(--text-dim-2);
   font:
     9px "DM Mono",
@@ -2059,12 +2062,14 @@ header {
 }
 .upload-source.disabled,
 .add-text-source:disabled,
-.add-web-source:disabled {
+.add-web-source:disabled,
+.add-url-source:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .add-text-source,
-.add-web-source {
+.add-web-source,
+.add-url-source {
   border-style: solid;
   border-color: #3c4b65;
   color: #cfd8e7;
@@ -2720,6 +2725,40 @@ header {
   border-color: var(--accent);
   background: var(--accent);
   color: #111;
+}
+.url-source-dialog {
+  width: min(620px, calc(100vw - 56px));
+}
+.url-source-dialog textarea {
+  min-height: 150px;
+  font:
+    12px "DM Mono",
+    monospace;
+}
+.url-source-failures {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 11px 13px;
+  list-style: none;
+  border: 1px solid #713f43;
+  border-radius: 5px;
+  background: #26171c;
+}
+.url-source-failures li {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.url-source-failures b {
+  color: #ffd9d2;
+  font:
+    11px "DM Mono",
+    monospace;
+}
+.url-source-failures span {
+  color: #ffb1a2;
+  font-size: 12px;
 }
 .export-panel p {
   color: #7f8ca1;

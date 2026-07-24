@@ -1506,6 +1506,156 @@ describe("Editor MVP navigation", () => {
     expect(screen.queryByRole("dialog", { name: "搜尋並加入資料" })).toBeNull();
   });
 
+  /**
+   * 「貼上網址」通道：多行網址一次送出，成功的入庫、失敗的逐筆顯示原因。
+   *
+   * 這裡刻意讓一筆成功、一筆失敗——只驗全成功的話，看不出「部分失敗仍是 2xx，但使用者
+   * 必須知道是哪幾筆沒進去」這條要求有沒有做到。
+   */
+  it("adds pasted URLs and reports per-URL failures", async () => {
+    let project = createProject({ topic: "貼上網址", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    let requestedUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(raw, "http://local.test");
+      if (url.pathname === "/api/projects" && !url.search) return Response.json([project]);
+      if (url.pathname === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (url.pathname === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (url.pathname.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      if (url.pathname.endsWith("/url-sources")) {
+        requestedUrls = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+        project = structuredClone(project);
+        project.sources = [
+          {
+            id: "url-source-1",
+            name: "年度報告.md",
+            mediaType: "text/markdown",
+            usage: "content",
+            allowModelAccess: true,
+            status: "indexed",
+            assetPath: "assets/sources/url-source-1/年度報告.md",
+            sizeBytes: 400,
+            extractedText: "# 年度報告\n\n## 全文\n\n擷取到的正文。",
+            chunks: [{ id: "chunk-1", text: "擷取到的正文。" }],
+            metadata: { url: "https://example.com/report", contentStatus: "full" },
+            createdAt: now,
+            updatedAt: now,
+          },
+        ];
+        return Response.json(
+          {
+            project,
+            failures: [{ url: "https://example.com/spa", reason: "WEB_SOURCE_CONTENT_UNVERIFIED" }],
+          },
+          { status: 201 },
+        );
+      }
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("貼上網址"));
+    fireEvent.click(await screen.findByRole("button", { name: "來源 0" }));
+    fireEvent.click(await screen.findByText("＋ 貼上網址"));
+    fireEvent.change(screen.getByLabelText("網址清單"), {
+      target: {
+        value: "https://example.com/report\n\n  https://example.com/spa  \n",
+      },
+    });
+    expect(screen.getByRole("button", { name: "加入網址來源（2）" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "加入網址來源（2）" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/url-sources"))).toBe(
+        true,
+      ),
+    );
+    // 空行忽略、前後空白去掉，順序保持使用者貼上的樣子。
+    expect(requestedUrls).toEqual(["https://example.com/report", "https://example.com/spa"]);
+    expect(await screen.findByText("年度報告.md")).toBeTruthy();
+    // 有失敗就把對話框留著，並把代碼翻成使用者看得懂的原因。
+    expect(screen.getByRole("dialog", { name: "貼上網址" })).toBeTruthy();
+    expect(screen.getByText(/抓不到網頁正文/)).toBeTruthy();
+    expect((screen.getByLabelText("網址清單") as HTMLTextAreaElement).value).toBe(
+      "https://example.com/spa",
+    );
+  });
+
+  it("keeps pasted URL sources out of the project when every URL fails", async () => {
+    const project = createProject({ topic: "貼上網址失敗", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(raw, "http://local.test");
+      if (url.pathname === "/api/projects" && !url.search) return Response.json([project]);
+      if (url.pathname === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (url.pathname === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (url.pathname.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      if (url.pathname.endsWith("/url-sources"))
+        return Response.json(
+          {
+            error: "URL_SOURCES_UNVERIFIED",
+            message: "沒有任何網址取得可驗證的正文，因此未加入專案。",
+            failures: [{ url: "http://127.0.0.1/admin", reason: "WEB_SOURCE_URL_PRIVATE" }],
+          },
+          { status: 400 },
+        );
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("貼上網址失敗"));
+    fireEvent.click(await screen.findByRole("button", { name: "來源 0" }));
+    fireEvent.click(await screen.findByText("＋ 貼上網址"));
+    fireEvent.change(screen.getByLabelText("網址清單"), {
+      target: { value: "http://127.0.0.1/admin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "加入網址來源（1）" }));
+
+    expect(await screen.findByText(/沒有任何網址取得可驗證的正文/)).toBeTruthy();
+    expect(screen.getByText(/指向本機或內網位址/)).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "貼上網址" })).toBeTruthy();
+  });
+
   it("uploads multiple selected files and creates an indexed source from pasted text", async () => {
     let project = createProject({ topic: "多來源輸入", brief: { desiredSlideCount: 1 } });
     project.workflowStage = "editing";

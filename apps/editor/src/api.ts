@@ -55,6 +55,17 @@ export interface WebSearchResult {
   summary: string;
 }
 
+/** 「貼上網址」單筆失敗：`reason` 是伺服器的錯誤代碼，翻譯留在 UI 層。 */
+export interface UrlSourceFailure {
+  url: string;
+  reason: string;
+}
+
+/** 全部網址都失敗時 `addUrlSources` 丟出的錯誤，附帶逐筆原因。 */
+export interface UrlSourceError extends Error {
+  failures: UrlSourceFailure[];
+}
+
 export interface PdfDeckInspection {
   totalPages: number;
   truncated: boolean;
@@ -360,6 +371,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ sources }),
     }),
+  /**
+   * 貼上的網址逐筆擷取正文後加入專案。
+   *
+   * 部分失敗仍是 2xx（成功的已經進專案了），失敗清單一併回來讓 UI 逐筆顯示；全部失敗
+   * 是 4xx，錯誤物件上同樣掛著 `failures`，不能只丟一句「加入失敗」。
+   */
+  addUrlSources: async (
+    projectId: string,
+    urls: string[],
+  ): Promise<{ project: PresentationProject; failures: UrlSourceFailure[] }> => {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/url-sources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls }),
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    const payload = (body ?? {}) as {
+      project?: PresentationProject;
+      failures?: UrlSourceFailure[];
+    };
+    if (!response.ok || !payload.project) {
+      const error = new Error(failureMessage(body, "加入網址來源失敗")) as UrlSourceError;
+      error.failures = payload.failures ?? [];
+      throw error;
+    }
+    return { project: payload.project, failures: payload.failures ?? [] };
+  },
   uploadStyleReference: async (file: File): Promise<StyleReferenceImage> => {
     const mediaType = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
     const query = new URLSearchParams({ name: file.name, mediaType });
