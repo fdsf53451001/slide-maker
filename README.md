@@ -27,7 +27,6 @@ editing, or the extracted text layer — not by dragging text boxes.
 
 <img width="1134" height="688" alt="截圖 2026-07-24 下午2 50 33" src="https://github.com/user-attachments/assets/8d8f0cda-9e69-4bc8-af64-e3805407bd98" />
 
-
 **Authoring workflow**
 
 - Two-step persisted flow: **brief → outline**, then **settings → generate deck**. The
@@ -250,6 +249,9 @@ an illegal value throws rather than silently degrading.
 | `SLIDE_MAKER_TEXT_ENGINE`, `SLIDE_MAKER_WEB_SEARCH_ENGINE`                                                             | `codex` (default) or `openai`                                                                                   |
 | `SLIDE_MAKER_OCR_MODEL_TIER`, `_OCR_DET_SIDE_LEN`, `_OCR_PYTHON`, `_OCR_SCRIPT`                                        | PaddleOCR tier (`tiny`/`small`/`medium`, default `medium`), detection side length, interpreter and script paths |
 | `SLIDE_MAKER_INPAINT_PYTHON`, `_INPAINT_SCRIPT`                                                                        | Local OpenCV inpainter paths                                                                                    |
+| `SLIDE_MAKER_WEB_RENDER_ENGINE`                                                                                        | `jina` (default) or `none` — third-party renderer used to re-fetch JS-rendered pages for pasted URLs            |
+| `SLIDE_MAKER_JINA_API_KEY`                                                                                             | Optional; unset uses the key-less Jina tier (~20 requests/minute)                                               |
+| `SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS`                                                                                    | 1 000 – 600 000, default 30 000                                                                                 |
 | `SLIDE_MAKER_LOG_EGRESS_IP`                                                                                            | `1` logs the outbound IP at startup                                                                             |
 
 ## Development
@@ -334,6 +336,15 @@ See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the full procedure and its 
   reference or prompt can still cause prompt injection, local-data disclosure, configured-tool
   side effects or quota consumption. Run it only in a disposable account or container with no
   secrets and no privileged tools.
+- **Pasting a URL can send that URL and its content to a third party.** When the native fetch
+  only gets an empty shell (client-side-rendered pages), the paste-a-URL channel falls back to
+  the renderer selected by `SLIDE_MAKER_WEB_RENDER_ENGINE`, which defaults to **`jina`
+  (enabled)** — the target URL is sent to `r.jina.ai`, which fetches the page and returns its
+  text. Requests carry `x-no-cache` (the free tier otherwise serves cached snapshots), and
+  userinfo is stripped from the URL before it is concatenated. Set the variable to `none` to
+  disable the fallback entirely; pages that need JavaScript will then fail with
+  `WEB_SOURCE_RENDER_UNAVAILABLE` instead. Web-search capture never uses the renderer — those
+  URLs come from the model, not from a per-URL user decision.
 - Model output is treated as untrusted: Codex results must be a regular, non-symlink PNG
   inside the job workspace and are checked for size, dimensions, chunk bounds, the required
   IHDR/IDAT/IEND chunks and CRCs before being re-rendered to exactly 1920×1080 and validated

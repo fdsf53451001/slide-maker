@@ -14,9 +14,10 @@ describe("Jina Reader renderer", () => {
         return new Response("# 標題\n\n動態載入的正文。");
       },
     });
-    const text = await renderer.render(new URL("https://example.com/a/b?q=1&r=2#frag"));
+    const page = await renderer.render(new URL("https://example.com/a/b?q=1&r=2#frag"));
     expect(seen).toEqual(["https://r.jina.ai/https://example.com/a/b?q=1&r=2#frag"]);
-    expect(text).toBe("# 標題\n\n動態載入的正文。");
+    expect(page.text).toBe("# 標題\n\n動態載入的正文。");
+    expect(page.title).toBe("");
     expect(renderer.name).toBe("jina");
   });
 
@@ -33,6 +34,9 @@ describe("Jina Reader renderer", () => {
     expect(headers[0]?.get("authorization")).toBeNull();
     expect(headers[0]?.get("accept")).toBe("text/plain");
     expect(headers[0]?.get("x-return-format")).toBe("markdown");
+    // 免費模式預設回快取快照，手貼網址的語意是「現在去抓」，所以一律 opt-out。
+    expect(headers[0]?.get("x-no-cache")).toBe("true");
+    expect(headers[1]?.get("x-no-cache")).toBe("true");
     expect(headers[1]?.get("authorization")).toBe("Bearer secret-key");
   });
 
@@ -94,16 +98,93 @@ describe("Jina Reader renderer", () => {
     );
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it("串接前剝掉 userinfo：帳密不會被寫進第三方的 URL path", async () => {
+    const seen: string[] = [];
+    const renderer = createJinaRenderer({
+      fetcher: async (input) => {
+        seen.push(String(input));
+        return new Response("正文");
+      },
+    });
+    await renderer.render(new URL("https://user:pw@example.com/private"));
+    expect(seen).toEqual(["https://r.jina.ai/https://example.com/private"]);
+  });
+});
+
+/**
+ * 實測（2026-07-24）的 Jina Reader 回應格式。`X-Return-Format` 與 `X-Respond-With` 兩個
+ * header 的輸出完全相同，都帶這段前言——不剝掉就會被當成正文餵給模型。
+ */
+const wrapped = (fields: string, body: string) => `${fields}\n\nMarkdown Content:\n${body}`;
+
+describe("Jina 回應的前言", () => {
+  const renderWith = (raw: string, url = "https://example.com/") =>
+    createJinaRenderer({ fetcher: ok(raw) }).render(new URL(url));
+
+  it("只有 Markdown Content 之後才是正文，標題取自 Title 欄位", async () => {
+    const page = await renderWith(
+      wrapped(
+        "Title: Example Domain\n\nURL Source: https://example.com/\n\nPublished Time: Tue, 21 Jul 2026 07:16:00 GMT",
+        "# Example Domain\n\nThis domain is for use in illustrative examples.",
+      ),
+    );
+    expect(page.title).toBe("Example Domain");
+    expect(page.text).toBe("# Example Domain\n\nThis domain is for use in illustrative examples.");
+    // 前言不得混進正文：否則模型會讀到「Title: …」「URL Source: …」這種假內容。
+    expect(page.text).not.toContain("URL Source");
+    expect(page.text).not.toContain("Published Time");
+  });
+
+  it("沒有前言的回應原樣當正文（服務改格式不該讓整批擷取失敗）", async () => {
+    const page = await renderWith("# 標題\n\n正文。");
+    expect(page.text).toBe("# 標題\n\n正文。");
+    expect(page.title).toBe("");
+  });
+
+  it("URL Source 與請求的網址不符就判失敗，不默默收下別頁的內容", async () => {
+    await expect(
+      renderWith(
+        wrapped("URL Source: https://other.example.org/login", "# 登入"),
+        "https://example.com/article",
+      ),
+    ).rejects.toThrow("WEB_RENDER_URL_MISMATCH");
+  });
+
+  it("結尾斜線不算不同的頁", async () => {
+    const page = await renderWith(
+      wrapped("URL Source: https://example.com/docs/", "內容。"),
+      "https://example.com/docs",
+    );
+    expect(page.text).toBe("內容。");
+  });
+
+  it("Warning 欄位＝服務回報自身異常：整筆判失敗，那行字不是正文", async () => {
+    // 我們已經送了 x-no-cache，所以任何 warning（含「這是快取快照」與「抓不到目標網址」）
+    // 都是非預期狀況。收下等於把服務的錯誤訊息存成使用者的來源。
+    await expect(
+      renderWith(
+        wrapped(
+          "Title: Example Domain\n\nWarning: This is a cached snapshot of the original page, consider retry with caching opt-out.",
+          "# Example Domain\n\n舊快照的內容。",
+        ),
+      ),
+    ).rejects.toThrow("WEB_RENDER_WARNING");
+  });
+
+  it("前言之後沒有正文也算空回應", async () => {
+    await expect(
+      renderWith(wrapped("Title: Example Domain\n\nURL Source: https://example.com/", "   ")),
+    ).rejects.toThrow("WEB_RENDER_EMPTY");
+  });
 });
 
 describe("renderer 選擇", () => {
-  it("jina 得到會發請求的 renderer", () => expect(createHtmlRenderer("jina").name).toBe("jina"));
+  it("jina 得到會發請求的 renderer", () => expect(createHtmlRenderer("jina")?.name).toBe("jina"));
 
-  it("none 得到不發任何請求、一律失敗的停用版本", async () => {
-    const renderer = createHtmlRenderer("none");
-    expect(renderer.name).toBe("none");
-    await expect(renderer.render(new URL("https://example.com/"))).rejects.toThrow(
-      "WEB_RENDER_DISABLED",
-    );
+  it("none 得到 undefined：停用第三方就真的不必傳東西進擷取流程", () => {
+    // 「要不要呼叫第三方」與「什麼算正文」是兩個正交政策，後者現在由 captureWebPage 的
+    // requireBody 表達，不再需要一個假的停用 renderer 去撐住較嚴的驗收標準。
+    expect(createHtmlRenderer("none")).toBeUndefined();
   });
 });

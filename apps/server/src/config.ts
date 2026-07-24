@@ -204,7 +204,11 @@ export const MAX_WEB_RENDER_TIMEOUT_MS = 10 * 60_000;
  * 是模型給的網址，使用者沒有逐筆同意把它們送去第三方。
  *
  * 無金鑰模式約 20 RPM（Jina 的免費配額，依對方政策可能變動），設 `SLIDE_MAKER_JINA_API_KEY`
- * 可提高上限。
+ * 可提高上限。另外，免費模式**預設回快取快照**，所以 adapter 一律送 `x-no-cache`——更慢、
+ * 更容易撞限流，但「現在去抓這一頁」才是手動貼上網址的語意。
+ *
+ * 設成 `none` 只是「不呼叫第三方」，不會順帶放寬驗收標準：需要 JavaScript 的頁面會改以
+ * `WEB_SOURCE_RENDER_UNAVAILABLE` 明確失敗，而不是把 `<title>` 殘骸當成一份來源收下。
  */
 export function parseWebRenderEngine(value: string | undefined): WebRenderEngine {
   if (value === undefined || value.trim() === "") return DEFAULT_WEB_RENDER_ENGINE;

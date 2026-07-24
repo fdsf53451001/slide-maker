@@ -107,7 +107,7 @@ function fakeRenderer(
     calls,
     async render(url: URL) {
       calls.push(url.toString());
-      return render(url);
+      return { text: await render(url), title: "" };
     },
   };
 }
@@ -145,7 +145,7 @@ describe("動態網頁的 render fallback", () => {
       { url: "https://example.com/app", title: "Dashboard", summary: "摘要" },
       "2026-07-24T00:00:00.000Z",
       async () => shellResponse(),
-      renderer,
+      { renderer, requireBody: true },
     );
     expect(renderer.calls).toEqual(["https://example.com/app"]);
     expect(captured.metadata.contentStatus).toBe("full");
@@ -163,7 +163,7 @@ describe("動態網頁的 render fallback", () => {
         new Response(`<html><body><p>${LONG_BODY}</p></body></html>`, {
           headers: { "content-type": "text/html" },
         }),
-      renderer,
+      { renderer, requireBody: true },
     );
     expect(renderer.calls).toEqual([]);
     expect(captured.metadata.contentStatus).toBe("full");
@@ -179,7 +179,7 @@ describe("動態網頁的 render fallback", () => {
       { url: "https://example.com/app", title: "Dashboard", summary: "摘要" },
       undefined,
       async () => shellResponse(),
-      renderer,
+      { renderer, requireBody: true },
     );
     expect(renderer.calls).toHaveLength(1);
     expect(captured.metadata.contentStatus).toBe("summary_only");
@@ -192,7 +192,7 @@ describe("動態網頁的 render fallback", () => {
       { url: "https://example.com/app", title: "Dashboard", summary: "摘要" },
       undefined,
       async () => shellResponse(),
-      fakeRenderer(async () => "   "),
+      { renderer: fakeRenderer(async () => "   "), requireBody: true },
     );
     expect(captured.metadata.contentStatus).toBe("summary_only");
   });
@@ -203,7 +203,7 @@ describe("動態網頁的 render fallback", () => {
       { url: "https://example.com/blocked", title: "Blocked", summary: "摘要" },
       undefined,
       async () => new Response("forbidden", { status: 403 }),
-      renderer,
+      { renderer, requireBody: true },
     );
     expect(renderer.calls).toEqual(["https://example.com/blocked"]);
     expect(captured.metadata.contentStatus).toBe("full");
@@ -232,14 +232,17 @@ describe("動態網頁的 render fallback", () => {
     );
   });
 
-  it("傳了 renderer 但補抓仍是空殼時降級為 summary_only：<title> 殘骸不算正文", async () => {
+  it("要求正文但補抓失敗時降級為 summary_only：<title> 殘骸不算正文", async () => {
     const captured = await captureWebPage(
       { url: "https://example.com/app", title: "Dashboard", summary: "摘要" },
       undefined,
       async () => shellResponse(),
-      fakeRenderer(async () => {
-        throw new Error("WEB_RENDER_DISABLED");
-      }),
+      {
+        renderer: fakeRenderer(async () => {
+          throw new Error("WEB_RENDER_HTTP_503");
+        }),
+        requireBody: true,
+      },
     );
     expect(captured.metadata.contentStatus).toBe("summary_only");
   });

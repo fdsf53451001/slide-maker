@@ -13,11 +13,24 @@ import { assertPublicHttpUrl } from "@slide-maker/core/url-safety";
 import { DEFAULT_WEB_RENDER_TIMEOUT_MS, type WebRenderEngine } from "./config.js";
 import { MAX_WEB_BYTES } from "./web-capture.js";
 
+/** render 服務回來的一頁：正文，外加它自己宣告的標題（沒有就空字串）。 */
+export interface RenderedPage {
+  /** 已剝掉服務自身前言的正文。 */
+  text: string;
+  /**
+   * render 服務宣告的頁面標題。
+   *
+   * 與正文**彼此獨立**，這正是它的價值：`captureWebPage` 靠「剝掉獨立來源的標題後還剩不剩
+   * 東西」判斷這頁到底有沒有正文，拿正文的第一行當標題再剝掉它是循環論證。
+   */
+  title: string;
+}
+
 export interface HtmlRenderer {
   /** 供 `metadata.renderedBy` 記錄，讓來源可被查證是經哪個第三方渲染取得。 */
   readonly name: string;
-  /** 回純文字／markdown 正文；失敗一律 throw（呼叫端負責吞掉並沿用原生結果）。 */
-  render(url: URL): Promise<string>;
+  /** 回正文與標題；失敗一律 throw（呼叫端負責吞掉並沿用原生結果）。 */
+  render(url: URL): Promise<RenderedPage>;
 }
 
 export interface HtmlRendererOptions {
@@ -31,10 +44,73 @@ export interface HtmlRendererOptions {
 const JINA_READER_ENDPOINT = "https://r.jina.ai/";
 
 /**
+ * Jina Reader 回應的前言與正文分隔線。
+ *
+ * 實測（2026-07-24，`curl -H 'Accept: text/plain' https://r.jina.ai/https://example.com/`）
+ * 回應是這個形狀：
+ *
+ * ```
+ * Title: Example Domain
+ *
+ * URL Source: https://example.com/
+ *
+ * Published Time: Tue, 21 Jul 2026 07:16:00 GMT
+ *
+ * Warning: This is a cached snapshot of the original page, ...
+ *
+ * Markdown Content:
+ * # Example Domain
+ * ```
+ *
+ * `X-Return-Format` 與 `X-Respond-With` 兩個 header 的輸出**完全相同**，都帶這段前言。
+ * 不剝掉的話它會被當成正文餵進模型，標題還會被推導成字面上的 `Title: Example Domain`。
+ */
+const MARKDOWN_CONTENT_MARKER = /^Markdown Content:[ \t]*\r?$/m;
+
+/** 前言的欄位行；值可以是空的（例如某些頁沒有 `Published Time`）。 */
+const HEADER_FIELD = /^([A-Za-z][A-Za-z ]*?):[ \t]*(.*)$/;
+
+/**
+ * 拆開 Jina Reader 的前言與正文。
+ *
+ * 找不到 `Markdown Content:` 就把整份當正文——服務的輸出格式不是我們控制的，格式一改
+ * 就整批擷取失敗，比偶爾多收幾行前言更糟。
+ */
+export function parseJinaReader(raw: string): { fields: Map<string, string>; body: string } {
+  const marker = MARKDOWN_CONTENT_MARKER.exec(raw);
+  if (!marker) return { fields: new Map(), body: raw.trim() };
+  const fields = new Map<string, string>();
+  for (const line of raw.slice(0, marker.index).split(/\r?\n/)) {
+    const field = HEADER_FIELD.exec(line.trim());
+    if (field) fields.set(field[1]!.trim().toLowerCase(), field[2]!.trim());
+  }
+  return { fields, body: raw.slice(marker.index + marker[0].length).trim() };
+}
+
+/**
+ * 兩個網址指的是不是同一頁：協定、主機、路徑（忽略結尾斜線）、query 都要一致。
+ *
+ * fragment 不比，因為它根本不會送到伺服器（見 `web-capture.ts` 的 `isHashRouteUrl`）。
+ */
+function sameTarget(requested: URL, reported: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(reported);
+  } catch {
+    return false;
+  }
+  const key = (url: URL) =>
+    `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}${url.search}`;
+  return key(parsed) === key(requested);
+}
+
+/**
  * Jina Reader（`https://r.jina.ai/<原始網址>`）adapter。
  *
  * 網址是**原樣串接**在端點後面（含 query string），這是 Jina Reader 的介面約定；串接前
- * 先過一次 `assertPublicHttpUrl`，免得把 `file://`／內網位址交給第三方去解。
+ * 先過一次 `assertPublicHttpUrl`，免得把 `file://`／內網位址交給第三方去解，並剝掉
+ * userinfo——`https://user:pw@host/` 直接串上去等於把帳密寫進第三方的 URL path（會進對方
+ * 的存取紀錄）。
  */
 export function createJinaRenderer({
   apiKey,
@@ -43,13 +119,19 @@ export function createJinaRenderer({
 }: HtmlRendererOptions = {}): HtmlRenderer {
   return {
     name: "jina",
-    async render(url: URL): Promise<string> {
+    async render(url: URL): Promise<RenderedPage> {
       const target = assertPublicHttpUrl(url.toString());
+      target.username = "";
+      target.password = "";
       const response = await fetcher(`${JINA_READER_ENDPOINT}${target.toString()}`, {
         signal: AbortSignal.timeout(timeoutMs),
         headers: {
           Accept: "text/plain",
           "X-Return-Format": "markdown",
+          // 免費模式**預設回快取快照**（實測：回應帶 `Warning: This is a cached snapshot`）。
+          // 使用者手貼一個網址的意思是「現在去抓這一頁」，拿舊快照等於沒做事，所以一律
+          // opt-out。代價是變慢、更容易撞到 20 RPM——正確性優先。
+          "x-no-cache": "true",
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
       });
@@ -62,29 +144,33 @@ export function createJinaRenderer({
         throw new Error("WEB_RENDER_TOO_LARGE");
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.length > MAX_WEB_BYTES) throw new Error("WEB_RENDER_TOO_LARGE");
-      const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
-      if (!text) throw new Error("WEB_RENDER_EMPTY");
-      return text;
+      const raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
+      if (!raw) throw new Error("WEB_RENDER_EMPTY");
+      const { fields, body } = parseJinaReader(raw);
+      const reported = fields.get("url source");
+      // Jina 抓的不是我們要的那一頁時，默默收下等於把別頁的內容存成這個網址的來源。
+      // 比較是「同一頁」而非逐字相等（結尾斜線不算差異），寧可嚴一點：判錯會以
+      // WEB_RENDER_URL_MISMATCH 呈現給使用者，收錯內容則完全看不出來。
+      if (reported && !sameTarget(target, reported)) throw new Error("WEB_RENDER_URL_MISMATCH");
+      // Jina 用 `Warning:` 回報自己的狀況（含「對目標網址取得失敗」與「這是快取快照」）。
+      // 我們已經送了 `x-no-cache`，所以任何 warning 都是非預期狀況：當成這一筆失敗，
+      // 而不是把那行字當正文存進來源。
+      if (fields.has("warning")) throw new Error("WEB_RENDER_WARNING");
+      if (!body) throw new Error("WEB_RENDER_EMPTY");
+      return { text: body, title: fields.get("title") ?? "" };
     },
   };
 }
 
 /**
- * `SLIDE_MAKER_WEB_RENDER_ENGINE=none` 時用的 renderer：不發任何請求，一律失敗。
+ * 依設定選出 renderer；`none` 得到 `undefined`（＝這條路不呼叫任何第三方）。
  *
- * 不用 `undefined` 表示「停用」，是因為「有沒有 renderer」在 `captureWebPage` 裡另有語意
- * ——傳了就代表呼叫端要的是**真正的正文**，補抓後仍是空殼不得冒充 `full`。停用第三方
- * 服務不該順帶把「空殼也算數」這個較鬆的標準偷渡回貼網址通道，兩件事必須分開。
+ * 「要不要呼叫第三方」與「什麼算正文」是兩個正交的政策：後者由 `captureWebPage` 的
+ * `requireBody` 表達，不再靠「有沒有傳 renderer」偷渡，所以停用時就真的不必傳東西進去。
  */
-export const DISABLED_RENDERER: HtmlRenderer = {
-  name: "none",
-  render: () => Promise.reject(new Error("WEB_RENDER_DISABLED")),
-};
-
-/** 依設定選出 renderer；`none` 得到不發請求的停用版本。 */
 export function createHtmlRenderer(
   engine: WebRenderEngine,
   options: HtmlRendererOptions = {},
-): HtmlRenderer {
-  return engine === "jina" ? createJinaRenderer(options) : DISABLED_RENDERER;
+): HtmlRenderer | undefined {
+  return engine === "jina" ? createJinaRenderer(options) : undefined;
 }

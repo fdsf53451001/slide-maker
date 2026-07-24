@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PresentationProject, SourceAsset } from "@slide-maker/core";
 import { createApp, type AppDependencies } from "../src/app.js";
 import type { WebSearchResult } from "../src/web-capture.js";
@@ -20,16 +20,19 @@ import type { WebSearchResult } from "../src/web-capture.js";
 const bodyByUrl = new Map<string, string>();
 /** 假擷取的腳本：輸入網址 → 擷取後的正規化網址（沒登記＝原樣）。 */
 const canonicalByUrl = new Map<string, string>();
-/** 每次擷取收到的引數（第四個是 renderer——搜尋路徑必須是 undefined）。 */
+/** 每次擷取收到的引數（options.renderer——搜尋路徑必須是 undefined）。 */
 const captureCalls: { url: string; renderer: string | undefined }[] = [];
+/** 驗收標準是與 renderer 正交的參數，分開記錄免得攪進既有的 captureCalls 斷言。 */
+const captureOptions: { requireBody: boolean | undefined }[] = [];
 
 const fakeCapture: AppDependencies["captureWebPage"] = async (
   found: WebSearchResult,
   capturedAt = new Date().toISOString(),
   _fetcher?: typeof fetch,
-  renderer?: { name: string },
+  options?: { renderer?: { name: string } | undefined; requireBody?: boolean | undefined },
 ) => {
-  captureCalls.push({ url: found.url, renderer: renderer?.name });
+  captureCalls.push({ url: found.url, renderer: options?.renderer?.name });
+  captureOptions.push({ requireBody: options?.requireBody });
   const url = canonicalByUrl.get(found.url) ?? found.url;
   const body = bodyByUrl.get(found.url);
   const title = found.title || `標題${new URL(url).pathname}`;
@@ -40,7 +43,14 @@ const fakeCapture: AppDependencies["captureWebPage"] = async (
       }
     : {
         text: `# ${title}\n\nURL: ${url}\n\nCaptured: ${capturedAt}\n\n## 未驗證搜尋摘要\n\n${found.summary}\n`,
-        metadata: { url, title, summary: found.summary, capturedAt, contentStatus: "summary_only" },
+        metadata: {
+          url,
+          title,
+          summary: found.summary,
+          capturedAt,
+          contentStatus: "summary_only",
+          failureReason: "WEB_SOURCE_CONTENT_UNVERIFIED",
+        },
       };
 };
 
@@ -115,6 +125,7 @@ describe("貼上網址：對抗性情境", () => {
     bodyByUrl.clear();
     canonicalByUrl.clear();
     captureCalls.length = 0;
+    captureOptions.length = 0;
   });
 
   it("含 query string 與 unicode 的網址被正規化後才去重", async () => {
@@ -142,6 +153,38 @@ describe("貼上網址：對抗性情境", () => {
     expect(body.failures).toEqual([
       { url: "不是網址", reason: "WEB_SOURCE_URL_INVALID" },
       { url: "不是網址", reason: "WEB_SOURCE_URL_INVALID" },
+    ]);
+  });
+
+  it("hash routing 的網址在抓取之前就被判失敗（fragment 不會送到伺服器）", async () => {
+    const project = await createProject();
+    bodyByUrl.set("https://example.com/", "首頁的正文。");
+    const { status, body } = await addUrls(project.id, ["https://example.com/#/docs/api"]);
+    expect(status).toBe(400);
+    expect(body.failures).toEqual([
+      { url: "https://example.com/#/docs/api", reason: "WEB_SOURCE_HASH_ROUTE_UNSUPPORTED" },
+    ]);
+    // 抓下去只會拿到首頁，然後以「加入成功」的樣子存成另一頁的內容——寧可不抓。
+    expect(captureCalls).toEqual([]);
+    expect(await listSources(project.id)).toEqual([]);
+  });
+
+  it("單純的錨點（#section）不受影響，照常擷取", async () => {
+    const project = await createProject();
+    bodyByUrl.set("https://example.com/guide#install", "安裝章節所在的整頁正文。");
+    const { status, body } = await addUrls(project.id, ["https://example.com/guide#install"]);
+    expect(status).toBe(201);
+    expect(body.project!.sources).toHaveLength(1);
+  });
+
+  it("失敗清單回報使用者原本打的那一行，不是正規化後的網址", async () => {
+    const project = await createProject();
+    // 大寫主機名會被正規化成小寫；把正規化後的版本填回 textarea 等於憑空多出使用者
+    // 沒打過的字串。
+    const { status, body } = await addUrls(project.id, ["https://EXAMPLE.com/Missing"]);
+    expect(status).toBe(400);
+    expect(body.failures).toEqual([
+      { url: "https://EXAMPLE.com/Missing", reason: "WEB_SOURCE_CONTENT_UNVERIFIED" },
     ]);
   });
 
@@ -299,9 +342,10 @@ describe("貼上網址：對抗性情境", () => {
      * `current.sources`（`findIndex` = -1），於是更新被默默丟掉，最後推進去的是第一圈
      * 那個帶著舊文字的物件。
      *
-     * 現況：這一條是紅的。
+     * 修法：`materializeWebSources` 改用**擷取後**的網址查既有來源，同一批裡重抓到剛剛
+     * 才新增的那一筆時就地換掉它，而不是另外排一個交易對不到 id 的 refresh。
      */
-    it.fails("【缺陷 D2】專案內的文字與磁碟上的資產必須是同一份內容", async () => {
+    it("【缺陷 D2】專案內的文字與磁碟上的資產必須是同一份內容", async () => {
       const { project, result } = await seed();
       const source = result.body.project!.sources[0]!;
       const onDisk = await readFile(
@@ -329,9 +373,12 @@ describe("貼上網址：對抗性情境", () => {
       }
     };
 
-    it("超過上限時整批回 409，且沒有任何一筆被寫進專案", async () => {
+    it("一筆都塞不下時才回 409，並逐筆說明是哪些網址沒進去", async () => {
       const project = await createProject();
       await fillTo99(project.id);
+      // 先用掉最後一個名額，專案就滿了。
+      bodyByUrl.set("https://example.com/last", "最後一個名額。");
+      expect((await addUrls(project.id, ["https://example.com/last"])).status).toBe(201);
       bodyByUrl.set("https://example.com/f1", "正文 1。");
       bodyByUrl.set("https://example.com/f2", "正文 2。");
       const { status, body } = await addUrls(project.id, [
@@ -340,9 +387,12 @@ describe("貼上網址：對抗性情境", () => {
       ]);
       expect(status).toBe(409);
       expect(body.error).toBe("SOURCE_PROJECT_LIMIT");
-      // 使用者拿不到「哪一筆進去了、哪一筆沒有」的資訊，只有一個裸錯誤碼。
-      expect(body.failures).toBeUndefined();
-      expect(await listSources(project.id)).toHaveLength(99);
+      // 裸錯誤碼不夠：使用者要知道是哪幾筆、以及原因不是「抓不到正文」。
+      expect(body.failures).toEqual([
+        { url: "https://example.com/f1", reason: "SOURCE_PROJECT_LIMIT" },
+        { url: "https://example.com/f2", reason: "SOURCE_PROJECT_LIMIT" },
+      ]);
+      expect(await listSources(project.id)).toHaveLength(100);
     });
 
     /**
@@ -350,17 +400,21 @@ describe("貼上網址：對抗性情境", () => {
      * 清掉。上面那個 409 情境會在磁碟留下兩個孤兒目錄（99 個填充來源 + 2 個孤兒）。
      * 專案裡看不到它們，容量統計也算不到，但硬碟被佔著。
      *
-     * 現況：這一條是紅的（實得 101 個目錄）。
+     * 修法：交易回報排不進去的那幾筆，端點在回應之前把它們的資產目錄刪掉。
      */
-    it.fails("【缺陷 D4】交易失敗後不該留下孤兒資產", async () => {
+    it("【缺陷 D4】排不進專案的擷取結果不該留下孤兒資產", async () => {
       const project = await createProject();
       await fillTo99(project.id);
+      bodyByUrl.set("https://example.com/g0", "用掉最後一個名額。");
+      expect((await addUrls(project.id, ["https://example.com/g0"])).status).toBe(201);
+      const dirsWhenFull = (await assetDirs(project.id)).length;
       bodyByUrl.set("https://example.com/g1", "正文 1。");
       bodyByUrl.set("https://example.com/g2", "正文 2。");
       expect(
         (await addUrls(project.id, ["https://example.com/g1", "https://example.com/g2"])).status,
       ).toBe(409);
-      expect(await assetDirs(project.id)).toHaveLength(99);
+      // 每重試一次就多兩個永久孤兒的話，專案裡看不到、容量統計算不到，硬碟卻一直被吃。
+      expect(await assetDirs(project.id)).toHaveLength(dirsWhenFull);
     });
 
     /**
@@ -368,9 +422,9 @@ describe("貼上網址：對抗性情境", () => {
      * 就有「部分成功 + 逐筆失敗回報」的語彙（`failures`），這裡卻退回全有全無，而且錯誤
      * 訊息沒有指出是哪一筆超限。
      *
-     * 現況：這一條是紅的（實得 0 筆加入、狀態 409）。
+     * 修法：上限檢查改在交易內逐筆判斷，塞不下的收進 `failures` 與成功者一起回傳。
      */
-    it.fails("【缺陷 D5】剩一個名額時應該收下一筆並把另一筆列為失敗", async () => {
+    it("【缺陷 D5】剩一個名額時應該收下一筆並把另一筆列為失敗", async () => {
       const project = await createProject();
       await fillTo99(project.id);
       bodyByUrl.set("https://example.com/h1", "正文 1。");
@@ -381,8 +435,77 @@ describe("貼上網址：對抗性情境", () => {
       ]);
       expect(status).toBe(201);
       expect(body.project!.sources).toHaveLength(100);
-      expect(body.failures).toHaveLength(1);
+      expect(body.failures).toEqual([
+        { url: "https://example.com/h2", reason: "SOURCE_PROJECT_LIMIT" },
+      ]);
+      // 塞不下的那一筆連資產也不留（D4 的不變量在部分成功時同樣成立）。
+      expect(await assetDirs(project.id)).toHaveLength(100);
     });
+  });
+});
+
+describe("整批擷取的時間預算", () => {
+  let harness: Harness;
+  /** 每次擷取讓時鐘往前跳的毫秒數（測試自己控制，不真的等）。 */
+  let clockStepMs = 0;
+  let clockOffset = 0;
+
+  beforeAll(async () => {
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffset);
+    harness = await startApp({
+      captureWebPage: async (found, capturedAt = new Date().toISOString()) => {
+        clockOffset += clockStepMs;
+        return {
+          text: `# T\n\nURL: ${found.url}\n\nCaptured: ${capturedAt}\n\n## 全文\n\n正文。\n`,
+          metadata: {
+            url: found.url,
+            title: "T",
+            summary: "",
+            capturedAt,
+            contentStatus: "full",
+          },
+        };
+      },
+    });
+  });
+  afterAll(async () => {
+    vi.restoreAllMocks();
+    await harness.close();
+  });
+  beforeEach(() => {
+    clockOffset = 0;
+    clockStepMs = 0;
+  });
+
+  it("超出預算後剩下的網址不再擷取，逐筆回 WEB_SOURCE_BATCH_TIMEOUT", async () => {
+    // 10 個網址 ×（15 秒原生 + 30 秒 render）循序跑會超過 Cloud Run 的 300 秒上限；閘道砍
+    // 掉連線時資料其實已經寫進去了，使用者看到失敗卻多出一批來源。預算讓這件事變成
+    // 「這幾筆沒輪到，請分批再試」。
+    const project = (await (
+      await fetch(`${harness.baseUrl}/api/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ topic: "預算", brief: { desiredSlideCount: 1 } }),
+      })
+    ).json()) as PresentationProject;
+    clockStepMs = 130_000; // 兩筆就吃掉 260 秒 > 240 秒預算
+    const response = await fetch(`${harness.baseUrl}/api/projects/${project.id}/url-sources`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        urls: ["https://example.com/b1", "https://example.com/b2", "https://example.com/b3"],
+      }),
+    });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as {
+      project: PresentationProject;
+      failures: { url: string; reason: string }[];
+    };
+    expect(body.project.sources).toHaveLength(2);
+    expect(body.failures).toEqual([
+      { url: "https://example.com/b3", reason: "WEB_SOURCE_BATCH_TIMEOUT" },
+    ]);
   });
 });
 
@@ -406,6 +529,7 @@ describe("render fallback 的接線（哪一條路會把網址送去第三方）
     bodyByUrl.clear();
     canonicalByUrl.clear();
     captureCalls.length = 0;
+    captureOptions.length = 0;
   });
 
   const post = (path: string, body: unknown) =>
@@ -460,11 +584,12 @@ describe("SLIDE_MAKER_WEB_RENDER_ENGINE=none", () => {
   beforeEach(() => {
     bodyByUrl.clear();
     captureCalls.length = 0;
+    captureOptions.length = 0;
   });
 
-  it("停用第三方後仍然傳一個 renderer 進去（名稱 none），不是 undefined", async () => {
-    // 這是刻意的：傳 renderer 同時代表「呼叫端要的是真正的正文」，停用第三方不該順帶
-    // 把「空殼也算數」那個較鬆的標準偷渡回貼網址通道。
+  it("停用第三方後不傳 renderer，但驗收標準（requireBody）仍然是嚴的", async () => {
+    // 「要不要呼叫第三方」與「什麼算正文」是兩個正交政策：停用 render 服務不該順帶把
+    // 「空殼也算數」那個較鬆的標準偷渡回貼網址通道，所以 requireBody 與 renderer 無關。
     bodyByUrl.set("https://example.com/paste", "貼上的正文。");
     const project = (await (
       await fetch(`${harness.baseUrl}/api/projects`, {
@@ -479,6 +604,7 @@ describe("SLIDE_MAKER_WEB_RENDER_ENGINE=none", () => {
       body: JSON.stringify({ urls: ["https://example.com/paste"] }),
     });
     expect(response.status).toBe(201);
-    expect(captureCalls).toEqual([{ url: "https://example.com/paste", renderer: "none" }]);
+    expect(captureCalls).toEqual([{ url: "https://example.com/paste", renderer: undefined }]);
+    expect(captureOptions).toEqual([{ requireBody: true }]);
   });
 });

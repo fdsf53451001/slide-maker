@@ -25,9 +25,9 @@ const fakeCapture: AppDependencies["captureWebPage"] = async (
   found: WebSearchResult,
   capturedAt = new Date().toISOString(),
   _fetcher?: typeof fetch,
-  renderer?: { name: string },
+  options?: { renderer?: { name: string } | undefined },
 ) => {
-  captureCalls.push({ url: found.url, renderer: renderer?.name });
+  captureCalls.push({ url: found.url, renderer: options?.renderer?.name });
   const url = canonicalByUrl.get(found.url) ?? found.url;
   const body = bodyByUrl.get(found.url);
   return body
@@ -215,24 +215,27 @@ describe("搜尋來源落地（既有路徑不得改變）", () => {
     expect(captureCalls).toEqual([]);
   });
 
-  it("擷取後正規化成既有來源的網址：不會重複收錄（但會白抓一次並留下孤兒資產）", async () => {
-    // 這是**既有**行為，不是這次改動造成的：`sourceByUrl` 以擷取後的網址為鍵，輸入網址
-    // 對不上時就會重抓、建新資產，再於交易裡被 metadata.url 去重擋掉。釘住是因為貼上
-    // 網址通道現在共用同一段程式，之後修 D2 時這裡的行為必須一起被看見。
+  it("擷取後正規化成既有來源的網址：原地更新，不留孤兒資產", async () => {
+    // 這條原本釘的是既有缺陷（`sourceByUrl` 只以擷取**前**的網址為鍵，輸入網址對不上時
+    // 會重抓、建新資產，再於交易裡被 metadata.url 去重擋掉——內容丟掉、資產留下）。
+    // 修 B1／D2 時這段程式是兩條入口共用的，所以搜尋路徑一起變好：擷取後的網址命中既有
+    // 來源就走 refresh，覆寫同一個資產路徑。
     bodyByUrl.set("https://example.com/canon", "正規化後的正文。");
     bodyByUrl.set("https://example.com/canon?ref=x", "同一頁的另一種寫法。");
     canonicalByUrl.set("https://example.com/canon?ref=x", "https://example.com/canon");
     const project = await createProject();
-    await saveSources(project.id, [
+    const first = await saveSources(project.id, [
       { url: "https://example.com/canon", title: "Canon", summary: "摘要" },
     ]);
     const { body } = await saveSources(project.id, [
       { url: "https://example.com/canon?ref=x", title: "Canon 2", summary: "摘要" },
     ]);
     expect(body.sources).toHaveLength(1);
-    expect(body.sources[0]!.extractedText).toContain("正規化後的正文。");
+    // 同一份來源（id 與檔名不變），內容換成這一次抓到的。
+    expect(body.sources[0]!.id).toBe(first.body.sources[0]!.id);
+    expect(body.sources[0]!.name).toBe(first.body.sources[0]!.name);
+    expect(body.sources[0]!.extractedText).toContain("同一頁的另一種寫法。");
     const dirs = await readdir(join(dataRoot, "projects", project.id, "assets", "sources"));
-    // 白抓的那一次已經把資產寫下去了，專案卻沒有引用它。
-    expect(dirs.length).toBeGreaterThan(body.sources.length);
+    expect(dirs).toHaveLength(body.sources.length);
   });
 });

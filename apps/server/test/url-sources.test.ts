@@ -262,7 +262,12 @@ describe("貼上網址加入來源", () => {
       urls: ["https://example.com/overflow"],
     });
     expect(response.status).toBe(409);
-    expect((await response.json()) as { error: string }).toEqual({ error: "SOURCE_PROJECT_LIMIT" });
+    // 一筆都塞不下才走 409；連這條路都要說清楚是哪個網址沒進去。
+    expect((await response.json()) as { error: string }).toEqual({
+      error: "SOURCE_PROJECT_LIMIT",
+      message: "專案來源已達上限，沒有任何網址被加入。",
+      failures: [{ url: "https://example.com/overflow", reason: "SOURCE_PROJECT_LIMIT" }],
+    });
     const sources = (await (
       await fetch(`${baseUrl}/api/projects/${project.id}/sources`)
     ).json()) as SourceAsset[];

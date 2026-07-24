@@ -75,6 +75,61 @@ describe("貼上網址對話框", () => {
     expect(seen[0]).toEqual(["https://example.com/a", "https://example.com/b"]);
   });
 
+  it("空白或逗號分隔的貼上也切得開（從文件／聊天訊息複製過來的樣子）", async () => {
+    const { project, paste } = renderPanel();
+    const { seen } = stubUrlSources(() => projectResponse(project));
+    paste("https://example.com/a https://example.com/b,https://example.com/c");
+    // 只切換行的話，這整段會變成一條必定失敗的「網址」。
+    expect(submitButton().textContent).toContain("加入網址來源（3）");
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual([
+      "https://example.com/a",
+      "https://example.com/b",
+      "https://example.com/c",
+    ]);
+  });
+
+  it("送出中按 Escape 不會關掉對話框（請求還在跑，失敗清單會跟著消失）", async () => {
+    const { project, paste } = renderPanel();
+    let release: (() => void) | undefined;
+    stubUrlSources(
+      async () =>
+        new Promise<Response>((resolve) => {
+          release = () => resolve(projectResponse(project));
+        }),
+    );
+    paste("https://example.com/slow");
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(submitButton().disabled).toBe(true));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "貼上網址" })).toBeTruthy();
+    release!();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "貼上網址" })).toBeNull());
+  });
+
+  it("render 失敗的各種原因翻成不同的下一步動作，不會收斂成同一句話", async () => {
+    const { project, paste } = renderPanel();
+    stubUrlSources(() =>
+      projectResponse(project, [
+        { url: "https://example.com/1", reason: "WEB_RENDER_RATE_LIMITED" },
+        { url: "https://example.com/2", reason: "WEB_SOURCE_HASH_ROUTE_UNSUPPORTED" },
+        { url: "https://example.com/3", reason: "WEB_SOURCE_RENDER_UNAVAILABLE" },
+        { url: "https://example.com/4", reason: "WEB_SOURCE_BATCH_TIMEOUT" },
+        { url: "https://example.com/5", reason: "SOURCE_PROJECT_LIMIT" },
+      ]),
+    );
+    paste("https://example.com/1\nhttps://example.com/ok");
+    fireEvent.click(submitButton());
+    // 等一分鐘再試 vs 改貼別的網址 vs 去改伺服器設定 vs 分批 vs 先刪來源。
+    expect(await screen.findByText(/約一分鐘後再試/)).toBeTruthy();
+    expect(screen.getByText(/單頁應用/)).toBeTruthy();
+    expect(screen.getByText(/未啟用外部 render 服務/)).toBeTruthy();
+    expect(screen.getByText(/分批再試/)).toBeTruthy();
+    expect(screen.getByText(/專案來源已達上限/)).toBeTruthy();
+    expect(screen.queryByText(/抓不到網頁正文/)).toBeNull();
+  });
+
   it("空白輸入時送不出去", () => {
     const { paste } = renderPanel();
     const { fetchMock } = stubUrlSources(() => new Response(null));
@@ -189,26 +244,34 @@ describe("貼上網址對話框", () => {
     expect((screen.getByLabelText("網址清單") as HTMLTextAreaElement).disabled).toBe(false);
   });
 
-  it("上限錯誤（409）不會被誤翻成「抓不到正文」，但只看得到裸錯誤代碼", async () => {
+  it("上限錯誤（409）：說出是哪幾個網址沒進去，而不是一句裸錯誤代碼", async () => {
     const { paste } = renderPanel();
-    stubUrlSources(() => Response.json({ error: "SOURCE_PROJECT_LIMIT" }, { status: 409 }));
+    stubUrlSources(() =>
+      Response.json(
+        {
+          error: "SOURCE_PROJECT_LIMIT",
+          message: "專案來源已達上限，沒有任何網址被加入。",
+          failures: [{ url: "https://example.com/full", reason: "SOURCE_PROJECT_LIMIT" }],
+        },
+        { status: 409 },
+      ),
+    );
     paste("https://example.com/full");
     fireEvent.click(submitButton());
-    // 至少沒有謊稱是網頁的問題；但「專案來源已達上限」這句話始終沒有出現，
-    // 使用者看到的是伺服器的錯誤代碼原文（見報告 D5：這條路連 failures 都沒有）。
-    expect(await screen.findByText("SOURCE_PROJECT_LIMIT")).toBeTruthy();
+    expect(await screen.findByText(/專案來源已達上限，沒有任何網址被加入/)).toBeTruthy();
+    expect(screen.getByText(/請先刪掉一些來源/)).toBeTruthy();
+    // 沒有謊稱是網頁的問題。
     expect(screen.queryByText(/抓不到網頁正文/)).toBeNull();
   });
 
   /**
    * 【缺陷 D6】伺服器對無效網址不做去重（`seen` 只擋通過驗證的網址），同一個無效網址
-   * 貼兩次就會回兩筆一模一樣的 failure；失敗清單用 `key={failure.url}` 當 list key，
-   * React 會在 console 報重複 key。清單本身還畫得出來，所以這是體感層級的問題，但它
-   * 也代表「失敗清單的每一列不是唯一的」，未來要做逐列重試就會撞上。
+   * 貼兩次就會回兩筆一模一樣的 failure；失敗清單原本用 `key={failure.url}` 當 list key，
+   * React 會在 console 報重複 key，未來要做逐列重試也會撞上。
    *
-   * 現況：這一條是紅的（React 會 log「Encountered two children with the same key」）。
+   * 修法：key 改成 url + 索引（失敗清單的每一列本來就不保證唯一）。
    */
-  it.fails("【缺陷 D6】重複的失敗網址不該產生重複的 React key", async () => {
+  it("【缺陷 D6】重複的失敗網址不該產生重複的 React key", async () => {
     const errors: unknown[][] = [];
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void errors.push(args));
     const { project, paste } = renderPanel();

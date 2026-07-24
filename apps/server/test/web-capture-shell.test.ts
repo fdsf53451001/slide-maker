@@ -8,14 +8,15 @@ import type { HtmlRenderer } from "../src/web-render.js";
  * 這一組全部注入假 fetcher 與假 renderer——真的打 r.jina.ai 的測試會消耗第三方配額、
  * 在離線 CI 變成隨機紅燈，而且驗不到我們自己的判定邏輯。
  *
- * 重點在兩種誤判的成本並不對稱：
- * - 誤判成空殼 → 使用者的網址與內容被送去第三方（隱私成本），而且**正文短的合法頁面
- *   會整筆被拒收**。
+ * `looksLikeEmptyShell()` 現在**只**決定「要不要多花一次第三方 render」；「這頁到底有沒有
+ * 正文」由 `hasReadableBody()`／`requireBody` 承擔（兩者曾共用一個 400 字元門檻，害合法的
+ * 短頁面被回報成「該站阻擋自動擷取」）。兩種誤判的成本仍不對稱：
+ * - 誤判成空殼 → 使用者的網址與內容被送去第三方（隱私與延遲成本）。
  * - 漏判 → SPA 空殼被當成正文（既有搜尋路徑的舊標準）。
  */
 
-/** `EMPTY_SHELL_CHARS` = 400；用單一字元組出剛好卡在門檻上下的正文。 */
-const shellChars = 400;
+/** `NO_BODY_CHARS` = 40：剝掉標題後短於它就當「根本沒抓到」。 */
+const noBodyChars = 40;
 /** `SPA_SHELL_CHARS` = 1200。 */
 const spaShellChars = 1200;
 
@@ -33,18 +34,42 @@ function recordingRenderer(render: (url: URL) => Promise<string>, name = "fake")
     name,
     async render(url) {
       calls.push(url.toString());
-      return render(url);
+      return { text: await render(url), title: "" };
     },
   };
   return { renderer, calls };
 }
 
+/** 只回正文的假 renderer（沒有自報標題，等同 render 服務沒給 `Title:`）。 */
+const bodyRenderer = (name: string, render: () => Promise<string>): HtmlRenderer => ({
+  name,
+  render: async () => ({ text: await render(), title: "" }),
+});
+
 const found = (url = "https://example.com/page") => ({ url, title: "", summary: "搜尋摘要" });
 
 describe("空殼門檻的邊界", () => {
-  it("正文剛好 400 字元不算空殼，399 字元算", () => {
-    expect(looksLikeEmptyShell("", "字".repeat(shellChars))).toBe(false);
-    expect(looksLikeEmptyShell("", "字".repeat(shellChars - 1))).toBe(true);
+  it("剝掉標題後剛好 40 字元不算空殼，39 字元算", () => {
+    expect(looksLikeEmptyShell("", "字".repeat(noBodyChars))).toBe(false);
+    expect(looksLikeEmptyShell("", "字".repeat(noBodyChars - 1))).toBe(true);
+  });
+
+  it("正文短但成句的靜態頁不再被送去第三方（門檻從 400 降到 40 的理由）", () => {
+    // 一則 200 字的公告、一頁 FAQ、一則快訊——原生 fetch 抓得好好的，沒有理由多打一次
+    // Jina，更沒有理由因此拒收。
+    expect(looksLikeEmptyShell("", "字".repeat(100))).toBe(false);
+    expect(looksLikeEmptyShell("", "字".repeat(399))).toBe(false);
+  });
+
+  it("剝掉的是 <title>（獨立於正文的證據），不是正文自己的第一行", () => {
+    const brief =
+      "台積電今日公布第二季財報：營收季增百分之八，毛利率百分之五十三，法人上修全年展望。";
+    // 沒有 <title> 時，正文就是正文——不可以拿它的第一行當標題再剝掉（循環論證）。
+    expect(looksLikeEmptyShell("<html><body>x</body></html>", brief)).toBe(false);
+    // 有 <title> 而正文只剩同一句話，那才是空殼。
+    expect(looksLikeEmptyShell(`<html><head><title>${brief}</title></head></html>`, brief)).toBe(
+      true,
+    );
   });
 
   it("SPA 標記把門檻拉到 1200：1199 算空殼、1200 不算", () => {
@@ -66,44 +91,43 @@ describe("空殼門檻的邊界", () => {
   it("含 SPA 標記但有完整 SSR 正文的頁面不算空殼（不該白付第三方成本）", () =>
     expect(looksLikeEmptyShell(SPA_HEAD, "字".repeat(spaShellChars + 1))).toBe(false));
 
-  it("純文字／markdown 回應沒有 SPA 標記，只看長度", () => {
+  it("純文字／markdown 回應沒有 SPA 標記，只看剝掉標題後的長度", () => {
+    // markdown 沒有 <title> 可剝，整份就是正文；七個字撐不出一頁，值得再試一次 render。
     expect(looksLikeEmptyShell("# 標題\n\n內文", "# 標題\n\n內文")).toBe(true);
-    expect(looksLikeEmptyShell("", `# 標題\n\n${"字".repeat(shellChars)}`)).toBe(false);
+    expect(looksLikeEmptyShell("", `# 標題\n\n${"字".repeat(noBodyChars)}`)).toBe(false);
+    expect(looksLikeEmptyShell("", "Loading…")).toBe(true);
   });
 });
 
 describe("render fallback 觸發條件", () => {
-  it("正文 400 字元就不會呼叫 renderer", async () => {
+  it("正文 40 字元就不會呼叫 renderer", async () => {
     const { renderer, calls } = recordingRenderer(async () => "不該被用到");
     const captured = await captureWebPage(
       found(),
       undefined,
-      async () => htmlPage("字".repeat(shellChars)),
-      renderer,
+      async () => htmlPage("字".repeat(noBodyChars)),
+      { renderer },
     );
     expect(calls).toEqual([]);
     expect(captured.metadata.contentStatus).toBe("full");
   });
 
-  it("正文 399 字元就會把網址送去第三方：短頁面的隱私成本是真的", async () => {
+  it("正文 39 字元（剝掉標題後）才會把網址送去第三方", async () => {
     const { renderer, calls } = recordingRenderer(async () => "字".repeat(spaShellChars));
-    await captureWebPage(
-      found(),
-      undefined,
-      async () => htmlPage("字".repeat(shellChars - 1)),
+    await captureWebPage(found(), undefined, async () => htmlPage("字".repeat(noBodyChars - 1)), {
       renderer,
-    );
+    });
     expect(calls).toEqual(["https://example.com/page"]);
   });
 
-  it("純文字（text/plain）夠長的頁面不觸發 fallback", async () => {
+  it("純文字（text/plain）有正文的頁面不觸發 fallback", async () => {
     const { renderer, calls } = recordingRenderer(async () => "不該被用到");
     const captured = await captureWebPage(
       found(),
       undefined,
       async () =>
-        new Response("字".repeat(shellChars + 10), { headers: { "content-type": "text/plain" } }),
-      renderer,
+        new Response("字".repeat(noBodyChars + 10), { headers: { "content-type": "text/plain" } }),
+      { renderer },
     );
     expect(calls).toEqual([]);
     expect(captured.metadata.contentStatus).toBe("full");
@@ -115,7 +139,7 @@ describe("render fallback 觸發條件", () => {
       found(),
       undefined,
       async () => htmlPage("字".repeat(spaShellChars), SPA_HEAD),
-      renderer,
+      { renderer },
     );
     expect(calls).toEqual([]);
     expect(captured.metadata.contentStatus).toBe("full");
@@ -133,7 +157,7 @@ describe("render fallback 觸發條件", () => {
               headers: { location: "https://example.com/final?lang=zh" },
             })
           : htmlPage("短"),
-      renderer,
+      { renderer },
     );
     expect(calls).toEqual(["https://example.com/final?lang=zh"]);
   });
@@ -146,10 +170,27 @@ describe("render fallback 觸發條件", () => {
       found("https://example.com/paper.pdf"),
       undefined,
       async () => new Response("%PDF-1.7", { headers: { "content-type": "application/pdf" } }),
-      renderer,
+      { renderer },
     );
     expect(calls).toHaveLength(1);
     expect(captured.metadata.contentStatus).toBe("full");
+  });
+
+  it("沒有 renderer 而只抓到殼：失敗原因說清楚是伺服器沒啟用 render 服務", async () => {
+    // 這頁剝完標籤只剩 <title>：使用者一直重試同一個網址也不會變好，訊息必須指向設定，
+    // 而不是含糊的「該站阻擋自動擷取」。
+    const captured = await captureWebPage(
+      found(),
+      undefined,
+      async () =>
+        new Response(
+          `<html><head><title>儀表板</title></head><body><div id="root"></div></body></html>`,
+          { headers: { "content-type": "text/html" } },
+        ),
+      { requireBody: true },
+    );
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_RENDER_UNAVAILABLE");
   });
 });
 
@@ -165,39 +206,61 @@ describe("render fallback 的失敗路徑", () => {
     ],
     ["超量", new Error("WEB_RENDER_TOO_LARGE")],
     ["空回應", new Error("WEB_RENDER_EMPTY")],
-    ["停用", new Error("WEB_RENDER_DISABLED")],
+    ["網址對不上", new Error("WEB_RENDER_URL_MISMATCH")],
     ["非 Error 物件", "boom"],
   ] as const;
 
+  /** 失敗代碼 → 前端拿得到的 `failureReason`。逾時與非 Error 物件會被正規化。 */
+  const expectedReason: Record<string, string> = {
+    限流: "WEB_RENDER_RATE_LIMITED",
+    "5xx": "WEB_RENDER_HTTP_502",
+    逾時: "WEB_RENDER_TIMEOUT",
+    超量: "WEB_RENDER_TOO_LARGE",
+    空回應: "WEB_RENDER_EMPTY",
+    網址對不上: "WEB_RENDER_URL_MISMATCH",
+    "非 Error 物件": "WEB_RENDER_FAILED",
+  };
+
   for (const [label, reason] of failures) {
-    it(`${label}：不 throw、不留下 renderedBy、狀態退回 summary_only`, async () => {
+    it(`${label}：不 throw、不留下 renderedBy、狀態退回 summary_only 並保留原因`, async () => {
       const captured = await captureWebPage(
         found(),
         "2026-07-24T00:00:00.000Z",
         async () => htmlPage("短正文"),
         {
-          name: "jina",
-          render: () => Promise.reject(reason as unknown as Error),
+          renderer: {
+            name: "jina",
+            render: () => Promise.reject(reason as unknown as Error),
+          },
+          requireBody: true,
         },
       );
       expect(captured.metadata.contentStatus).toBe("summary_only");
       expect(captured.metadata.renderedBy).toBeUndefined();
       expect(captured.text).toContain("## 未驗證搜尋摘要");
+      // 七種失敗不可收斂成同一句話：限流要等一分鐘再試，其餘該放棄這個網址。
+      expect(captured.metadata.failureReason).toBe(expectedReason[label]);
     });
   }
 
-  it("renderer 回傳的內容本身還是空殼：不得升級成 full", async () => {
-    const captured = await captureWebPage(found(), undefined, async () => htmlPage("短"), {
-      name: "jina",
-      render: async () => "Loading…",
-    });
+  it("renderer 回來的內容只有標題：不得升級成 full", async () => {
+    const captured = await captureWebPage(
+      found(),
+      undefined,
+      async () =>
+        new Response(`<html><head><title>儀表板</title></head><body>儀表板</body></html>`, {
+          headers: { "content-type": "text/html" },
+        }),
+      { renderer: bodyRenderer("jina", async () => "# 儀表板"), requireBody: true },
+    );
     expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_CONTENT_UNVERIFIED");
   });
 
   it("renderer 輸出超過擷取上限會被截斷到 120000 字元", async () => {
     const captured = await captureWebPage(found(), undefined, async () => htmlPage("短"), {
-      name: "jina",
-      render: async () => "字".repeat(200_000),
+      renderer: bodyRenderer("jina", async () => "字".repeat(200_000)),
+      requireBody: true,
     });
     expect(captured.metadata.contentStatus).toBe("full");
     expect(captured.text).toContain("字".repeat(1000));
@@ -209,25 +272,36 @@ describe("render fallback 的失敗路徑", () => {
     const captured = await captureWebPage(
       found(),
       undefined,
-      async () => htmlPage("字".repeat(shellChars)),
-      { name: "jina", render: async () => "不該被用到" },
+      async () => htmlPage("字".repeat(noBodyChars)),
+      { renderer: bodyRenderer("jina", async () => "不該被用到"), requireBody: true },
     );
     expect(Object.keys(captured.metadata)).not.toContain("renderedBy");
   });
 
   /**
-   * 【缺陷 D3】renderer 補抓回來的內容仍是空殼時，`contentStatus` 正確地退回
+   * 【缺陷 D3】renderer 補抓回來的內容不被採信時，`contentStatus` 正確地退回
    * `summary_only`，但 `renderedBy` 還留在 metadata 上——這份 metadata 於是同時宣稱
    * 「沒有可驗證的正文」與「正文是 jina 渲染出來的」。
    *
-   * 現況：這一條是紅的（`renderedBy` = "jina"）。影響有限（summary_only 的來源會被
-   * 貼上網址通道丟掉），但 metadata 是來源可查證性的依據，不該自相矛盾。
+   * 情境改成「補抓回來只有標題」（原本的「還是只有殼」在新的驗收標準下是合法正文，
+   * 見上面那條），釘住的不變量不變：沒收下的內容不得留下渲染者。
    */
-  it.fails("【缺陷 D3】補抓後仍是空殼時不該留下 renderedBy", async () => {
-    const captured = await captureWebPage(found(), undefined, async () => htmlPage("短"), {
-      name: "jina",
-      render: async () => "還是只有殼",
-    });
+  it("【缺陷 D3】補抓後仍不被採信時不該留下 renderedBy", async () => {
+    const captured = await captureWebPage(
+      found(),
+      undefined,
+      async () =>
+        new Response(`<html><head><title>儀表板</title></head><body>儀表板</body></html>`, {
+          headers: { "content-type": "text/html" },
+        }),
+      {
+        renderer: {
+          name: "jina",
+          render: async () => ({ text: "儀表板", title: "儀表板" }),
+        },
+        requireBody: true,
+      },
+    );
     expect(captured.metadata.contentStatus).toBe("summary_only");
     expect(captured.metadata.renderedBy).toBeUndefined();
   });
@@ -251,30 +325,34 @@ describe("正文短但合法的頁面", () => {
    * 「用來決定要不要多花一次 render」的啟發式，與「這頁到底有沒有內容」的最終判準，
    * 是兩件事——後者需要的是「原生與 render 兩邊一致」這種證據，不是同一個字數門檻。
    *
-   * 現況：這一條是紅的（實得 `summary_only`）。
+   * 修法：驗收標準改成 `requireBody`（剝掉標題後仍有正文 + 補抓沒有失敗），與 render
+   * 觸發條件解耦。
    */
-  it.fails("【缺陷 D1】原生與 render 都拿到同一份短正文時，應該收下而不是宣稱抓不到", async () => {
+  it("【缺陷 D1】原生與 render 都拿到同一份短正文時，應該收下而不是宣稱抓不到", async () => {
     const brief =
       "台積電今日公布第二季財報：營收季增百分之八，毛利率百分之五十三，法人上修全年展望。";
     const captured = await captureWebPage(
       { url: "https://example.com/brief", title: "", summary: "" },
       undefined,
       async () => htmlPage(brief),
-      { name: "jina", render: async () => brief },
+      { renderer: bodyRenderer("jina", async () => brief), requireBody: true },
     );
     expect(captured.metadata.contentStatus).toBe("full");
+    expect(captured.text).toContain(brief);
   });
 
-  it("短正文頁面現況：狀態退成 summary_only，而摘要是空的（貼上網址沒有摘要可退）", async () => {
+  it("更短的公告（26 字元）走了一次 render，兩邊一致就收下", async () => {
+    // 短到觸發 render 的頁面仍然可以是合法內容：只有「補抓也救不回來」才算失敗。
     const brief = "公告：本服務將於七月三十一日進行維護，屆時暫停使用。";
+    const { renderer, calls } = recordingRenderer(async () => brief);
     const captured = await captureWebPage(
       { url: "https://example.com/notice", title: "", summary: "" },
       "2026-07-24T00:00:00.000Z",
       async () => htmlPage(brief),
-      { name: "jina", render: async () => brief },
+      { renderer, requireBody: true },
     );
-    expect(captured.metadata.contentStatus).toBe("summary_only");
-    // 沒有摘要、也沒有正文：這份 text 對使用者與模型都是零資訊。
-    expect(captured.text.split("## 未驗證搜尋摘要")[1]!.trim()).toBe("");
+    expect(calls).toHaveLength(1);
+    expect(captured.metadata.contentStatus).toBe("full");
+    expect(captured.text.split("## 全文\n\n")[1]!.trim()).toBe(brief);
   });
 });

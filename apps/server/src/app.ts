@@ -97,7 +97,7 @@ import { sendChunked } from "./http-stream.js";
 import { SqliteFtsRetriever } from "./retriever.js";
 import { knownSourceContext } from "./source-context.js";
 import { assertPublicHttpUrl, isReadableWebUrl } from "@slide-maker/core/url-safety";
-import { captureWebPage, type WebSearchResult } from "./web-capture.js";
+import { captureWebPage, isHashRouteUrl, type WebSearchResult } from "./web-capture.js";
 import { createHtmlRenderer, type HtmlRenderer } from "./web-render.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask } from "./text-layers.js";
@@ -200,6 +200,16 @@ const aiOutlineJsonSchema: Record<string, unknown> = {
 };
 /** 單頁大綱回覆最多帶幾個 sourceIds。schema、JSON schema 與防禦性截斷共用，不得各寫一份。 */
 const SLIDE_SOURCE_ID_LIMIT = 20;
+
+/**
+ * 「貼上網址」整批擷取的時間預算。
+ *
+ * 10 個網址 ×（原生 fetch 15 秒 + render 30 秒）循序跑就是 450 秒，超過 Cloud Run 預設的
+ * 300 秒請求上限——閘道砍掉連線時資料其實已經寫進去了，使用者看到失敗卻多出一批來源。
+ * 240 秒留給交易、索引與回應足夠的餘裕；超時的網址逐筆回 `WEB_SOURCE_BATCH_TIMEOUT`，
+ * 使用者知道要分批再試。
+ */
+const URL_SOURCES_BUDGET_MS = 240_000;
 const aiRegeneratedSlideSchema = z.object({
   content: z.string().min(1),
   narrative: z.string(),
@@ -537,14 +547,27 @@ export async function createApp(
    * 搜尋擷取與「貼上網址」兩條入口共用這一份，差別只在 `options`：
    * - `renderer`：交給 `captureWebPage` 的第三方 render fallback。**搜尋路徑不傳**——
    *   那些網址是模型給的，使用者沒有逐筆同意把它們送去第三方。
+   * - `requireBody`：驗收標準改成「剝掉標題後仍有正文」。貼上網址沒有搜尋摘要可退，
+   *   存一份空來源等於騙人。
    * - `refresh`：略過「已存在且是 full 就不重抓」的捷徑。使用者手動貼上網址，意思就是
    *   「現在去抓這一頁」，回一份舊快取等於沒做事。
+   * - `deadline`：整批的時間預算（epoch ms）。逾時後剩下的網址不再擷取，逐筆回報
+   *   `WEB_SOURCE_BATCH_TIMEOUT`。
+   *
+   * **逐筆循序**是刻意的：Jina 無金鑰模式約 20 RPM，10 筆併發送出去撞限流的機率遠高於
+   * 循序，而限流的結果是整批都白跑。循序的代價是最壞延遲會疊加，那個風險改由 `deadline`
+   * 承擔（超時的那幾筆回一個看得懂的原因，而不是讓整個 HTTP 請求被閘道砍掉）。
    */
   const materializeWebSources = async (
     projectId: string,
     existingSources: readonly SourceAsset[],
     foundSources: readonly WebSearchResult[],
-    options: { renderer?: HtmlRenderer; refresh?: boolean } = {},
+    options: {
+      renderer?: HtmlRenderer | undefined;
+      requireBody?: boolean;
+      refresh?: boolean;
+      deadline?: number;
+    } = {},
   ) => {
     const sourceByUrl = new Map(
       existingSources
@@ -554,28 +577,43 @@ export async function createApp(
     const addedSources: SourceAsset[] = [];
     const refreshedSources: SourceAsset[] = [];
     const verifiedResults: WebSearchResult[] = [];
-    /** 抓不到正文而被丟掉的網址（呼叫端要逐筆回報失敗時才用得到）。 */
-    const unverifiedUrls: string[] = [];
+    /** 抓不到正文而被丟掉的網址與原因（呼叫端要逐筆回報失敗時才用得到）。 */
+    const unverifiedUrls: { url: string; reason: string }[] = [];
     for (const found of foundSources.slice(0, 20)) {
-      const existing = sourceByUrl.get(found.url);
-      if (!options.refresh && existing?.metadata.contentStatus === "full") {
+      if (options.deadline !== undefined && Date.now() >= options.deadline) {
+        unverifiedUrls.push({ url: found.url, reason: "WEB_SOURCE_BATCH_TIMEOUT" });
+        continue;
+      }
+      const known = sourceByUrl.get(found.url);
+      if (!options.refresh && known?.metadata.contentStatus === "full") {
         verifiedResults.push({
-          url: existing.metadata.url ?? found.url,
-          title: existing.metadata.title ?? found.title,
-          summary: existing.metadata.summary ?? found.summary,
+          url: known.metadata.url ?? found.url,
+          title: known.metadata.title ?? found.title,
+          summary: known.metadata.summary ?? found.summary,
         });
         continue;
       }
       const capturedAt = new Date().toISOString();
-      const captured = await capturePage(found, capturedAt, undefined, options.renderer);
+      const captured = await capturePage(found, capturedAt, undefined, {
+        renderer: options.renderer,
+        requireBody: options.requireBody,
+      });
       if (captured.metadata.contentStatus !== "full") {
-        unverifiedUrls.push(found.url);
+        const reason = captured.metadata.failureReason || "WEB_SOURCE_CONTENT_UNVERIFIED";
+        // 至少留一筆伺服器端記錄：render 失敗（限流尤其）完全靜默的話，營運端看不出
+        // 「使用者一直加不進來」是配額問題還是網站問題。
+        if (reason.startsWith("WEB_RENDER_")) console.warn("web render failed", { reason });
+        unverifiedUrls.push({ url: found.url, reason });
         continue;
       }
       const verified = {
         ...found,
         url: captured.metadata.url ?? found.url,
       };
+      // 去重要用**擷取後**的網址：存下來的 `metadata.url` 是重導向／canonical 化之後的那個，
+      // 拿擷取前的輸入去查會讓每一次 http→https、結尾斜線、去追蹤參數的重導向都走成「新增」，
+      // 於是每試一次就多一個孤兒資產目錄，而交易裡的 url 去重又會把它丟掉（＝永遠加不進去）。
+      const existing = sourceByUrl.get(verified.url) ?? known;
       const bytes = new TextEncoder().encode(captured.text);
       if (existing) {
         const refreshed = await ingestSource(
@@ -599,7 +637,16 @@ export async function createApp(
         );
         sourceByUrl.set(found.url, refreshed);
         sourceByUrl.set(verified.url, refreshed);
-        refreshedSources.push(refreshed);
+        // 同一批裡重抓到「剛剛才新增的那一筆」時，要就地換掉那個物件而不是另外排一個
+        // refresh：交易是照 id 對位的，而這個 id 還不在專案裡，排進 refreshedSources 只會
+        // 被丟掉——結果是專案裡留著第一次的文字，磁碟上卻是第二次的內容。
+        const addedIndex = addedSources.findIndex((source) => source.id === refreshed.id);
+        if (addedIndex >= 0) addedSources[addedIndex] = refreshed;
+        else {
+          const refreshedIndex = refreshedSources.findIndex((source) => source.id === refreshed.id);
+          if (refreshedIndex >= 0) refreshedSources[refreshedIndex] = refreshed;
+          else refreshedSources.push(refreshed);
+        }
       } else {
         const source = await ingestSource(
           {
@@ -1521,8 +1568,10 @@ export async function createApp(
             id: source.id,
             name: source.name,
             url: source.metadata.url,
+            // `||` 而非 `??`：手貼網址的來源沒有搜尋摘要，存下來的是空字串。用 `??` 的話
+            // 模型只會被告知「有這個來源」卻看不到任何內容，等於這份目錄對它沒有作用。
             summary:
-              source.metadata.summary ?? source.extractedText.replace(/\s+/g, " ").slice(0, 500),
+              source.metadata.summary || source.extractedText.replace(/\s+/g, " ").slice(0, 500),
           }));
         // 只給 url／title 讓模型有東西可填 sourceUrls；內容一律走 uploadedSources 的正文，
         // 附上摘要只會讓模型改抄那一兩句未經查證的話。
@@ -1801,7 +1850,8 @@ export async function createApp(
       id: source.id,
       name: source.name,
       url: source.metadata.url,
-      summary: source.metadata.summary ?? source.extractedText.replace(/\s+/g, " ").slice(0, 500),
+      // `||` 而非 `??`：貼上網址的來源摘要是空字串（沒有搜尋摘要可存），`??` 不會 fallback。
+      summary: source.metadata.summary || source.extractedText.replace(/\s+/g, " ").slice(0, 500),
     }));
     const deckOutline = before.slides.map((item) => ({
       order: item.order,
@@ -2671,12 +2721,19 @@ export async function createApp(
     const failures: { url: string; reason: string }[] = [];
     const accepted: WebSearchResult[] = [];
     const seen = new Set<string>();
+    /** 正規化後的網址 → 使用者原本打的那一行。失敗清單一律回報後者。 */
+    const inputByUrl = new Map<string, string>();
     for (const raw of urls) {
       try {
         // SSRF 防線在抓取之前先擋一次：這裡的網址完全由使用者輸入。
-        const url = assertPublicHttpUrl(raw).toString();
+        const parsed = assertPublicHttpUrl(raw);
+        // fragment 不會送到伺服器，hash routing 的網址抓回來的必然是首頁而不是使用者要的
+        // 那一頁。抓得到、也有正文，只是完全另一份內容——只能明確判為失敗。
+        if (isHashRouteUrl(parsed)) throw new Error("WEB_SOURCE_HASH_ROUTE_UNSUPPORTED");
+        const url = parsed.toString();
         if (seen.has(url)) continue;
         seen.add(url);
+        inputByUrl.set(url, raw);
         // 標題留白，由 captureWebPage 從網頁本身推導；摘要沒有來源，一律空字串。
         accepted.push({ url, title: "", summary: "" });
       } catch (reason) {
@@ -2687,14 +2744,22 @@ export async function createApp(
         });
       }
     }
+    /** 使用者看到的永遠是自己打的那一行，不是我們正規化後的版本。 */
+    const asTyped = (url: string) => inputByUrl.get(url) ?? url;
     const materialized = accepted.length
       ? await materializeWebSources(projectId, before.sources, accepted, {
           renderer: htmlRenderer,
+          requireBody: true,
           refresh: true,
+          deadline: Date.now() + URL_SOURCES_BUDGET_MS,
         })
-      : { addedSources: [], refreshedSources: [], unverifiedUrls: [] };
-    for (const url of materialized.unverifiedUrls)
-      failures.push({ url, reason: "WEB_SOURCE_CONTENT_UNVERIFIED" });
+      : {
+          addedSources: [] as SourceAsset[],
+          refreshedSources: [] as SourceAsset[],
+          unverifiedUrls: [] as { url: string; reason: string }[],
+        };
+    for (const unverified of materialized.unverifiedUrls)
+      failures.push({ url: asTyped(unverified.url), reason: unverified.reason });
     if (!materialized.addedSources.length && !materialized.refreshedSources.length) {
       // 全軍覆沒不能回 201：前端會以為來源已經進去了。
       return response.status(400).json({
@@ -2703,24 +2768,53 @@ export async function createApp(
         failures,
       });
     }
+    // 交易內排不進去的（撞到專案上限）。整批回滾會連塞得下的那一筆一起丟掉，而端點本來
+    // 就有「部分成功 + 逐筆失敗」的語彙，沒有理由在這裡退回全有全無。
+    const overLimit: SourceAsset[] = [];
     const project = await repository.updateProject(projectId, (current) => {
-      for (const refreshed of materialized.refreshedSources) {
-        const index = current.sources.findIndex((source) => source.id === refreshed.id);
-        if (index >= 0) current.sources[index] = refreshed;
-      }
-      for (const added of materialized.addedSources) {
+      overLimit.length = 0;
+      let applied = 0;
+      for (const source of [...materialized.refreshedSources, ...materialized.addedSources]) {
+        const index = current.sources.findIndex(
+          (candidate) =>
+            candidate.id === source.id ||
+            (!!candidate.metadata.url && candidate.metadata.url === source.metadata.url),
+        );
+        if (index >= 0) {
+          current.sources[index] = source;
+          applied += 1;
+          continue;
+        }
         if (
           current.sources.length >= 100 ||
-          current.sources.reduce((sum, source) => sum + source.sizeBytes, 0) + added.sizeBytes >
+          current.sources.reduce((sum, item) => sum + item.sizeBytes, 0) + source.sizeBytes >
             1024 ** 3
-        )
-          throw new Error("SOURCE_PROJECT_LIMIT");
-        if (!current.sources.some((source) => source.metadata.url === added.metadata.url))
-          current.sources.push(added);
+        ) {
+          overLimit.push(source);
+          continue;
+        }
+        current.sources.push(source);
+        applied += 1;
       }
-      current.updatedAt = new Date().toISOString();
+      if (applied) current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });
+    // 資產是在交易之前就落地的，排不進去的那幾筆留著就是孤兒：專案看不到、容量統計算不到，
+    // 硬碟卻被佔著，而且每重試一次就多一份。
+    for (const source of overLimit) {
+      failures.push({ url: asTyped(source.metadata.url ?? ""), reason: "SOURCE_PROJECT_LIMIT" });
+      if (materialized.addedSources.includes(source))
+        await repository.deleteAssetDirectory(projectId, `sources/${source.id}`);
+    }
+    if (
+      overLimit.length ===
+      materialized.addedSources.length + materialized.refreshedSources.length
+    )
+      return response.status(409).json({
+        error: "SOURCE_PROJECT_LIMIT",
+        message: "專案來源已達上限，沒有任何網址被加入。",
+        failures,
+      });
     retriever.index(project.id, project.sources);
     return response.status(201).json({ project, failures });
   });

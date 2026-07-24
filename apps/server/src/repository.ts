@@ -122,4 +122,18 @@ export class FileProjectRepository implements StorageAdapter {
   async deleteAsset(projectId: string, relativePath: string): Promise<void> {
     await rm(this.assetPath(projectId, relativePath.replace(/^assets\//, "")), { force: true });
   }
+
+  /**
+   * 刪掉整個資產目錄。
+   *
+   * 與 `deleteAsset` 分開是因為 `rm` 不加 `recursive` 對目錄會 throw，而「一個來源一個
+   * `sources/<id>/` 目錄」的配置下，只刪檔案會留下空目錄——列目錄的呼叫端（含測試）仍
+   * 看得到它，孤兒就沒有真的被清掉。路徑一樣過 `assetPath` 的越界檢查。
+   */
+  async deleteAssetDirectory(projectId: string, relativePath: string): Promise<void> {
+    await rm(this.assetPath(projectId, relativePath.replace(/^assets\//, "")), {
+      force: true,
+      recursive: true,
+    });
+  }
 }
