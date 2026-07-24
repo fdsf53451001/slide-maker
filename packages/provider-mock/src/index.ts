@@ -1,8 +1,9 @@
-import type {
-  GeneratedImage,
-  ImageGenerationContext,
-  ImageGenerationRequest,
-  ImageProvider,
+import {
+  normalizePlainTextMarkup,
+  type GeneratedImage,
+  type ImageGenerationContext,
+  type ImageGenerationRequest,
+  type ImageProvider,
 } from "@slide-maker/core";
 
 function escapeXml(value: string): string {
@@ -48,7 +49,8 @@ export class MockImageProvider implements ImageProvider {
   ): Promise<GeneratedImage> {
     if (context?.signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
     const [background, foreground, accent] = ["#0b1020", "#f5f1e8", "#ff7a45"];
-    const lines = wrap(request.slide.content);
+    // 走與 production prompt 同一條正規化：mock 是排練，畫出 `###` 就不再忠實。
+    const lines = wrap(normalizePlainTextMarkup(request.slide.content));
     const body = lines
       .map(
         (line, index) =>
