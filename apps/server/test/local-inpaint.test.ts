@@ -1,10 +1,11 @@
+import { ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDefaultStyle } from "@slide-maker/core";
 import type { GenerationJob, ImageGenerationRequest, PresentationProject } from "@slide-maker/core";
 import { LocalInpaintProvider } from "../src/local-inpaint.js";
@@ -141,6 +142,38 @@ describe("LocalInpaintProvider", () => {
     const missing = new LocalInpaintProvider({ root: "/nonexistent-slide-maker-root" });
     expect((await missing.preflight()).status).toBe("disabled");
   });
+});
+
+/**
+ * fix #3（SIGKILL 升級死碼）的回歸測試。
+ *
+ * 假 python 用 `trap '' TERM` 忽略 SIGTERM，只有 SIGKILL 收得掉它。abort 之後，
+ * 收屍升級必須在寬限期後真的補送 SIGKILL（舊版在 reject 的同步區塊就清掉 killTimer，
+ * SIGKILL callback 永遠不觸發）。用縮短的 sigkillGraceMs 讓測試快而確定。
+ */
+describe("LocalInpaintProvider subprocess reaping", () => {
+  it("abort 且子程序忽略 SIGTERM 時，寬限期後補送 SIGKILL 並以 AbortError reject", async () => {
+    await withFakeEngine("", async (dir) => {
+      const png = await smallPng(dir);
+      await writeFile(join(dir, "fake-inpaint.sh"), `#!/bin/sh\ntrap '' TERM\nsleep 5\n`, "utf8");
+      const provider = new LocalInpaintProvider({ root: dir, sigkillGraceMs: 150 });
+      const killSpy = vi.spyOn(ChildProcess.prototype, "kill");
+      const controller = new AbortController();
+      try {
+        const promise = provider.generate(maskedEditRequest(png, png), {
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(), 50);
+        await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+        await waitFor(async () => killSpy.mock.calls.some((call) => String(call[0]) === "SIGKILL"));
+        const signals = killSpy.mock.calls.map((call) => String(call[0]));
+        expect(signals[0]).toBe("SIGTERM");
+        expect(signals).toContain("SIGKILL");
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+  }, 20_000);
 });
 
 describe("withLocalInpaintEntry migration", () => {

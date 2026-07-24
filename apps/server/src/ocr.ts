@@ -1,8 +1,11 @@
-import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { logError } from "@slide-maker/core";
 import { z } from "zod";
+import { DEFAULT_SIGKILL_GRACE_MS, runReapableChild } from "./subprocess.js";
+
+/** 單次 OCR 子程序的預設上限；含模型載入與下載，故給到 5 分鐘。 */
+const DEFAULT_OCR_TIMEOUT_MS = 5 * 60_000;
 
 const pointSchema = z.tuple([z.number(), z.number()]);
 const rawBoxSchema = z.object({
@@ -26,6 +29,10 @@ export interface OcrAdapter {
 export interface PaddleOcrOptions {
   modelTier?: string;
   detSideLen?: number;
+  /** OCR 子程序上限，預設 DEFAULT_OCR_TIMEOUT_MS。 */
+  timeoutMs?: number;
+  /** SIGTERM 後的 SIGKILL 寬限期，預設 DEFAULT_SIGKILL_GRACE_MS。 */
+  sigkillGraceMs?: number;
 }
 
 export class PaddleOcrAdapter implements OcrAdapter {
@@ -33,6 +40,8 @@ export class PaddleOcrAdapter implements OcrAdapter {
   readonly #python: string;
   readonly #script: string;
   readonly #env: Record<string, string>;
+  readonly #timeoutMs: number;
+  readonly #sigkillGraceMs: number;
 
   constructor(root = resolve(process.cwd()), options: PaddleOcrOptions = {}) {
     this.#root = root;
@@ -42,6 +51,8 @@ export class PaddleOcrAdapter implements OcrAdapter {
       ...(options.modelTier ? { SLIDE_MAKER_OCR_MODEL_TIER: options.modelTier } : {}),
       ...(options.detSideLen ? { SLIDE_MAKER_OCR_DET_SIDE_LEN: String(options.detSideLen) } : {}),
     };
+    this.#timeoutMs = options.timeoutMs ?? DEFAULT_OCR_TIMEOUT_MS;
+    this.#sigkillGraceMs = options.sigkillGraceMs ?? DEFAULT_SIGKILL_GRACE_MS;
   }
 
   async status(): Promise<{ available: boolean; message: string }> {
@@ -58,7 +69,7 @@ export class PaddleOcrAdapter implements OcrAdapter {
   }
 
   async recognize(imagePath: string): Promise<RawOcrResult> {
-    const result = await this.run([this.#script, imagePath], 5 * 60_000);
+    const result = await this.run([this.#script, imagePath]);
     if (result.code !== 0)
       throw new Error(
         `OCR_FAILED:${result.stderr.trim().slice(0, 500) || "unknown error"}（若為模型載入或下載失敗，請重新執行 pnpm setup:ocr）`,
@@ -80,44 +91,24 @@ export class PaddleOcrAdapter implements OcrAdapter {
     }
   }
 
-  private run(
-    argv: string[],
-    timeoutMs: number,
-  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-    return new Promise((resolvePromise, reject) => {
-      const child = spawn(this.#python, argv, {
+  // 收屍狀態機（逾時 reject＋SIGTERM→SIGKILL 升級）抽到 `subprocess.ts` 共用。
+  // 舊版逾時只送 SIGTERM、不 reject、也無 SIGKILL 升級：子程序不 close 時 recognize()
+  // 會永久 await，卡死整個 extract-text 請求。
+  private run(argv: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    return runReapableChild({
+      command: this.#python,
+      args: argv,
+      spawnOptions: {
         cwd: this.#root,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, ...this.#env },
-      });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-      }, timeoutMs);
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        stdout += chunk;
-      });
-      child.stderr.on("data", (chunk: string) => {
-        stderr += chunk;
-      });
-      child.once("error", (error) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          reject(error);
-        }
-      });
-      child.once("close", (code) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          resolvePromise({ code, stdout, stderr });
-        }
-      });
+      },
+      timeoutMs: this.#timeoutMs,
+      sigkillGraceMs: this.#sigkillGraceMs,
+      onTimeout: () =>
+        new Error(
+          `OCR_TIMEOUT: OCR 未在 ${this.#timeoutMs}ms 內完成，已中止（若為模型載入或下載失敗，請重新執行 pnpm setup:ocr）。`,
+        ),
     });
   }
 }

@@ -197,6 +197,15 @@ export class JobRunner {
     return `${projectId}:${jobId}`;
   }
 
+  /**
+   * 測試用：目前註冊中的 AbortController 數量。`#controllers` 是硬私有欄位，外部
+   * 無法直接觀察，這個唯讀存取子用來釘住「job 失敗／早退時 controller 不殘留」的
+   * 不變量（見 `run()` 首個 updateProject 的清理）。
+   */
+  activeControllerCount(): number {
+    return this.#controllers.size;
+  }
+
   async enqueue(
     projectId: string,
     slideId: string,
@@ -616,28 +625,37 @@ export class JobRunner {
 
   private async run(projectId: string, jobId: string): Promise<void> {
     const controller = new AbortController();
+    // controller 必須在 updateProject 之前註冊，取消才能在 queued→running 轉換期間
+    // abort 到它（保住既有取消語意）。但這也代表若這個 updateProject 拋出（例如 job
+    // 還在排隊時專案被刪），run() 不會進到底部的 finally 清理，controller 會永遠留在
+    // map 裡洩漏——所以在拒絕時先把它移除再 rethrow。
     this.#controllers.set(this.controllerKey(projectId, jobId), controller);
-    const context = await this.repository.updateProject(projectId, (project) => {
-      const job = project.jobs.find((candidate) => candidate.id === jobId);
-      if (!job || job.status !== "queued") return undefined;
-      const slide = project.slides.find((candidate) => candidate.id === job.slideId);
-      if (!slide) return undefined;
-      job.status = "running";
-      job.phase = "preparing";
-      job.progress = { step: 2, total: 6 };
-      job.attempt += 1;
-      job.updatedAt = new Date().toISOString();
-      job.phaseUpdatedAt = job.updatedAt;
-      job.startedAt ??= job.updatedAt;
-      delete job.error;
-      delete job.errorCode;
-      queueMicrotask(() => this.logPhase(structuredClone(job)));
-      return {
-        job: structuredClone(job),
-        slide: structuredClone(slide),
-        project: structuredClone(project),
-      };
-    });
+    const context = await this.repository
+      .updateProject(projectId, (project) => {
+        const job = project.jobs.find((candidate) => candidate.id === jobId);
+        if (!job || job.status !== "queued") return undefined;
+        const slide = project.slides.find((candidate) => candidate.id === job.slideId);
+        if (!slide) return undefined;
+        job.status = "running";
+        job.phase = "preparing";
+        job.progress = { step: 2, total: 6 };
+        job.attempt += 1;
+        job.updatedAt = new Date().toISOString();
+        job.phaseUpdatedAt = job.updatedAt;
+        job.startedAt ??= job.updatedAt;
+        delete job.error;
+        delete job.errorCode;
+        queueMicrotask(() => this.logPhase(structuredClone(job)));
+        return {
+          job: structuredClone(job),
+          slide: structuredClone(slide),
+          project: structuredClone(project),
+        };
+      })
+      .catch((error: unknown) => {
+        this.#controllers.delete(this.controllerKey(projectId, jobId));
+        throw error;
+      });
     if (!context) {
       this.#controllers.delete(this.controllerKey(projectId, jobId));
       return;

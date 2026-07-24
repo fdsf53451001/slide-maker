@@ -1,15 +1,19 @@
+import { ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PaddleOcrAdapter } from "../src/ocr.js";
+import { PaddleOcrAdapter, type PaddleOcrOptions } from "../src/ocr.js";
 
 /**
  * 以假 python（shell script）驗證 recognize() 的 stdout 合約：
  * stdout 必須是單一行機器 JSON，任何污染都要嚴格丟 OCR_OUTPUT_INVALID
  * （合約由 scripts/paddle_ocr.py 的 fd 層級重導守住，server 端不做寬容解析）。
  */
-async function createAdapter(scriptBody: string): Promise<{
+async function createAdapter(
+  scriptBody: string,
+  options: PaddleOcrOptions = {},
+): Promise<{
   adapter: PaddleOcrAdapter;
   cleanup: () => Promise<void>;
 }> {
@@ -23,7 +27,7 @@ async function createAdapter(scriptBody: string): Promise<{
   process.env.SLIDE_MAKER_OCR_SCRIPT = script;
   try {
     return {
-      adapter: new PaddleOcrAdapter(dir),
+      adapter: new PaddleOcrAdapter(dir, options),
       cleanup: () => rm(dir, { recursive: true, force: true }),
     };
   } finally {
@@ -81,4 +85,43 @@ describe("PaddleOcrAdapter.recognize stdout contract", () => {
       await cleanup();
     }
   });
+});
+
+/**
+ * fix #4（逾時不 reject 且無 SIGKILL 升級）的回歸測試。
+ *
+ * 假 python 用 `trap '' TERM` 忽略 SIGTERM 並卡住不 close。舊版逾時只送 SIGTERM、
+ * 不 reject、也無 SIGKILL 升級，recognize() 會永久 await 卡死整個 extract-text 請求。
+ * 這裡以縮短的 timeout／grace 驗證 run() 在寬限期後 reject 具名逾時錯，且真的補送 SIGKILL。
+ */
+describe("PaddleOcrAdapter.recognize timeout reaping", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function waitUntil(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Timed out waiting for condition");
+  }
+
+  it("逾時時 reject 具名 OCR_TIMEOUT 並在寬限期後升級 SIGKILL", async () => {
+    const { adapter, cleanup } = await createAdapter("trap '' TERM\nsleep 5", {
+      timeoutMs: 150,
+      sigkillGraceMs: 150,
+    });
+    const killSpy = vi.spyOn(ChildProcess.prototype, "kill");
+    try {
+      await expect(adapter.recognize("ignored.png")).rejects.toThrow(/OCR_TIMEOUT/);
+      await waitUntil(() => killSpy.mock.calls.some((call) => String(call[0]) === "SIGKILL"));
+      const signals = killSpy.mock.calls.map((call) => String(call[0]));
+      expect(signals[0]).toBe("SIGTERM");
+      expect(signals).toContain("SIGKILL");
+    } finally {
+      await cleanup();
+    }
+  }, 20_000);
 });

@@ -124,6 +124,8 @@ const PDF_MESSAGES: Record<string, string> = {
   PDF_INVALID: "這不是一份 PDF 檔。",
   PDF_EMPTY: "這份 PDF 沒有任何頁面。",
   PDF_RENDER_FAILED: "無法讀取這份 PDF，可能已加密或損壞。",
+  PDF_FIRST_PAGE_UNREADABLE:
+    "這份 PDF 的第一頁損壞、讀不出來，無法判斷簡報比例。請確認檔案未損毀後再試。",
   PDF_ASPECT_UNSUPPORTED:
     "只能匯入 16:9 的簡報：這份 PDF 第一頁不是 16:9。若原檔是 PowerPoint／Keynote，請把版面設成 16:9 再另存為 PDF。",
   PDF_PAGE_SELECTION_INVALID: "選取的頁面沒有一頁可以匯入，請重新挑選。",
@@ -1071,7 +1073,12 @@ export async function createApp(
       const bytes =
         request.body instanceof Buffer ? new Uint8Array(request.body) : new Uint8Array();
       const inspection = await inspectPdfDeck(bytes);
-      const { previews, failedPages } = await renderDeckPreviews(bytes, inspection.acceptedPages);
+      const preview = await renderDeckPreviews(bytes, inspection.acceptedPages);
+      // inspect 階段量不到尺寸的損壞頁不在 acceptedPages 裡，preview 不會碰到它們，
+      // 所以要在這裡把 inspect 的 failedPages 併進去，否則損壞頁會從回應裡無聲消失。
+      const failedPages = [...new Set([...inspection.failedPages, ...preview.failedPages])].sort(
+        (left, right) => left - right,
+      );
       response.json({
         totalPages: inspection.totalPages,
         truncated: inspection.truncated,
@@ -1079,7 +1086,7 @@ export async function createApp(
         acceptedPages: inspection.acceptedPages,
         skippedPages: inspection.skippedPages,
         failedPages,
-        previews,
+        previews: preview.previews,
       });
     },
   );
@@ -1223,7 +1230,10 @@ export async function createApp(
           totalPages: inspection.totalPages,
           importedPages: rendered.pages.map((page) => page.pageNumber),
           skippedPages: inspection.skippedPages,
-          failedPages: rendered.failedPages,
+          // render 跳過的頁與 inspect 就量不到尺寸的損壞頁合併回報。
+          failedPages: [...new Set([...inspection.failedPages, ...rendered.failedPages])].sort(
+            (left, right) => left - right,
+          ),
           // 掃描頁本來就沒有原生文字（不列出）；這裡只有非預期失敗的頁。
           textLayerFailedPages: rendered.pages
             .filter((page) => page.textLayerError)

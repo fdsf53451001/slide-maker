@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,11 +9,10 @@ import type {
   ImageProvider,
   ProviderPreflightResult,
 } from "@slide-maker/core";
+import { DEFAULT_SIGKILL_GRACE_MS, runReapableChild } from "./subprocess.js";
 
 /** Telea inpaint 在 1920×1080 上實測數秒內完成；上限給足餘裕仍遠短於生圖模型。 */
 const RUN_TIMEOUT_MS = 120_000;
-/** SIGTERM 後等這麼久仍未退出就 SIGKILL 強制收屍。 */
-const SIGKILL_GRACE_MS = 5_000;
 
 /**
  * 本地 OpenCV 抹字 inpaint provider（`scripts/local_inpaint.py`）。
@@ -41,14 +39,16 @@ export class LocalInpaintProvider implements ImageProvider {
   };
   readonly #python: string;
   readonly #script: string;
+  readonly #sigkillGraceMs: number;
 
-  constructor(options: { id?: string; root?: string } = {}) {
+  constructor(options: { id?: string; root?: string; sigkillGraceMs?: number } = {}) {
     this.id = options.id ?? "local-inpaint";
     const root = options.root ?? resolve(process.cwd());
     this.#python =
       process.env.SLIDE_MAKER_INPAINT_PYTHON ?? join(root, ".venv-ocr", "bin", "python");
     this.#script =
       process.env.SLIDE_MAKER_INPAINT_SCRIPT ?? join(root, "scripts", "local_inpaint.py");
+    this.#sigkillGraceMs = options.sigkillGraceMs ?? DEFAULT_SIGKILL_GRACE_MS;
   }
 
   /** 非生成 readiness：只檢查 venv python 與腳本存在，不打外部網路。 */
@@ -97,52 +97,18 @@ export class LocalInpaintProvider implements ImageProvider {
     }
   }
 
-  #run(
-    argv: string[],
-    context?: ImageGenerationContext,
-  ): Promise<{ code: number | null; stderr: string }> {
-    return new Promise((resolvePromise, reject) => {
-      const child = spawn(this.#python, argv, { stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      let settled = false;
-      // SIGTERM 後若子程序未在寬限期內退出（例如卡在原生 cv2 呼叫、忽略 term），
-      // 補一記 SIGKILL 強制收屍，避免留下殭屍程序拖住 event loop。
-      let killTimer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (action: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        context?.signal?.removeEventListener("abort", onAbort);
-        action();
-      };
-      const forceKillAfter = (ms: number) => {
-        killTimer = setTimeout(() => child.kill("SIGKILL"), ms);
-        killTimer.unref?.();
-      };
-      const onAbort = () => {
-        child.kill("SIGTERM");
-        forceKillAfter(SIGKILL_GRACE_MS);
-        settle(() => reject(new DOMException("Generation cancelled", "AbortError")));
-      };
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        forceKillAfter(SIGKILL_GRACE_MS);
-        settle(() =>
-          reject(
-            new Error(
-              `LOCAL_INPAINT_TIMEOUT: OpenCV 抹字未在 ${RUN_TIMEOUT_MS}ms 內完成，已中止。`,
-            ),
-          ),
-        );
-      }, RUN_TIMEOUT_MS);
-      context?.signal?.addEventListener("abort", onAbort, { once: true });
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => {
-        stderr += chunk;
-      });
-      child.once("error", (error) => settle(() => reject(error)));
-      child.once("close", (code) => settle(() => resolvePromise({ code, stderr })));
+  // 收屍狀態機（含 SIGTERM→SIGKILL 升級）抽到 `subprocess.ts` 共用；這裡只組合參數。
+  #run(argv: string[], context?: ImageGenerationContext) {
+    return runReapableChild({
+      command: this.#python,
+      args: argv,
+      spawnOptions: { stdio: ["ignore", "ignore", "pipe"] },
+      timeoutMs: RUN_TIMEOUT_MS,
+      sigkillGraceMs: this.#sigkillGraceMs,
+      ...(context?.signal ? { signal: context.signal } : {}),
+      onTimeout: () =>
+        new Error(`LOCAL_INPAINT_TIMEOUT: OpenCV 抹字未在 ${RUN_TIMEOUT_MS}ms 內完成，已中止。`),
+      onAbort: () => new DOMException("Generation cancelled", "AbortError"),
     });
   }
 }

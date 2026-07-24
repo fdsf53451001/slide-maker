@@ -59,11 +59,13 @@ export interface DeckPageInfo {
 
 export interface DeckInspection {
   totalPages: number;
-  /** 只包含前 `MAX_DECK_PAGES` 頁。 */
+  /** 只包含前 `MAX_DECK_PAGES` 頁中「成功量到尺寸」的頁。 */
   pages: DeckPageInfo[];
   acceptedPages: number[];
   /** 比例不符第一頁而被略過的頁碼（在選檔階段就列出）。 */
   skippedPages: number[];
+  /** page dict／page tree 損壞、量不到尺寸而略過的頁碼（比照 render 路徑的 failedPages）。 */
+  failedPages: number[];
   truncated: boolean;
 }
 
@@ -181,12 +183,30 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<PDFDocumentPro
 export async function inspectPdfDeck(bytes: Uint8Array): Promise<DeckInspection> {
   const document = await loadPdfDocument(bytes);
   try {
-    const totalPages = document.numPages;
-    if (!totalPages) throw new Error("PDF_EMPTY");
-    const limit = Math.min(totalPages, MAX_DECK_PAGES);
-    const pages: DeckPageInfo[] = [];
-    for (let pageNumber = 1; pageNumber <= limit; pageNumber += 1) {
-      const page = await document.getPage(pageNumber);
+    return await inspectLoadedDeck(document);
+  } finally {
+    await document.destroy().catch(() => undefined);
+  }
+}
+
+/**
+ * 逐頁量尺寸的核心，操作已載入的 document。
+ *
+ * 抽出 `inspectPdfDeck` 的內圈：一來讓測試能注入「特定頁 getPage reject」的 document
+ * 來驗證單頁隔離（造真的損壞 PDF fixture 太難），二來把逐頁的 try/catch 與比例判斷
+ * 集中在這裡。單頁 page dict／page tree 損壞不該中止整份 inspect（比照 render 路徑的
+ * `renderDeckPagesInThread`／`renderDeckPreviewsInThread` 都有 per-page try/catch）。
+ */
+export async function inspectLoadedDeck(document: PDFDocumentProxy): Promise<DeckInspection> {
+  const totalPages = document.numPages;
+  if (!totalPages) throw new Error("PDF_EMPTY");
+  const limit = Math.min(totalPages, MAX_DECK_PAGES);
+  const pages: DeckPageInfo[] = [];
+  const failedPages: number[] = [];
+  for (let pageNumber = 1; pageNumber <= limit; pageNumber += 1) {
+    let page: PDFPageProxy | undefined;
+    try {
+      page = await document.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
       pages.push({
         pageNumber,
@@ -195,28 +215,37 @@ export async function inspectPdfDeck(bytes: Uint8Array): Promise<DeckInspection>
         aspect: viewport.height > 0 ? viewport.width / viewport.height : 0,
         accepted: false,
       });
-      page.cleanup();
+    } catch {
+      // 損壞頁只記頁碼、其餘照量；裸 pdf.js 錯誤不外洩（不符 app.ts 的 /^PDF_/ 比對，
+      // 會讓整支 inspect 回 500）。
+      failedPages.push(pageNumber);
+    } finally {
+      page?.cleanup();
     }
-    const first = pages[0];
-    if (!first) throw new Error("PDF_EMPTY");
-    if (first.aspect < DECK_ASPECT_MIN || first.aspect > DECK_ASPECT_MAX)
-      throw new Error("PDF_ASPECT_UNSUPPORTED");
-    // 混比例 PDF 以第一頁為準：容忍 ±2% 的匯出誤差，其餘略過。
-    for (const page of pages)
-      page.accepted =
-        Math.abs(page.aspect - first.aspect) <= first.aspect * 0.02 &&
-        page.aspect >= DECK_ASPECT_MIN &&
-        page.aspect <= DECK_ASPECT_MAX;
-    return {
-      totalPages,
-      pages,
-      acceptedPages: pages.filter((page) => page.accepted).map((page) => page.pageNumber),
-      skippedPages: pages.filter((page) => !page.accepted).map((page) => page.pageNumber),
-      truncated: totalPages > limit,
-    };
-  } finally {
-    await document.destroy().catch(() => undefined);
   }
+  // 第 1 頁是判定比例的參考頁：它自己損壞就判不出比例，整份 inspect 無意義。回一個
+  // 可讀的具名錯誤，而不是讓比例判斷改用第 2 頁、或外洩裸錯。
+  const first = pages.find((page) => page.pageNumber === 1);
+  if (!first) {
+    if (failedPages.includes(1)) throw new Error("PDF_FIRST_PAGE_UNREADABLE");
+    throw new Error("PDF_EMPTY");
+  }
+  if (first.aspect < DECK_ASPECT_MIN || first.aspect > DECK_ASPECT_MAX)
+    throw new Error("PDF_ASPECT_UNSUPPORTED");
+  // 混比例 PDF 以第一頁為準：容忍 ±2% 的匯出誤差，其餘略過。
+  for (const page of pages)
+    page.accepted =
+      Math.abs(page.aspect - first.aspect) <= first.aspect * 0.02 &&
+      page.aspect >= DECK_ASPECT_MIN &&
+      page.aspect <= DECK_ASPECT_MAX;
+  return {
+    totalPages,
+    pages,
+    acceptedPages: pages.filter((page) => page.accepted).map((page) => page.pageNumber),
+    skippedPages: pages.filter((page) => !page.accepted).map((page) => page.pageNumber),
+    failedPages,
+    truncated: totalPages > limit,
+  };
 }
 
 export class DeadlineError extends Error {
