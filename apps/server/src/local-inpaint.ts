@@ -89,8 +89,8 @@ export class LocalInpaintProvider implements ImageProvider {
         bytes,
         mediaType: "image/png",
         extension: "png",
-        model: "opencv-inpaint-telea",
-        parameters: { ...request.parameters, engine: "opencv-inpaint-telea" },
+        model: "opencv-inpaint-telea-v2",
+        parameters: { ...request.parameters, engine: "opencv-inpaint-telea-v2" },
       };
     } finally {
       await rm(workDir, { recursive: true, force: true });

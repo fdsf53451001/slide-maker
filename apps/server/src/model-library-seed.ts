@@ -48,7 +48,7 @@ const LOCAL_INPAINT_ENTRY: ModelEntry = {
   name: "OpenCV 抹字修補（本機）",
   capability: "image",
   providerKind: "local",
-  model: "opencv-inpaint-telea",
+  model: "opencv-inpaint-telea-v2",
 };
 
 /**
