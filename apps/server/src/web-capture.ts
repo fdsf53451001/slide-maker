@@ -1,5 +1,5 @@
 import type { WebSearchResult } from "@slide-maker/core";
-import { assertPublicHttpUrl as safePublicUrl } from "@slide-maker/core/url-safety";
+import { assertPublicHttpUrlResolved } from "@slide-maker/core/url-safety";
 import type { HtmlRenderer } from "./web-render.js";
 
 export type { WebSearchResult } from "@slide-maker/core";
@@ -140,10 +140,19 @@ function decodeEntities(value: string): string {
     apos: "'",
     nbsp: " ",
   };
-  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (_match, entity: string) => {
-    if (entity.startsWith("#x")) return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
-    if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
-    return named[entity.toLowerCase()] ?? `&${entity};`;
+  return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+    // 數值字元參照永不 throw：畸形／超範圍的輸入若讓 String.fromCodePoint 丟 RangeError，
+    // 整段標題解碼會炸掉，而它在 try 外被呼叫→整批來源匯入回 500。原樣保留該 entity 是
+    // 最不失真的退路（比 U+FFFD 保留更多資訊，且不會把合法但少見的 entity 吃掉）。
+    const lower = entity.toLowerCase();
+    if (lower.startsWith("#x") || lower.startsWith("#")) {
+      const hex = lower.startsWith("#x");
+      const code = Number.parseInt(hex ? entity.slice(2) : entity.slice(1), hex ? 16 : 10);
+      if (Number.isInteger(code) && code >= 0 && code <= 0x10ffff)
+        return String.fromCodePoint(code);
+      return match;
+    }
+    return named[lower] ?? match;
   });
 }
 
@@ -176,6 +185,50 @@ function failureCode(error: unknown, codes: { timeout: string; fallback: string 
   return codes.fallback;
 }
 
+/**
+ * 逐塊讀 body 並累計位元組數，一超過 `limit` 立即 throw 並取消串流。
+ *
+ * `response.arrayBuffer()` 會先把整個 body 緩衝進記憶體才輪到呼叫端檢查長度：對 chunked
+ * （沒有誠實 content-length）或謊報 content-length 的回應，那個 2MiB 上限形同虛設，攻擊端
+ * 可用一個超大 body 撐爆記憶體。改成邊讀邊數，超標就 throw 並 `cancel()` 掉底層串流。
+ *
+ * `response.body` 為 null（某些 runtime／假 Response）時退回 `arrayBuffer()`，但仍再做一次
+ * 長度檢查作為最後防線。
+ */
+async function readCappedBytes(response: Response, limit: number): Promise<Uint8Array> {
+  const stream = response.body;
+  if (!stream) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > limit) throw new Error("WEB_SOURCE_TOO_LARGE");
+    return bytes;
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new Error("WEB_SOURCE_TOO_LARGE");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
 export interface CapturePageOptions {
   /**
    * 第三方 render fallback。不傳就完全維持純 fetch 行為（既有的搜尋擷取路徑正是這樣呼叫，
@@ -190,6 +243,12 @@ export interface CapturePageOptions {
    * 反過來也一樣。
    */
   requireBody?: boolean | undefined;
+  /**
+   * SSRF 解析版驗證器。預設 `assertPublicHttpUrlResolved`：字面預篩 + DNS 解析後對每一個
+   * 位址做私有網段判斷，封死 `127.0.0.1.sslip.io` 這類「公開泛域名解析到內網」的繞過。
+   * 可注入以利單元測試釘住此行為而不真打 DNS。
+   */
+  resolveUrl?: (value: string) => Promise<URL>;
 }
 
 /**
@@ -206,15 +265,22 @@ export async function captureWebPage(
   fetcher: typeof fetch = fetch,
   options: CapturePageOptions = {},
 ): Promise<{ text: string; metadata: Record<string, string> }> {
-  const { renderer, requireBody } = options;
-  let url = safePublicUrl(found.url);
+  const { renderer, requireBody, resolveUrl = assertPublicHttpUrlResolved } = options;
+  // 初始 URL 的驗證必須在 try **之內**：這個函式的契約是「失敗不 throw、回 summary_only」，
+  // 而私有／畸形的起始 URL（或解析到內網的公開泛域名）在 try 外驗證會直接 reject，違反契約
+  // 並讓上游整批中止（materializeWebSources 沒有逐筆 try/catch）。放進 try 後，這類輸入走
+  // 既有 catch → body="" + failureReason，該筆降級為 summary_only，整批不受影響。
+  let url: URL | undefined;
   let body = "";
   let raw = "";
   let renderedBy = "";
   let renderedTitle = "";
   let failureReason = "";
-  let resolvedUrl = url.toString();
+  // 驗證成功前先用原始輸入字串當 resolvedUrl；驗證通過後才換成正規化網址。
+  let resolvedUrl = found.url;
   try {
+    url = await resolveUrl(found.url);
+    resolvedUrl = url.toString();
     const signal = AbortSignal.timeout(15_000);
     let response: Response | undefined;
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
@@ -230,16 +296,16 @@ export async function captureWebPage(
       const location = response.headers.get("location");
       if (!location) throw new Error("WEB_SOURCE_REDIRECT_INVALID");
       if (redirects === MAX_REDIRECTS) throw new Error("WEB_SOURCE_REDIRECT_LIMIT");
-      url = safePublicUrl(new URL(location, url).toString());
+      url = await resolveUrl(new URL(location, url).toString());
       resolvedUrl = url.toString();
     }
     if (!response) throw new Error("WEB_SOURCE_EMPTY_RESPONSE");
     if (!response.ok) throw new Error(`WEB_SOURCE_HTTP_${response.status}`);
-    if (response.url) resolvedUrl = safePublicUrl(response.url).toString();
+    if (response.url) resolvedUrl = (await resolveUrl(response.url)).toString();
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > MAX_WEB_BYTES) throw new Error("WEB_SOURCE_TOO_LARGE");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > MAX_WEB_BYTES) throw new Error("WEB_SOURCE_TOO_LARGE");
+    // 逐塊累計位元組數：content-length 是誠實預檢，串流上限才是硬邊界（chunked／謊報時）。
+    const bytes = await readCappedBytes(response, MAX_WEB_BYTES);
     const mediaType =
       response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     if (
@@ -260,9 +326,11 @@ export async function captureWebPage(
     });
   }
   const shell = looksLikeEmptyShell(raw, body, htmlTitle(raw));
-  // 只有「呼叫端明確給了 renderer」且「原生擷取確實是空殼」兩個條件同時成立才走第三方。
-  // `url` 在重導向迴圈裡每一步都過 safePublicUrl，所以送出去的必然是驗過的公開網址。
-  if (renderer && shell) {
+  // 只有「呼叫端明確給了 renderer」「原生擷取確實是空殼」且「起始 URL 通過了驗證（url 有值）」
+  // 三個條件同時成立才走第三方。`url` 為 undefined 代表初始驗證就失敗了（私有／畸形起始
+  // URL），此時沒有一個驗過的公開網址可交給 renderer，直接跳過 fallback。`url` 在重導向迴圈
+  // 裡每一步都過 resolveUrl，所以送出去的必然是驗過的公開網址。
+  if (renderer && shell && url) {
     try {
       const rendered = await renderer.render(url);
       const text = rendered.text.slice(0, MAX_CAPTURE_CHARS).trim();

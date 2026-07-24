@@ -1518,6 +1518,15 @@ export async function createApp(
     const rollbackIndex = () => {
       if (indexedAhead) retriever.index(projectId, before.sources);
     };
+    // 生成或落地失敗時，materializeWebSources 已把這一輪抓下來的新來源資產寫進磁碟，但它們
+    // 永遠不會進專案（交易沒跑或被回滾）。索引退回落地狀態之外，還要把那些資產目錄一併回收，
+    // 否則每重試一次就多一份孤兒目錄（專案看不到、容量統計算不到，硬碟卻被佔著）。只清
+    // addedSources：refreshed 覆寫的是既有來源的資產，那些來源仍在專案裡，刪了會弄丟內容。
+    const rollbackMaterialized = async () => {
+      rollbackIndex();
+      for (const added of addedSources)
+        await repository.deleteAssetDirectory(projectId, `sources/${added.id}`);
+    };
     if (structuredText.availability.status !== "available" && process.env.NODE_ENV === "test") {
       slides = createSlidesFromBrief(before.brief);
     } else {
@@ -1661,7 +1670,7 @@ export async function createApp(
           }),
         );
       } catch (error) {
-        rollbackIndex();
+        await rollbackMaterialized();
         throw error;
       }
     }
@@ -1685,10 +1694,10 @@ export async function createApp(
         current.updatedAt = new Date().toISOString();
         return structuredClone(current);
         // 大綱生出來了卻沒能落地（例如併發生成撞上 OUTLINE_HAS_GENERATED_VERSIONS），
-        // 這批來源同樣不存在於專案，索引要一併退回。
+        // 這批來源同樣不存在於專案，索引與已落地的資產要一併退回。
       })
-      .catch((error: unknown) => {
-        rollbackIndex();
+      .catch(async (error: unknown) => {
+        await rollbackMaterialized();
         throw error;
       });
     retriever.index(project.id, project.sources);
@@ -2695,24 +2704,33 @@ export async function createApp(
         "WEB_SEARCH_SOURCES_UNVERIFIED",
         "選取的網頁內容皆無法讀取驗證，因此未加入專案。",
       );
-    const project = await repository.updateProject(projectId, (current) => {
-      for (const refreshed of materialized.refreshedSources) {
-        const index = current.sources.findIndex((source) => source.id === refreshed.id);
-        if (index >= 0) current.sources[index] = refreshed;
-      }
-      for (const added of materialized.addedSources) {
-        if (
-          current.sources.length >= 100 ||
-          current.sources.reduce((sum, source) => sum + source.sizeBytes, 0) + added.sizeBytes >
-            1024 ** 3
-        )
-          throw new Error("SOURCE_PROJECT_LIMIT");
-        if (!current.sources.some((source) => source.metadata.url === added.metadata.url))
-          current.sources.push(added);
-      }
-      current.updatedAt = new Date().toISOString();
-      return structuredClone(current);
-    });
+    const project = await repository
+      .updateProject(projectId, (current) => {
+        for (const refreshed of materialized.refreshedSources) {
+          const index = current.sources.findIndex((source) => source.id === refreshed.id);
+          if (index >= 0) current.sources[index] = refreshed;
+        }
+        for (const added of materialized.addedSources) {
+          if (
+            current.sources.length >= 100 ||
+            current.sources.reduce((sum, source) => sum + source.sizeBytes, 0) + added.sizeBytes >
+              1024 ** 3
+          )
+            throw new Error("SOURCE_PROJECT_LIMIT");
+          if (!current.sources.some((source) => source.metadata.url === added.metadata.url))
+            current.sources.push(added);
+        }
+        current.updatedAt = new Date().toISOString();
+        return structuredClone(current);
+      })
+      .catch(async (error: unknown) => {
+        // 撞上專案上限 → 整筆交易回滾，但 materialize 已把新來源資產寫到磁碟。它們永遠不會
+        // 進專案，留著就是孤兒（每重試一次多一份）。比照 /url-sources 回收 addedSources；
+        // refreshed 覆寫的是既有來源資產，來源仍在專案裡，不刪。
+        for (const added of materialized.addedSources)
+          await repository.deleteAssetDirectory(projectId, `sources/${added.id}`);
+        throw error;
+      });
     retriever.index(project.id, project.sources);
     response.status(201).json(project);
   });

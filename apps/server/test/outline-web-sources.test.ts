@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -357,6 +357,36 @@ describe("大綱生成的來源資料流", () => {
     expect(indexedChunks(failing.id)).toEqual([]);
     // 回滾只針對這次失敗的專案，不能把別的專案的索引一起清掉。
     expect(indexedChunks(project.id).length).toBeGreaterThan(0);
+  });
+
+  it("生成中途失敗時，已落地的網頁來源資產目錄被回收，不留孤兒", async (context) => {
+    if (unavailable) return context.skip();
+    const sourcesDir = (projectId: string) =>
+      join(dataRoot, "projects", projectId, "assets", "sources");
+    const listSources = async (projectId: string): Promise<string[]> => {
+      try {
+        return await readdir(sourcesDir(projectId));
+      } catch (error) {
+        // 目錄還沒被建立，或整個被回收掉了——兩種都代表「沒有孤兒」。
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      }
+    };
+    // 正向對照：成功生成時，抓下來的網頁確實在磁碟上留下一份來源資產目錄，
+    // 否則下面「失敗後為空」證明不了任何事（可能根本沒寫過）。
+    const ok = await createProject();
+    await generateOutline(ok.id);
+    expect(await listSources(ok.id)).toHaveLength(1);
+
+    // 失敗路徑：materialize 已把來源寫到磁碟，隨後大綱在索引之後才失敗（COUNT_INVALID），
+    // 交易從未執行→這批來源永遠不會進專案。那份已落地的資產目錄必須被回收，否則每重試
+    // 一次就多一份孤兒（專案看不到、容量統計算不到，硬碟卻被佔著）。
+    const failing = await createProject();
+    outlineMode = "invalid";
+    await expect(generateOutline(failing.id)).rejects.toThrow();
+    expect(await listSources(failing.id)).toEqual([]);
+    // 回收只針對這次失敗的專案，不能把別的專案已落地的資產一起刪掉。
+    expect(await listSources(ok.id)).toHaveLength(1);
   });
 
   it("prompt 對 uploadedSources 的描述前後一致：是節錄，不是全文", async (context) => {
