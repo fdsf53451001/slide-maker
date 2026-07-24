@@ -212,6 +212,21 @@ describe("大綱生成的來源資料流", () => {
     expect(payload.sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
   });
 
+  it("摘要是空字串的來源（貼上網址就是這樣）在目錄裡改用正文開頭，不是一片空白", async (context) => {
+    if (unavailable) return context.skip();
+    // 貼上網址存下來的 `metadata.summary` 是**空字串**（沒有搜尋摘要可存），不是 undefined。
+    // `??` 對 `""` 不會 fallback，模型於是只被告知「有這個來源」卻看不到任何內容，目錄就
+    // 白給了；這裡用一筆沒有摘要的搜尋結果重現同一個形狀。
+    searchResults = [{ url: SEARCH_URL, title: "電動車年報", summary: "" }];
+    const project = await createProject();
+    await generateOutline(project.id);
+
+    const payload = untrustedPayload(prompts[0]!);
+    const landed = payload.sourceCatalog.find((source) => source.url === SEARCH_URL);
+    expect(landed).toBeDefined();
+    expect(landed!.summary).toContain(BODY_MARKER);
+  });
+
   it("searchedSources 只給 url 與 title：內容一律走 uploadedSources，摘要不得混充來源", async (context) => {
     if (unavailable) return context.skip();
     const project = await createProject();

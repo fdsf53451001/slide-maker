@@ -182,6 +182,9 @@ UI 是主要途徑。在編輯器打開**模型庫**，依序建立：
 | `SLIDE_MAKER_TEXT_ENGINE`、`SLIDE_MAKER_WEB_SEARCH_ENGINE`                                                             | `codex`（預設）或 `openai`                                                             |
 | `SLIDE_MAKER_OCR_MODEL_TIER`、`_OCR_DET_SIDE_LEN`、`_OCR_PYTHON`、`_OCR_SCRIPT`                                        | PaddleOCR 層級（`tiny`／`small`／`medium`，預設 `medium`）、偵測邊長、直譯器與腳本路徑 |
 | `SLIDE_MAKER_INPAINT_PYTHON`、`_INPAINT_SCRIPT`                                                                        | 本機 OpenCV inpaint 的路徑                                                             |
+| `SLIDE_MAKER_WEB_RENDER_ENGINE`                                                                                        | `jina`（預設）或 `none`——貼上網址時補抓動態網頁正文的第三方 render 服務                |
+| `SLIDE_MAKER_JINA_API_KEY`                                                                                             | 可選；未設走無金鑰模式（約每分鐘 20 次）                                               |
+| `SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS`                                                                                    | 1 000 – 600 000，預設 30 000                                                           |
 | `SLIDE_MAKER_LOG_EGRESS_IP`                                                                                            | 設 `1` 會在啟動時記錄對外 IP                                                           |
 
 ## 開發
@@ -246,6 +249,7 @@ export default function App() {
 - 除非你在 `SLIDE_MAKER_TRUSTED_HOSTS` 明確列出主機名，API 會拒絕任何非 localhost 的請求（`LOCAL_HOST_REQUIRED`）。它本身沒有任何身分驗證——要對外開放請在前面擺一層 proxy。
 - API key 以明文存在資料目錄的 `models.json`。
 - **Codex 影像 provider 預設關閉**（需 `SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1`），而且提供的是**軟隔離，不是安全邊界**。它 pin 實驗性的 Codex `0.144.4` app-server 協定，並要求唯讀檔案系統政策、不需核可、關閉該回合的網路存取與 ephemeral thread，拒絕檔案變更、MCP 呼叫、非 `exec` 的動態工具、網路搜尋、非預期的回應政策與無法對應的事件。即便如此，app-server 仍會載入真正的 `CODEX_HOME` 設定與工具面，所以惡意的參考素材或 prompt 依然可能造成 prompt injection、本機資料外洩、既設工具的副作用或配額消耗。請只在沒有機密、沒有特權工具的拋棄式帳號或容器裡執行。
+- **貼上網址可能把該網址與其內容送到第三方。** 原生 fetch 只拿到空殼（靠 JavaScript 渲染的頁面）時，「貼上網址」通道會退到 `SLIDE_MAKER_WEB_RENDER_ENGINE` 指定的 render 服務，**預設為 `jina`（開啟）**：目標網址會送到 `r.jina.ai`，由對方去抓該頁並回傳正文。請求一律帶 `x-no-cache`（免費模式預設回快取快照），串接前也會剝掉網址裡的帳密。設成 `none` 可完全停用這條 fallback，需要 JavaScript 的頁面會改以 `WEB_SOURCE_RENDER_UNAVAILABLE` 失敗。網路搜尋的擷取路徑一律不使用 render 服務——那些網址是模型給的，使用者沒有逐筆同意把它們送出去。
 - 模型輸出一律視為不可信：Codex 的結果必須是 job 工作目錄內、非符號連結的一般 PNG 檔，並檢查大小、尺寸、chunk 邊界、必要的 IHDR/IDAT/IEND chunk 與 CRC，之後重新渲染成精確的 1920×1080 並再驗一次。素材文件與網頁在 prompt 中都被標記為不可信資料。
 
 ## 授權

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { PresentationProject, SourceAsset } from "@slide-maker/core";
-import { api, projectAssetUrl, type WebSearchResult } from "./api.js";
+import { api, projectAssetUrl, type UrlSourceFailure, type WebSearchResult } from "./api.js";
 import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
 
 export function sourceTypeLabel(source: SourceAsset): string {
@@ -274,6 +274,157 @@ function WebSourceDialog({
   );
 }
 
+const MAX_PASTED_URLS = 10;
+
+/**
+ * 伺服器錯誤代碼 → 使用者看得懂的原因。沒對到的代碼原樣顯示，總比吞掉好。
+ *
+ * 每一條對應的**使用者動作**都不一樣：限流要等一分鐘再按一次、逾時可以重試、hash 路由要
+ * 改貼別的網址、上限要先刪來源。全部收斂成「該站阻擋自動擷取」等於叫人去做錯的事。
+ */
+const URL_FAILURE_REASONS: Record<string, string> = {
+  WEB_SOURCE_URL_INVALID: "網址格式不正確",
+  WEB_SOURCE_URL_UNSUPPORTED: "只支援 http／https 網址",
+  WEB_SOURCE_URL_PRIVATE: "指向本機或內網位址，已阻擋",
+  WEB_SOURCE_CONTENT_UNVERIFIED: "抓不到網頁正文（可能需要登入、或該站阻擋自動擷取）",
+  WEB_SOURCE_HASH_ROUTE_UNSUPPORTED:
+    "網址的 # 之後是頁面路徑（單頁應用），伺服器只拿得到首頁；請改貼該頁的實際網址",
+  WEB_SOURCE_RENDER_UNAVAILABLE: "這頁要跑 JavaScript 才有內容，但伺服器未啟用外部 render 服務",
+  WEB_SOURCE_TIMEOUT: "連線逾時，稍後再試一次",
+  WEB_SOURCE_TOO_LARGE: "網頁內容過大，已略過",
+  WEB_SOURCE_BATCH_TIMEOUT: "整批擷取已用完時間預算，這一筆還沒輪到；請分批再試",
+  WEB_RENDER_RATE_LIMITED: "外部 render 服務目前限流，約一分鐘後再試一次",
+  WEB_RENDER_TIMEOUT: "外部 render 服務逾時，稍後再試一次",
+  WEB_RENDER_EMPTY: "外部 render 服務沒有取得任何正文",
+  WEB_RENDER_TOO_LARGE: "外部 render 服務回傳的內容過大，已略過",
+  WEB_RENDER_URL_MISMATCH: "外部 render 服務回傳的是另一個網址的內容，已拒收",
+  WEB_RENDER_WARNING: "外部 render 服務回報這個網址擷取有問題",
+  WEB_RENDER_FAILED: "外部 render 服務失敗，稍後再試一次",
+  SOURCE_PROJECT_LIMIT: "專案來源已達上限（100 份），請先刪掉一些來源",
+};
+
+function urlFailureReason(reason: string): string {
+  return URL_FAILURE_REASONS[reason] ?? reason;
+}
+
+/**
+ * 一行一個網址；空行與前後空白忽略，重複的只留一筆。
+ *
+ * 分隔符含空白與逗號：從文件、聊天訊息或試算表複製過來的網址常常是空白或逗號分隔的，
+ * 只切換行會把整段變成一條必定失敗的「網址」。
+ */
+function parsePastedUrls(value: string): string[] {
+  return [...new Set(value.split(/[\s,]+/).filter(Boolean))];
+}
+
+function UrlSourceDialog({
+  onCancel,
+  onBusyChange,
+  onSubmit,
+}: {
+  onCancel: () => void;
+  /** 讓外層知道請求還在跑：Escape 與其他關閉路徑都要跟著鎖住。 */
+  onBusyChange: (busy: boolean) => void;
+  onSubmit: (urls: string[]) => Promise<{ failures: UrlSourceFailure[] }>;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusyState] = useState(false);
+  const setBusy = (next: boolean) => {
+    setBusyState(next);
+    onBusyChange(next);
+  };
+  const [failures, setFailures] = useState<UrlSourceFailure[]>([]);
+  const [localError, setLocalError] = useState<string>();
+  const urls = parsePastedUrls(value);
+  const tooMany = urls.length > MAX_PASTED_URLS;
+  return (
+    <div
+      className="text-source-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="貼上網址"
+      onClick={() => {
+        if (!busy) onCancel();
+      }}
+    >
+      <form
+        className="text-source-dialog url-source-dialog"
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!urls.length || tooMany || busy) return;
+          setBusy(true);
+          setLocalError(undefined);
+          setFailures([]);
+          void onSubmit(urls)
+            .then((result) => {
+              setFailures(result.failures);
+              // 全部成功才關閉；有失敗就留著讓使用者看清楚是哪幾筆。
+              if (!result.failures.length) onCancel();
+              else setValue(result.failures.map((failure) => failure.url).join("\n"));
+            })
+            .catch((reason: unknown) => {
+              setLocalError(reason instanceof Error ? reason.message : "加入網址來源失敗");
+              const listed = (reason as { failures?: UrlSourceFailure[] })?.failures;
+              setFailures(Array.isArray(listed) ? listed : []);
+            })
+            .finally(() => setBusy(false));
+        }}
+      >
+        <header>
+          <div>
+            <span className="section-label">PASTE URL SOURCE</span>
+            <h2>貼上網址</h2>
+            <p>
+              一行一個網址（最多 {MAX_PASTED_URLS} 筆）。系統會擷取網頁正文、建立索引並存回
+              目前專案；抓不到正文的網址不會加入，也不會用網頁摘要充數。
+            </p>
+          </div>
+          <button type="button" aria-label="關閉貼上網址" disabled={busy} onClick={onCancel}>
+            ×
+          </button>
+        </header>
+        <label>
+          網址清單
+          <textarea
+            aria-label="網址清單"
+            autoFocus
+            rows={8}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={"https://example.com/article\nhttps://example.com/report"}
+          />
+        </label>
+        <small>
+          {urls.length} 個網址{tooMany ? ` · 超過上限 ${MAX_PASTED_URLS} 筆` : ""} · 動態網頁（需要
+          JavaScript 才顯示內容的網站）會改由外部 render 服務取得正文，
+          該網址與其內容會送往第三方處理。
+        </small>
+        {localError && <div className="web-source-error">{localError}</div>}
+        {failures.length > 0 && (
+          <ul className="url-source-failures">
+            {/* 同一個無效網址貼兩次就會回兩筆一模一樣的 failure，url 不是唯一鍵。 */}
+            {failures.map((failure, index) => (
+              <li key={`${failure.url}#${index}`}>
+                <b>{failure.url}</b>
+                <span>{urlFailureReason(failure.reason)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <footer>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            取消
+          </button>
+          <button className="primary" disabled={busy || !urls.length || tooMany}>
+            {busy ? "正在擷取網頁正文…" : `加入網址來源（${urls.length}）`}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
 function TextSourceDialog({
   busy,
   onCancel,
@@ -371,6 +522,9 @@ export function SourcePanel({
 }) {
   const [sourcePreview, setSourcePreview] = useState<SourceAsset>();
   const [showWebSourceSearch, setShowWebSourceSearch] = useState(false);
+  const [showUrlSource, setShowUrlSource] = useState(false);
+  // 擷取中途按 Esc 會關掉對話框、丟掉失敗清單，而請求還在跑（相鄰的貼上文字有守衛）。
+  const [urlSourceBusy, setUrlSourceBusy] = useState(false);
   const [showTextSource, setShowTextSource] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [query, setQuery] = useState("");
@@ -386,6 +540,7 @@ export function SourcePanel({
       if (event.key !== "Escape") return;
       if (sourcePreview) setSourcePreview(undefined);
       else if (showWebSourceSearch) setShowWebSourceSearch(false);
+      else if (showUrlSource && !urlSourceBusy) setShowUrlSource(false);
       else if (showTextSource && !uploadBusy) setShowTextSource(false);
       else if (query) setQuery("");
       else return;
@@ -393,7 +548,15 @@ export function SourcePanel({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sourcePreview, showWebSourceSearch, showTextSource, uploadBusy, query]);
+  }, [
+    sourcePreview,
+    showWebSourceSearch,
+    showUrlSource,
+    urlSourceBusy,
+    showTextSource,
+    uploadBusy,
+    query,
+  ]);
 
   const run = async (operation: () => Promise<PresentationProject>) => {
     try {
@@ -454,6 +617,13 @@ export function SourcePanel({
           onClick={() => setShowWebSourceSearch(true)}
         >
           ＋ 從網路加入資料<span>輸入關鍵字 · 確認後儲存全文</span>
+        </button>
+        <button
+          className="add-url-source"
+          disabled={uploadBusy}
+          onClick={() => setShowUrlSource(true)}
+        >
+          ＋ 貼上網址<span>一行一個 · 擷取正文後存入</span>
         </button>
       </div>
       {project.sources.length > 0 && (
@@ -590,6 +760,18 @@ export function SourcePanel({
             onProject(await api.addWebSources(project.id, sources));
             setShowWebSourceSearch(false);
             setQuery("");
+          }}
+        />
+      )}
+      {showUrlSource && (
+        <UrlSourceDialog
+          onCancel={() => setShowUrlSource(false)}
+          onBusyChange={setUrlSourceBusy}
+          onSubmit={async (urls) => {
+            const result = await api.addUrlSources(project.id, urls);
+            onProject(result.project);
+            setQuery("");
+            return { failures: result.failures };
           }}
         />
       )}

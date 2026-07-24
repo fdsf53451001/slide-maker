@@ -185,6 +185,61 @@ export function parseAiEngine(name: string, value: string | undefined): AiEngine
   return value as AiEngine;
 }
 
+export const WEB_RENDER_ENGINES = ["jina", "none"] as const;
+export type WebRenderEngine = (typeof WEB_RENDER_ENGINES)[number];
+export const DEFAULT_WEB_RENDER_ENGINE: WebRenderEngine = "jina";
+export const DEFAULT_WEB_RENDER_TIMEOUT_MS = 30_000;
+export const MIN_WEB_RENDER_TIMEOUT_MS = 1_000;
+export const MAX_WEB_RENDER_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * 「貼上網址」通道在原生擷取只拿到空殼時，用哪個外部 render 服務補抓正文。
+ *
+ * `jina`（預設）＝ `https://r.jina.ai/`，`none` ＝ 完全停用、只走原生 fetch。
+ *
+ * **隱私取捨（設定前務必知道）**：選 `jina` 等於把「使用者貼的網址」與「該網址的內容」
+ * 送到第三方服務（Jina AI）處理。這條路徑刻意只用在兩個條件同時成立時：使用者**手動**
+ * 貼上網址，且原生擷取被 `looksLikeEmptyShell()` 判定為空殼。既有的網路搜尋擷取路徑
+ * （`materializeWebSources` → `captureWebPage`）不帶 renderer，行為完全不變——搜尋結果
+ * 是模型給的網址，使用者沒有逐筆同意把它們送去第三方。
+ *
+ * 無金鑰模式約 20 RPM（Jina 的免費配額，依對方政策可能變動），設 `SLIDE_MAKER_JINA_API_KEY`
+ * 可提高上限。另外，免費模式**預設回快取快照**，所以 adapter 一律送 `x-no-cache`——更慢、
+ * 更容易撞限流，但「現在去抓這一頁」才是手動貼上網址的語意。
+ *
+ * 設成 `none` 只是「不呼叫第三方」，不會順帶放寬驗收標準：需要 JavaScript 的頁面會改以
+ * `WEB_SOURCE_RENDER_UNAVAILABLE` 明確失敗，而不是把 `<title>` 殘骸當成一份來源收下。
+ */
+export function parseWebRenderEngine(value: string | undefined): WebRenderEngine {
+  if (value === undefined || value.trim() === "") return DEFAULT_WEB_RENDER_ENGINE;
+  if (!(WEB_RENDER_ENGINES as readonly string[]).includes(value))
+    throw new Error(
+      `SLIDE_MAKER_WEB_RENDER_ENGINE must be one of: ${WEB_RENDER_ENGINES.join(", ")}`,
+    );
+  return value as WebRenderEngine;
+}
+
+/**
+ * 外部 render 服務的單次逾時（毫秒，正整數）。預設 30 秒：render 服務要自己開瀏覽器跑完
+ * SPA，遠比純 fetch 慢，沿用 `captureWebPage` 的 15 秒會在動態頁上幾乎必逾時。
+ */
+export function parseWebRenderTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_WEB_RENDER_TIMEOUT_MS;
+  if (!/^\d+$/.test(value))
+    throw new Error("SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be an integer in milliseconds");
+  const timeout = Number(value);
+  if (
+    !Number.isSafeInteger(timeout) ||
+    timeout < MIN_WEB_RENDER_TIMEOUT_MS ||
+    timeout > MAX_WEB_RENDER_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be between ${MIN_WEB_RENDER_TIMEOUT_MS} and ${MAX_WEB_RENDER_TIMEOUT_MS}`,
+    );
+  }
+  return timeout;
+}
+
 export function parseCodexMaxConcurrency(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_CODEX_MAX_CONCURRENCY;
   if (!/^\d+$/.test(value)) throw new Error("SLIDE_MAKER_CODEX_MAX_CONCURRENCY must be an integer");
