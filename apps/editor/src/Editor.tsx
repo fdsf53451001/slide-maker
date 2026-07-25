@@ -32,7 +32,7 @@ import {
   type WebSearchResult,
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
-import { SourcePanel } from "./SourcePanel.js";
+import { SourcePanel, isDescribing, parsingExpired } from "./SourcePanel.js";
 import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
 import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
@@ -2358,22 +2358,41 @@ export function Editor() {
       active = false;
     };
   }, [project?.id, webSearchMode]);
+  /**
+   * 專案輪詢：生成中的 job，以及背景分析中的來源（上傳圖片後伺服器會跑內容描述）。
+   *
+   * 圖片描述沿用這同一條輪詢而不是另外架一套通知：它與 job 一樣是「伺服器端非同步完成、
+   * 完成後只是專案內容變了」。兩者共用一個 interval，才不會在兩件事同時發生時各自拉一份
+   * 專案互相覆寫。間隔看情況：job 要即時看到進度條，描述只要「好了會自己出現」，拉長到
+   * 1.5 秒省下大半無謂的請求（一次描述動輒十幾秒，再快也只是白拉專案 JSON）。
+   */
+  const jobsBusy = !!project?.jobs.some(
+    (job) => job.status === "queued" || job.status === "running",
+  );
+  // 分析中的來源只在「還沒超過上限」時才值得輪詢。伺服器被砍在描述途中、或收尾寫入失敗
+  // 時，來源會一直是 parsing——沒有上限的話每個開著的分頁都會以 1.5 秒為週期永遠打下去，
+  // 而且畫面上完全看不出異常。逾時後停手並改口（見 SourcePanel 的「可能已中斷」），下一次
+  // 伺服器啟動本來就會把它修回 indexed。
+  // `isDescribing` 只認「用途仍是視覺參考」的 parsing：使用者在排隊期間改掉用途後，那筆
+  // 來源要到背景工作輪到它才會收尾，不該為它一直輪詢。
+  const sourcesParsing = !!project?.sources.some(
+    (source) => isDescribing(source) && !parsingExpired(source, project.sources),
+  );
   useEffect(() => {
-    if (
-      !project ||
-      !project.jobs.some((job) => job.status === "queued" || job.status === "running")
-    )
-      return;
-    const timer = setInterval(() => {
-      void api
-        .getProject(project.id)
-        .then(setProject)
-        .catch((reason: unknown) =>
-          setError(reason instanceof Error ? reason.message : "更新失敗"),
-        );
-    }, 700);
+    if (!project || (!jobsBusy && !sourcesParsing)) return;
+    const timer = setInterval(
+      () => {
+        void api
+          .getProject(project.id)
+          .then(setProject)
+          .catch((reason: unknown) =>
+            setError(reason instanceof Error ? reason.message : "更新失敗"),
+          );
+      },
+      jobsBusy ? 700 : 1_500,
+    );
     return () => clearInterval(timer);
-  }, [project]);
+  }, [project, jobsBusy, sourcesParsing]);
   useEffect(() => {
     if (!activeJob) return;
     const timer = setInterval(() => setNow(Date.now()), 1_000);

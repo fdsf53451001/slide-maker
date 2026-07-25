@@ -12,6 +12,7 @@ import {
   parseCodexModel,
   parseCodexReasoningEffort,
   parseCodexTimeoutMs,
+  parseImageDescriptionMode,
   parseOcrDetSideLen,
   parseOcrModelTier,
   DEFAULT_OPENAI_TIMEOUT_MS,
@@ -207,5 +208,25 @@ describe("web render configuration", () => {
     "rejects invalid timeout %s",
     (value) =>
       expect(() => parseWebRenderTimeoutMs(value)).toThrow(/SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS/),
+  );
+});
+
+describe("parseImageDescriptionMode", () => {
+  it("預設開啟：未設定與空字串都是 on", () => {
+    expect(parseImageDescriptionMode(undefined)).toBe("on");
+    expect(parseImageDescriptionMode("")).toBe("on");
+    expect(parseImageDescriptionMode("   ")).toBe("on");
+  });
+
+  it("可整條關掉，大小寫與前後空白都收", () => {
+    expect(parseImageDescriptionMode("off")).toBe("off");
+    expect(parseImageDescriptionMode("OFF")).toBe("off");
+    expect(parseImageDescriptionMode(" off ")).toBe("off");
+  });
+
+  // 「打錯字就默默沿用預設」在這個開關上特別危險：它管的是「要不要把使用者上傳的圖片
+  // 送給第三方模型」，設成 `0`／`false` 的人以為關掉了，實際上照樣送。
+  it.each(["0", "false", "no", "disabled", "1"])("rejects %s", (value) =>
+    expect(() => parseImageDescriptionMode(value)).toThrow(/SLIDE_MAKER_IMAGE_DESCRIPTION/),
   );
 });

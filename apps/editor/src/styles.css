@@ -2091,6 +2091,35 @@ header {
 .upload-source input {
   display: none;
 }
+/* 上傳前的「不要讓 AI 讀取」開關：緊貼上傳按鈕，因為它必須在檔案送出之前就決定。 */
+.source-upload-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -2px 2px 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.source-upload-consent input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.source-upload-consent span {
+  display: grid;
+  gap: 3px;
+}
+.source-upload-consent small {
+  color: var(--text-dim-2);
+  font:
+    9px "DM Mono",
+    monospace;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+.source-describe-failed {
+  color: var(--warning);
+}
 .upload-source.disabled,
 .add-text-source:disabled,
 .add-web-source:disabled,

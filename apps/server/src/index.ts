@@ -4,7 +4,7 @@ import { egressLoggingEnabled, logEgressAddresses } from "./egress-ip.js";
 import { formatStartupStatus } from "./startup-status.js";
 import type { JobRunner } from "./jobs.js";
 import type { ProviderReadinessService } from "./readiness.js";
-import { installShutdownHandlers } from "./shutdown.js";
+import { installShutdownHandlers, type BackgroundWork } from "./shutdown.js";
 
 process.on("uncaughtException", (error) => {
   logError("uncaught_exception", {}, error);
@@ -35,4 +35,7 @@ installShutdownHandlers(
   server,
   app.locals.jobRunner as JobRunner,
   app.locals.providerReadiness as ProviderReadinessService,
+  undefined,
+  undefined,
+  app.locals.imageDescriptions as BackgroundWork,
 );

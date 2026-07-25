@@ -5,7 +5,8 @@ import { createSourceInputSchema, type SourceAsset } from "@slide-maker/core";
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 const TEXT_TYPES = new Set(["text/plain", "text/markdown"]);
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg"]);
+/** 可上傳的圖片 media type。圖片描述那條路也認這一份，不另立第二份清單。 */
+export const SOURCE_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg"]);
 const TYPE_BY_EXTENSION: Record<string, string> = {
   ".txt": "text/plain",
   ".md": "text/markdown",
@@ -280,15 +281,38 @@ export function detectSourceMediaType(name: string, declared: string, bytes: Uin
   return expected;
 }
 
-function chunks(sourceId: string, text: string): SourceAsset["chunks"] {
+/** 一塊的最大字數。`source-context.ts` 餵進 prompt 前也以同一個數字截斷。 */
+export const SOURCE_CHUNK_CHARS = 1600;
+const SOURCE_CHUNK_STRIDE = 1200;
+
+/**
+ * 切塊：1200 字步長、1600 字視窗（刻意重疊，句子被切斷時兩塊各留一半仍檢索得到）。
+ *
+ * `locatorPrefix` 讓非原文的衍生內容（如圖片描述）在 locator 上就看得出出處——引用時
+ * 顯示的是這個字串，寫死 `chunk:` 會讓模型衍生的描述看起來跟原文的第幾段沒有兩樣。
+ *
+ * `textPrefix` 由這裡而不是呼叫端貼上，因為視窗大小必須把它算進去：`source-context.ts`
+ * 在送進 prompt 前會 `slice(0, 1600)`，呼叫端自己在事後加前綴的話，每一塊都會超出上限，
+ * 被截掉的正好是尾巴那幾個字。
+ */
+export function chunkSourceText(
+  sourceId: string,
+  text: string,
+  options: { locatorPrefix?: string; textPrefix?: string } = {},
+): SourceAsset["chunks"] {
+  const locatorPrefix = options.locatorPrefix ?? "chunk";
+  const textPrefix = options.textPrefix ?? "";
+  const window = SOURCE_CHUNK_CHARS - textPrefix.length;
+  const stride = Math.min(SOURCE_CHUNK_STRIDE, window);
+  if (window < 1) throw new Error("Chunk text prefix is longer than the chunk window");
   const result: SourceAsset["chunks"] = [];
-  for (let start = 0, index = 0; start < text.length; start += 1200, index += 1) {
-    const value = text.slice(start, start + 1600).trim();
+  for (let start = 0, index = 0; start < text.length; start += stride, index += 1) {
+    const value = text.slice(start, start + window).trim();
     if (!value) continue;
     result.push({
       id: createHash("sha256").update(`${sourceId}:${index}:${value}`).digest("hex").slice(0, 24),
-      text: value,
-      locator: `chunk:${index + 1}`,
+      text: `${textPrefix}${value}`,
+      locator: `${locatorPrefix}:${index + 1}`,
     });
   }
   return result;
@@ -317,13 +341,13 @@ export async function ingestSource(
     id,
     name: parsed.name,
     mediaType,
-    usage: parsed.usage ?? (IMAGE_TYPES.has(mediaType) ? "visual-reference" : "content"),
+    usage: parsed.usage ?? (SOURCE_IMAGE_TYPES.has(mediaType) ? "visual-reference" : "content"),
     allowModelAccess: parsed.allowModelAccess,
     status: "indexed",
     assetPath,
     sizeBytes: bytes.length,
     extractedText,
-    chunks: chunks(id, extractedText),
+    chunks: chunkSourceText(id, extractedText),
     metadata: {},
     createdAt: now,
     updatedAt: now,

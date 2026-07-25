@@ -331,7 +331,13 @@ export const api = {
   updateSource: (
     projectId: string,
     sourceId: string,
-    patch: Partial<Pick<SourceAsset, "name" | "usage" | "allowModelAccess">>,
+    patch: Partial<Pick<SourceAsset, "name" | "usage" | "allowModelAccess">> & {
+      /**
+       * 改成「視覺參考」時順便補跑一次 AI 內容描述（會呼叫模型、消耗配額）。
+       * 只有在跟使用者確認過之後才送 true——見 `SourcePanel` 的 confirm。
+       */
+      describeImage?: boolean;
+    },
   ) =>
     request<PresentationProject>(
       `/api/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}`,
@@ -342,11 +348,22 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}?force=${force}`,
       { method: "DELETE" },
     ),
-  uploadSource: async (projectId: string, file: File): Promise<PresentationProject> => {
+  /**
+   * 上傳一份來源。
+   *
+   * `allowModelAccess` 一定要在**上傳的當下**就能決定：圖片來源會在伺服器端自動跑一次
+   * AI 內容描述，等落地之後才取消勾選，圖片早就送出去了。伺服器只認 "true"／"false"
+   * 這兩個字串（其他值一律 400），不要在這裡塞別的寫法。
+   */
+  uploadSource: async (
+    projectId: string,
+    file: File,
+    allowModelAccess = true,
+  ): Promise<PresentationProject> => {
     const query = new URLSearchParams({
       name: file.name,
       mediaType: file.type || "application/octet-stream",
-      allowModelAccess: "true",
+      allowModelAccess: allowModelAccess ? "true" : "false",
     });
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/sources?${query}`,

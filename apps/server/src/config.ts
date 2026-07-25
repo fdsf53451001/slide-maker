@@ -240,6 +240,27 @@ export function parseWebRenderTimeoutMs(value: string | undefined): number {
   return timeout;
 }
 
+export const IMAGE_DESCRIPTION_MODES = ["on", "off"] as const;
+export type ImageDescriptionMode = (typeof IMAGE_DESCRIPTION_MODES)[number];
+
+/**
+ * 上傳的視覺參考圖要不要在背景跑一次 vision 內容抽取（預設 `on`）。
+ *
+ * 這是整條路唯一的部署層開關，關掉之後行為與加入這個功能之前完全相同：不標 `parsing`、
+ * 不排任何工作、一個模型請求都不發。之所以需要它：這是**唯一由「上傳檔案」自動觸發**的
+ * 模型呼叫，而佇列長度沒有上限（拖一百張圖就是一百次呼叫）。配額敏感或完全離線的部署
+ * 必須有辦法整條關掉，而不是靠使用者逐張取消勾選。
+ */
+export function parseImageDescriptionMode(value: string | undefined): ImageDescriptionMode {
+  if (value === undefined || value.trim() === "") return "on";
+  const normalized = value.trim().toLowerCase();
+  if (!(IMAGE_DESCRIPTION_MODES as readonly string[]).includes(normalized))
+    throw new Error(
+      `SLIDE_MAKER_IMAGE_DESCRIPTION must be one of: ${IMAGE_DESCRIPTION_MODES.join(", ")}`,
+    );
+  return normalized as ImageDescriptionMode;
+}
+
 export function parseCodexMaxConcurrency(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_CODEX_MAX_CONCURRENCY;
   if (!/^\d+$/.test(value)) throw new Error("SLIDE_MAKER_CODEX_MAX_CONCURRENCY must be an integer");
