@@ -8,6 +8,7 @@ import {
   outlineContentLength,
   outlineDataFidelityInstruction,
   outlineOverflowRetryInstruction,
+  outlineStructureInstruction,
   serializeImageGenerationInput,
   type ImageGenerationRequest,
 } from "../src/index.js";
@@ -97,13 +98,11 @@ describe("outline overflow retry", () => {
     expect(instruction).toContain("Cut at least 42 units");
   });
 
-  it("orders the cuts so a table is not the first thing sacrificed", () => {
-    // 表格是版面上最省空間的資訊形態，卻也是最好切的一刀：整齊的列刪掉不留痕跡。
-    // 實測一頁 7 場比賽的戰績表被砍成 4 列且未加註，讀者無從察覺少了三場敗仗。
+  it("protects purpose-required source data rather than a particular format", () => {
     const instruction = outlineOverflowRetryInstruction("high", 400);
-    expect(instruction).toMatch(/prose, bullets, and closing lines before touching a table/);
-    expect(instruction).toMatch(/keep every one of its rows and columns/);
-    // 真的放不下時要明講是節選，不能無聲刪列。
+    expect(instruction).toMatch(/complete source dataset that this slide's page purpose requires/);
+    expect(instruction).toMatch(/table, bullets, chart labels, or another structure/);
+    expect(instruction).toMatch(/Do not protect or sacrifice content merely because/);
     expect(instruction).toMatch(/partial view/);
   });
 
@@ -159,44 +158,12 @@ describe("density and length instructions", () => {
     }
   });
 
-  // 實測 63 頁既有大綱：0 頁使用表格，high 密度平均僅寫到 182/270 單位。
-  // 原因是結構選單只列了標題／要點／句子／段落，模型沒有表格這個選項可選。
-  it("offers a table as a structural option for the content field", () => {
+  it("keeps structure preferences out of the length instruction", () => {
     for (const density of densities) {
       const brevity = outlineBrevityInstruction(density);
-      expect(brevity).toMatch(/markdown table/);
-      // 比較／前後對照／多指標的頁面應優先用表格，否則同樣字數承載的資訊會少得多。
-      expect(brevity).toMatch(/prefer a markdown pipe table/);
-    }
-  });
-
-  // 建議的表格尺寸若放不進該密度的字數預算，就是一條註定被硬上限打回的矛盾指令。
-  it("suggests a table size that actually fits the density's budget", () => {
-    const tableWidth = (columns: number, rows: number) => {
-      const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
-      const text = [
-        line(Array.from({ length: columns }, (_, i) => `指標名${i}`)),
-        line(Array.from({ length: columns }, () => "---")),
-        ...Array.from({ length: rows }, () =>
-          line(Array.from({ length: columns }, () => "項目值")),
-        ),
-      ].join("\n");
-      return outlineContentLength(text);
-    };
-    // low 密度不能沿用 5×6：即使骨架免計費仍要 108 單位，佔掉軟目標 110 的幾乎全部，
-    // 塞完表格就沒有空間放標題與結論了。
-    expect(tableWidth(5, 6)).toBeGreaterThan(outlineContentCharBudget("low").soft * 0.75);
-    const suggested = { low: [4, 3], medium: [5, 6], high: [5, 6] } as const;
-    for (const density of densities) {
-      const [columns, rows] = suggested[density];
-      expect(outlineBrevityInstruction(density)).toContain(
-        `about ${columns} columns and ${rows} body rows`,
-      );
-      // 建議的表格要在軟目標內就放得下，且留有空間給標題與結論——否則這條建議
-      // 一被採納就注定超標，等於逼模型在「照建議做」與「不超標」之間二選一。
-      expect(tableWidth(columns, rows)).toBeLessThanOrEqual(
-        outlineContentCharBudget(density).soft * 0.75,
-      );
+      expect(brevity).not.toMatch(/prefer a markdown pipe table/);
+      expect(brevity).not.toMatch(/same budget carries far more information/);
+      expect(brevity).not.toMatch(/columns and \d+ body rows/);
     }
   });
 
@@ -209,6 +176,33 @@ describe("density and length instructions", () => {
     // 下限方向仍要說：寫太少會讓模型為了填版面而編造內容。
     expect(brevity).toMatch(/too thin/);
     expect(brevity).toMatch(/padding with filler/);
+  });
+});
+
+describe("outline structure instruction", () => {
+  it("treats tables and other structures as neutral choices", () => {
+    const instruction = outlineStructureInstruction();
+    expect(instruction).toMatch(/all neutral options/);
+    expect(instruction).toMatch(/none is preferred or discouraged/);
+    expect(instruction).toMatch(/stable rows and columns/);
+    expect(instruction).toMatch(/reading across individual cells/);
+    expect(instruction).toMatch(/choosing a table on those semantic grounds/);
+    expect(instruction).not.toMatch(/prefer a markdown pipe table/);
+    expect(instruction).not.toMatch(/table only|only use a table/i);
+  });
+
+  it("forbids inventing a schema or values just to complete a pattern", () => {
+    const instruction = outlineStructureInstruction();
+    expect(instruction).toMatch(/Never invent values, categories, row labels, columns/);
+    expect(instruction).toMatch(/layoutHint consistent with the chosen content structure/);
+  });
+
+  it("keeps a chosen table readable without imposing a fixed row-column template", () => {
+    const instruction = outlineStructureInstruction();
+    expect(instruction).toMatch(/projector-legible with concise cell values/);
+    expect(instruction).toMatch(/another structure that faithfully preserves/);
+    expect(instruction).toMatch(/explicitly label the displayed data as a partial view/);
+    expect(instruction).not.toMatch(/\d+\s+columns|\d+\s+body rows/);
   });
 });
 
@@ -702,21 +696,23 @@ describe("序列化後的影像輸入不得帶著 markdown 語法", () => {
   });
 });
 
-describe("資料完整性優先於自己的歸納", () => {
+describe("頁面目的需要完整資料時，完整性優先於自己的歸納", () => {
   const densities = ["low", "medium", "high"] as const;
 
-  it("明講空間不足時先砍評論、不砍資料列", () => {
+  it("只在本頁目的需要完整資料集時，空間不足先砍評論", () => {
     // 實測一頁複盤：來源給了七場戰績，產出只留四列，省下的額度拿去寫診斷與行動建議，
     // 而砍掉的三場全是敗仗。模型的預設偏好是「洞察優於原始資料」，得明確反轉過來。
     const instruction = outlineDataFidelityInstruction();
-    expect(instruction).toMatch(/presenting that data in full outranks adding your own synthesis/);
-    expect(instruction).toMatch(/cut your own commentary before dropping a single data row/);
+    expect(instruction).toMatch(/page purpose specifically requires/);
+    expect(instruction).toMatch(/presenting that required data in full outranks/);
+    expect(instruction).toMatch(/cut your own commentary before dropping a required data item/);
     expect(instruction).toMatch(/never quietly present a filtered subset/);
+    expect(instruction).toMatch(/Do not force a complete dataset onto a slide/);
   });
 
   it("要求保留實際數值而不是改寫成趨勢描述", () => {
     // 「延遲明顯上升」讀者無從查證，「2ms → 1479ms → 14,363ms」才可以。
-    expect(outlineDataFidelityInstruction()).toMatch(/Keep the actual figures/);
+    expect(outlineDataFidelityInstruction()).toMatch(/Keep required actual figures/);
   });
 
   it("不重述長度規則與表格渲染要求，避免兩處指令打架", () => {

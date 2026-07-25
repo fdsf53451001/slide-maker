@@ -30,6 +30,16 @@ describe("request failures", () => {
     await expect(api.getProject("p1")).rejects.not.toThrow(/PDF_ASPECT_UNSUPPORTED/);
   });
 
+  it("shows the outline count details without exposing the compatibility code", async () => {
+    failWith({
+      error: "CODEX_OUTLINE_COUNT_INVALID",
+      message:
+        "大綱頁數不符合要求：本次要求 7 頁，允許 5–9 頁；模型宣告 10 頁，實際回傳 10 頁（第 1 次嘗試）。",
+    });
+    await expect(api.regenerateOutline("p1")).rejects.toThrow("本次要求 7 頁，允許 5–9 頁");
+    await expect(api.regenerateOutline("p1")).rejects.not.toThrow(/CODEX_OUTLINE_COUNT_INVALID/);
+  });
+
   it("falls back to the code when the server has nothing to explain", async () => {
     failWith({ error: "NOT_FOUND" }, 404);
     await expect(api.getProject("p1")).rejects.toThrow("NOT_FOUND");

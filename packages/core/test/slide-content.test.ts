@@ -640,7 +640,7 @@ describe("有序清單的序號語意", () => {
 
 describe("殘留 markup 要標記出來，而不是默許畫上投影片", () => {
   it("缺分隔列的 pipe 表格仍解析成表格", () => {
-    // outlineBrevityInstruction 鼓勵模型用 pipe table 卻沒提分隔列，這是必然出現的輸入。
+    // outlineStructureInstruction 中性允許列欄閱讀最清楚時使用 pipe table；模型可能省略分隔列。
     expect(parseSlideContentBlocks("| 指標 | 值 |\n| 營收 | 12 |")).toEqual([
       { type: "table", header: ["指標", "值"], rows: [["營收", "12"]] },
     ]);

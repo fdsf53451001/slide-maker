@@ -78,12 +78,16 @@ export function outlineBrevityInstruction(
   density: ImageGenerationRequest["style"]["density"],
 ): string {
   const { soft } = outlineContentCharBudget(density);
-  // 表格尺寸要放得進該密度的字數目標，否則就是一條自相矛盾的指令。
-  const tableSize =
-    density === "low"
-      ? "at most about 4 columns and 3 body rows"
-      : "at most about 5 columns and 6 body rows";
-  return `content is the on-slide copy. Its length is measured in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and neither whitespace nor table syntax (the | separators and the |---| divider row) is counted at all — so "Kimi Code CLI" costs 5.5 units, not 13, and a table costs only what its cells actually say. Aim for roughly ${soft} units of real substance. You do not need to count precisely — write what the slide genuinely needs at about that scale; the system measures the result and will ask you to trim if it runs long. A normal content slide that stops near half of ${soft} is too thin, and padding with filler to reach a number is worse than landing under. How to structure that copy — headline, points, sentences, paragraphs, a markdown table, or a mix — is your call based on what the slide needs. When the slide compares options, tracks before/after, or reports several metrics or dimensions, prefer a markdown pipe table: the same budget carries far more information as a table than as prose, so choosing prose there loses content the slide should have shown. Keep tables legible on a projector — ${tableSize}, with short cell values rather than sentences. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
+  return `content is the on-slide copy. Its length is measured in full-width units: every Chinese character and full-width punctuation mark counts as 1, every Latin letter, digit, and half-width symbol counts as 0.5, and neither whitespace nor table syntax (the | separators and the |---| divider row) is counted at all — so "Kimi Code CLI" costs 5.5 units, not 13. Aim for roughly ${soft} units of real substance. You do not need to count precisely — write what the slide genuinely needs at about that scale; the system measures the result and will ask you to trim if it runs long. A normal content slide that stops near half of ${soft} is too thin, and padding with filler to reach a number is worse than landing under. narrative is off-slide speaker context, not shown on the slide: keep it brief and do not restate the full content there.`;
+}
+
+/**
+ * 大綱的內容結構選擇。表格與其他結構完全中性：由資訊本身的閱讀關係決定，不以同樣字數
+ * 能塞多少內容為準。這條同時約束 content 與 layoutHint，避免文案已改成卡片、構圖提示卻
+ * 仍沿用表格，或反過來。
+ */
+export function outlineStructureInstruction(): string {
+  return "Choose the content structure solely by what makes this slide easiest to understand. Headings, prose, bullets, steps, cards, timelines, diagrams, and markdown pipe tables are all neutral options: none is preferred or discouraged in itself. Use a table when the information forms stable rows and columns and reading across individual cells is the clearest way to understand their relationships; otherwise use the structure that best expresses the material. Never invent values, categories, row labels, columns, or empty filler merely to complete a table or any other visual pattern. Keep layoutHint consistent with the chosen content structure: describe a table or grid only when the content actually has stable row-and-column relationships. After choosing a table on those semantic grounds, keep it projector-legible with concise cell values rather than sentences. If it cannot fit legibly, use another structure that faithfully preserves the same relationships, or explicitly label the displayed data as a partial view; never silently omit required items.";
 }
 
 /**
@@ -97,7 +101,7 @@ export function outlineBrevityInstruction(
  * 這條只談「同樣空間該先給誰」，不重述長度規則，也不重述表格的渲染要求。
  */
 export function outlineDataFidelityInstruction(): string {
-  return "When the sources supply a complete dataset — a results table, a metric series, a set of measurements — presenting that data in full outranks adding your own synthesis. Write the interpretation, the diagnosis, and the recommended next steps only with the space left after the data itself is on the slide; when space runs short, cut your own commentary before dropping a single data row, and never quietly present a filtered subset as if it were the whole. Keep the actual figures rather than paraphrasing them as trends: a reader can form their own view from numbers, but cannot check a conclusion drawn from numbers you left out.";
+  return "When this slide's page purpose specifically requires the audience to inspect a complete dataset supplied by the sources — a results table, a metric series, or a set of measurements — presenting that required data in full outranks adding your own synthesis. Do not force a complete dataset onto a slide whose purpose only needs a conclusion or selected evidence. When the complete dataset is required, write interpretation, diagnosis, and recommended next steps only with the space left after the data itself is on the slide; when space runs short, cut your own commentary before dropping a required data item, and never quietly present a filtered subset as if it were the whole. Keep required actual figures rather than paraphrasing them as trends: a reader can form their own view from numbers, but cannot check a conclusion drawn from numbers you left out.";
 }
 
 /**
@@ -107,9 +111,8 @@ export function outlineDataFidelityInstruction(): string {
  * 多少，於是三次重試常常犯同一個錯，最後以 CODEX_OUTLINE_CONTENT_TOO_LONG 收場。這裡
  * 是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限，長度回饋全靠這條。
  *
- * 砍的順序要指明：表格是版面上最省空間的資訊形態（同樣單位數承載的資料遠多於散文），
- * 讓模型「隨便砍最弱的一項」時，整齊的表格列永遠是最好切的那一刀，於是資料頁會悄悄
- * 少掉幾列而讀者無從察覺。
+ * 砍的順序依頁面目的與來源完整性，而不是依格式。完整資料不一定是表格；表格也不一定是
+ * 本頁必要資料。若按格式一律保護表格，模型只要把內容改排成表格就能逃過刪減。
  */
 export function outlineOverflowRetryInstruction(
   density: ImageGenerationRequest["style"]["density"],
@@ -117,7 +120,7 @@ export function outlineOverflowRetryInstruction(
 ): string {
   const { soft, hard } = outlineContentCharBudget(density);
   const excess = Math.max(1, Math.round(measuredUnits - hard));
-  return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. Cut at least ${excess} units of real copy this time — shorten wording or drop the weakest information unit; do not merely reformat. Cut prose, bullets, and closing lines before touching a table: if the slide carries a markdown table, keep every one of its rows and columns, and if it still will not fit, say in the copy that the table is a partial view (for example "4 of 7 shown") rather than silently dropping rows.`;
+  return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. Cut at least ${excess} units of real copy this time — shorten wording or drop the weakest information unit; do not merely reformat. Preserve any complete source dataset that this slide's page purpose requires the audience to inspect, regardless of whether it is presented as a table, bullets, chart labels, or another structure; cut optional synthesis and commentary before that required data. Do not protect or sacrifice content merely because it is formatted as a table. If required source data still cannot fit in full, state explicitly that the slide shows a partial view rather than silently dropping items.`;
 }
 
 /**

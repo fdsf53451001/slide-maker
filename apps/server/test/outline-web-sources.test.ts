@@ -3,8 +3,8 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { PresentationProject } from "@slide-maker/core";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { outlineStructureInstruction, type PresentationProject } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import { SqliteFtsRetriever } from "../src/retriever.js";
 
@@ -14,6 +14,7 @@ const EXCLUDED_URL = "https://example.com/excluded-report";
 const BODY_MARKER = "台灣電動車二〇二五年掛牌數為五萬八千輛";
 const BODY_TAIL_MARKER = "附錄：各縣市充電樁佈建密度";
 const SUMMARY = "電動車市場摘要一句話";
+const MODEL_BODY_CANARY = "MODEL-OUTPUT-BODY-CANARY";
 
 interface OutlinePayload {
   topic: string;
@@ -36,14 +37,24 @@ describe("大綱生成的來源資料流", () => {
   let baseUrl = "";
   let unavailable = false;
   let bodyText = "";
-  // "invalid" 讓大綱在索引之後才失敗，用來檢查半途而廢留下的索引是否外洩。
+  // "returned-out-of-range" 讓大綱在索引之後才失敗，用來檢查半途而廢留下的索引是否外洩。
+  // "declared-mismatch" 只讓 declared count 與實際陣列不一致；實際頁數仍有效，所以應成功並記 warning。
   // "overflow-once" 第一輪回超長 content 觸發重試迴圈，第二輪才給合法結果。
-  let outlineMode: "valid" | "invalid" | "overflow-once" = "valid";
+  let outlineMode:
+    | "valid"
+    | "declared-mismatch"
+    | "declared-missing"
+    | "declared-invalid-format"
+    | "returned-out-of-range"
+    | "returned-out-of-range-missing"
+    | "overflow-once" = "valid";
   // 搜尋與抓取都要能逐案切換，才驗得到「0 筆」與「全部抓取失敗」兩條守門路徑。
   let searchResults: { url: string; title: string; summary: string }[] = [];
   let captureStatus: "full" | "summary-only" = "full";
   const searchCalls: string[] = [];
   const prompts: string[] = [];
+  let outlineOutputSchema:
+    { required?: string[]; properties?: Record<string, unknown> } | undefined;
   const savedEnv: Record<string, string | undefined> = {};
   // 逐 URL 覆寫抓取到的正文，用來分辨哪一頁的內容進了 prompt；沒覆寫的沿用 bodyText。
   const bodyByUrl = new Map<string, string>();
@@ -72,34 +83,61 @@ describe("大綱生成的來源資料流", () => {
         if ((req.url ?? "").endsWith("/models")) return res.end(JSON.stringify({ data: [] }));
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
           messages?: { role: string; content: unknown }[];
+          response_format?: {
+            json_schema?: {
+              schema?: { required?: string[]; properties?: Record<string, unknown> };
+            };
+          };
         };
+        outlineOutputSchema = body.response_format?.json_schema?.schema;
         const user = body.messages?.find((message) => message.role === "user");
         const parts = Array.isArray(user?.content) ? (user.content as { text?: string }[]) : [];
         prompts.push(parts.map((part) => part.text ?? "").join(""));
         const attempt = prompts.length;
+        const returnedCount =
+          outlineMode === "returned-out-of-range" || outlineMode === "returned-out-of-range-missing"
+            ? 4
+            : 1;
+        const slides = Array.from({ length: returnedCount }, (_, index) => ({
+          purpose: `市場概況 ${index + 1}`,
+          // high 密度的硬上限是 270 個中文字寬，400 字必定超出並觸發重試。
+          content:
+            outlineMode === "overflow-once" && attempt === 1
+              ? "台灣電動車掛牌數持續成長。".repeat(31)
+              : outlineMode === "declared-mismatch" ||
+                  outlineMode === "declared-missing" ||
+                  outlineMode === "declared-invalid-format" ||
+                  outlineMode === "returned-out-of-range" ||
+                  outlineMode === "returned-out-of-range-missing"
+                ? MODEL_BODY_CANARY
+                : "台灣電動車掛牌數持續成長。",
+          narrative: "先講規模再講基礎建設",
+          layoutHint: "單欄重點",
+          sourceUrls: [SEARCH_URL],
+        }));
         res.end(
           JSON.stringify({
             choices: [
               {
                 message: {
                   content: JSON.stringify({
-                    // 與 slides.length 不符會讓伺服器丟 CODEX_OUTLINE_COUNT_INVALID。
-                    actualSlideCount: outlineMode === "invalid" ? 9 : 1,
+                    // 宣告數只供觀測；是否接受大綱一律以 slides.length 為準。
                     rationale: "以抓下來的正文撰寫",
-                    slides: [
-                      {
-                        purpose: "市場概況",
-                        // high 密度的硬上限是 270 個中文字寬，400 字必定超出並觸發重試。
-                        content:
-                          outlineMode === "overflow-once" && attempt === 1
-                            ? "台灣電動車掛牌數持續成長。".repeat(31)
-                            : "台灣電動車掛牌數持續成長。",
-                        narrative: "先講規模再講基礎建設",
-                        layoutHint: "單欄重點",
-                        sourceUrls: [SEARCH_URL],
-                      },
-                    ],
+                    slides,
                     sources: [],
+                    ...(outlineMode === "declared-missing" ||
+                    outlineMode === "returned-out-of-range-missing"
+                      ? {}
+                      : {
+                          actualSlideCount:
+                            outlineMode === "declared-mismatch"
+                              ? 2
+                              : outlineMode === "declared-invalid-format"
+                                ? "1"
+                                : outlineMode === "returned-out-of-range"
+                                  ? 4
+                                  : 1,
+                        }),
                   }),
                 },
               },
@@ -160,6 +198,7 @@ describe("大綱生成的來源資料流", () => {
 
   beforeEach(() => {
     prompts.length = 0;
+    outlineOutputSchema = undefined;
     searchCalls.length = 0;
     bodyByUrl.clear();
     outlineMode = "valid";
@@ -200,6 +239,53 @@ describe("大綱生成的來源資料流", () => {
       body: JSON.stringify({ replace }),
     });
 
+  async function generateOutlineFailure(projectId: string): Promise<{
+    status: number;
+    body: { error?: string; message?: string };
+    log: Record<string, unknown>;
+  }> {
+    const errorLines: string[] = [];
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation((line: unknown) => errorLines.push(String(line)));
+    try {
+      const response = await fetch(`${baseUrl}/api/projects/${projectId}/outline`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const body = (await response.json()) as { error?: string; message?: string };
+      const parsedLogs = errorLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(parsedLogs.filter((entry) => entry.severity === "ERROR")).toHaveLength(1);
+      expect(parsedLogs.some((entry) => entry.event === "http_request_failed")).toBe(false);
+      const logs = parsedLogs.filter((entry) => entry.event === "outline_count_invalid");
+      expect(logs).toHaveLength(1);
+      return { status: response.status, body, log: logs[0]! };
+    } finally {
+      consoleError.mockRestore();
+    }
+  }
+
+  async function generateOutlineWithWarning(projectId: string): Promise<{
+    project: PresentationProject;
+    log: Record<string, unknown>;
+  }> {
+    const warningLines: string[] = [];
+    const consoleWarn = vi
+      .spyOn(console, "warn")
+      .mockImplementation((line: unknown) => warningLines.push(String(line)));
+    try {
+      const project = await generateOutline(projectId);
+      const parsedLogs = warningLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(parsedLogs.filter((entry) => entry.severity === "WARNING")).toHaveLength(1);
+      const logs = parsedLogs.filter((entry) => entry.event === "outline_count_declared_mismatch");
+      expect(logs).toHaveLength(1);
+      return { project, log: logs[0]! };
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  }
+
   it("這一輪抓下來的網頁正文就進得了 prompt，而不是等下一次生成", async (context) => {
     if (unavailable) return context.skip();
     const project = await createProject();
@@ -210,6 +296,13 @@ describe("大綱生成的來源資料流", () => {
     expect(excerpts).toContain(BODY_MARKER);
     expect(payload.uploadedSources.every((source) => source.url === SEARCH_URL)).toBe(true);
     expect(payload.sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
+    expect(outlineOutputSchema?.properties?.actualSlideCount).toEqual({
+      type: ["integer", "null"],
+      minimum: 1,
+    });
+    expect(outlineOutputSchema?.required).toContain("actualSlideCount");
+    // 整份大綱 route 必須接上完整共用規則，不能自行複製一份日後逐漸分歧的版本。
+    expect(prompts[0]).toContain(outlineStructureInstruction());
   });
 
   it("摘要是空字串的來源（貼上網址就是這樣）在目錄裡改用正文開頭，不是一片空白", async (context) => {
@@ -327,10 +420,133 @@ describe("大綱生成的來源資料流", () => {
     expect(prompts[1]).toContain("UNTRUSTED_INPUT");
   });
 
+  it("模型宣告頁數與實際陣列不一致但實際頁數有效時接受並記安全 warning", async (context) => {
+    if (unavailable) return context.skip();
+    const project = await createProject();
+    outlineMode = "declared-mismatch";
+
+    const result = await generateOutlineWithWarning(project.id);
+
+    expect(result.project.slides).toHaveLength(1);
+    expect(result.project.slides[0]?.content).toBe(MODEL_BODY_CANARY);
+    expect(result.log).toMatchObject({
+      event: "outline_count_declared_mismatch",
+      severity: "WARNING",
+      projectId: project.id,
+      requestedCount: 1,
+      allowedMin: 1,
+      allowedMax: 3,
+      declaredCount: 2,
+      returnedCount: 1,
+      attempt: 1,
+    });
+    const serialized = JSON.stringify(result.log);
+    expect(serialized).not.toContain(BODY_MARKER);
+    expect(serialized).not.toContain(MODEL_BODY_CANARY);
+    expect(serialized).not.toContain("UNTRUSTED_INPUT");
+    expect(serialized).not.toContain("test-key");
+  });
+
+  it("模型省略頁數宣告但實際頁數有效時正規化為 null 並接受", async (context) => {
+    if (unavailable) return context.skip();
+    const project = await createProject();
+    outlineMode = "declared-missing";
+
+    const result = await generateOutlineWithWarning(project.id);
+
+    expect(result.project.slides).toHaveLength(1);
+    expect(result.project.slides[0]?.content).toBe(MODEL_BODY_CANARY);
+    expect(result.log).toMatchObject({
+      event: "outline_count_declared_mismatch",
+      projectId: project.id,
+      declaredCount: null,
+      returnedCount: 1,
+      attempt: 1,
+    });
+    const serialized = JSON.stringify(result.log);
+    expect(serialized).not.toContain(BODY_MARKER);
+    expect(serialized).not.toContain(MODEL_BODY_CANARY);
+    expect(serialized).not.toContain("UNTRUSTED_INPUT");
+    expect(serialized).not.toContain("test-key");
+  });
+
+  it("模型用字串宣告頁數但實際頁數有效時正規化為 null 並接受", async (context) => {
+    if (unavailable) return context.skip();
+    const project = await createProject();
+    outlineMode = "declared-invalid-format";
+
+    const result = await generateOutlineWithWarning(project.id);
+
+    expect(result.project.slides).toHaveLength(1);
+    expect(result.log).toMatchObject({
+      event: "outline_count_declared_mismatch",
+      projectId: project.id,
+      declaredCount: null,
+      returnedCount: 1,
+      attempt: 1,
+    });
+    const serialized = JSON.stringify(result.log);
+    expect(serialized).not.toContain(BODY_MARKER);
+    expect(serialized).not.toContain(MODEL_BODY_CANARY);
+    expect(serialized).not.toContain("UNTRUSTED_INPUT");
+    expect(serialized).not.toContain("test-key");
+  });
+
+  it("實際回傳頁數超出允許範圍時回可讀 400 並記宣告與實際頁數", async (context) => {
+    if (unavailable) return context.skip();
+    const project = await createProject();
+    outlineMode = "returned-out-of-range";
+
+    const failure = await generateOutlineFailure(project.id);
+
+    expect(failure.status).toBe(400);
+    expect(failure.body).toEqual({
+      error: "CODEX_OUTLINE_COUNT_INVALID",
+      message:
+        "大綱頁數不符合要求：本次要求 1 頁，允許 1–3 頁；模型宣告 4 頁，實際回傳 4 頁（第 1 次嘗試）。",
+    });
+    expect(failure.log).toMatchObject({
+      projectId: project.id,
+      requestedCount: 1,
+      allowedMin: 1,
+      allowedMax: 3,
+      declaredCount: 4,
+      returnedCount: 4,
+      attempt: 1,
+    });
+    const serialized = JSON.stringify(failure.log);
+    expect(serialized).not.toContain(BODY_MARKER);
+    expect(serialized).not.toContain(MODEL_BODY_CANARY);
+    expect(serialized).not.toContain("UNTRUSTED_INPUT");
+    expect(serialized).not.toContain("test-key");
+  });
+
+  it("實際頁數超出範圍且沒有有效宣告時，400 訊息與 log 都清楚呈現 null 語意", async (context) => {
+    if (unavailable) return context.skip();
+    const project = await createProject();
+    outlineMode = "returned-out-of-range-missing";
+
+    const failure = await generateOutlineFailure(project.id);
+
+    expect(failure.status).toBe(400);
+    expect(failure.body).toEqual({
+      error: "CODEX_OUTLINE_COUNT_INVALID",
+      message:
+        "大綱頁數不符合要求：本次要求 1 頁，允許 1–3 頁；模型未提供有效頁數宣告，實際回傳 4 頁（第 1 次嘗試）。",
+    });
+    expect(failure.log).toMatchObject({
+      projectId: project.id,
+      declaredCount: null,
+      returnedCount: 4,
+      attempt: 1,
+    });
+    expect(failure.body.message).not.toContain("null");
+  });
+
   it("生成中途失敗時，尚未落地的網頁 chunk 不會從搜尋面板漏出去", async (context) => {
     if (unavailable) return context.skip();
     const project = await createProject();
-    outlineMode = "invalid";
+    outlineMode = "returned-out-of-range";
     await expect(generateOutline(project.id)).rejects.toThrow();
 
     const after = await json<PresentationProject>(`/api/projects/${project.id}`);
@@ -349,7 +565,7 @@ describe("大綱生成的來源資料流", () => {
     expect(indexedChunks(project.id).length).toBeGreaterThan(0);
 
     const failing = await createProject();
-    outlineMode = "invalid";
+    outlineMode = "returned-out-of-range";
     await expect(generateOutline(failing.id)).rejects.toThrow();
 
     // 讀取端的過濾只是縱深防禦。孤兒若留在索引裡，SQL 的 LIMIT 會先讓它們占掉名額，

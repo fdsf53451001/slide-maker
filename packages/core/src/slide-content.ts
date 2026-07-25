@@ -10,7 +10,7 @@
  * 下令（詮釋它，不要畫它），不必把「可以畫標點」的許可擴大到所有符號。唯一會被丟棄的是
  * 純版面語法（表格分隔列、分隔線、程式碼圍欄），那些本來就不是可見文案。
  *
- * 大綱端仍然輸出 markdown（見 image-contract.ts 的 outlineBrevityInstruction），轉換只
+ * 大綱端仍然輸出 markdown（見 image-contract.ts 的 outlineStructureInstruction），轉換只
  * 發生在影像 prompt 這一層；編輯器、匯出、text layer 讀到的 content 仍是原始字串。
  */
 
@@ -441,9 +441,9 @@ function isTableSeparator(line: string): boolean {
 /**
  * 前後都有管線包住、至少兩欄的一行——就算沒有 `|---|` 分隔列也當表格列。
  *
- * outlineBrevityInstruction 鼓勵模型用 pipe table 卻從沒提過分隔列，所以「缺分隔列的表格」
- * 是必然會出現的輸入；認不出來就會退回段落，管線原封不動被畫上投影片。句中當標點用的管線
- * （`決策樹：A | B | C`）不以管線起訖，不受影響。
+ * outlineStructureInstruction 允許模型在穩定列欄最清楚時使用 pipe table；模型偶爾會省略
+ * 分隔列，所以這種輸入仍須辨認。認不出來就會退回段落，管線原封不動被畫上投影片。句中當
+ * 標點用的管線（`決策樹：A | B | C`）不以管線起訖，不受影響。
  */
 function isDelimitedTableRow(line: string): boolean {
   const trimmed = line.trim();

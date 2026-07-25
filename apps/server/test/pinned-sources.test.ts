@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { PresentationProject } from "@slide-maker/core";
+import { outlineStructureInstruction, type PresentationProject } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 
 /**
@@ -199,6 +199,12 @@ describe("使用者指定來源優先於模型選擇", () => {
     // 指定的來源要真的進 prompt，否則模型只是被事後掛上一個它沒讀過的 id。
     expect(lastSlidePrompt).toContain(pinnedId);
     expect(lastSlidePrompt).toContain("台灣電動車市場銷量分析全文。");
+    // 單頁 route 必須接上完整共用規則，不能自行複製一份日後逐漸分歧的版本。
+    expect(lastSlidePrompt).toContain(outlineStructureInstruction());
+    // 既有表格不應被預設保留或排除；單頁重生成要重新依內容判斷結構。
+    expect(lastSlidePrompt).toContain(
+      "If the current slide uses a table or table-like layout, neither preserve it by default nor avoid it by default",
+    );
   });
 
   it("模型只回傳幻覺 id 時濾掉它並退回實際進 prompt 的來源，指定的來源照樣留著", async (context) => {
