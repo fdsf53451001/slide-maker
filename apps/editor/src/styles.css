@@ -1900,22 +1900,33 @@ header {
 .presentation-controls {
   position: fixed;
   z-index: 1001;
-  left: 50%;
-  bottom: 20px;
-  transform: translateX(-50%);
+  left: 14px;
+  bottom: 14px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(7, 10, 16, 0.82);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+  background: rgba(7, 10, 16, 0.72);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(12px);
+  /* 放映時整條列退到背景去，滑鼠移過去或用鍵盤 focus 到按鈕時才恢復可讀。 */
+  opacity: 0.15;
+  transition: opacity 160ms ease;
+}
+.presentation-controls:hover,
+.presentation-controls:focus-within {
+  opacity: 1;
 }
 .presentation-controls button {
-  width: 34px;
-  height: 34px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
   border: 1px solid var(--border-4);
   border-radius: 50%;
   background: var(--surface-4);
@@ -1923,16 +1934,12 @@ header {
   cursor: pointer;
 }
 .presentation-controls span {
-  min-width: 54px;
+  min-width: 42px;
   text-align: center;
   font:
-    11px "DM Mono",
+    10px "DM Mono",
     monospace;
   color: #f0f3f8;
-}
-.presentation-controls small {
-  color: #8390a4;
-  white-space: nowrap;
 }
 .presentation-controls .presentation-close {
   border-color: #7b3c34;

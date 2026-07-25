@@ -4531,7 +4531,6 @@ export function Editor() {
             >
               →
             </button>
-            <small>方向鍵／Space／滾輪 換頁 · Esc 離開</small>
             <button
               className="presentation-close"
               aria-label="離開簡報模式"
