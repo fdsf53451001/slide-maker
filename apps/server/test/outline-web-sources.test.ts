@@ -598,7 +598,7 @@ describe("大綱生成的來源資料流", () => {
     // 交易從未執行→這批來源永遠不會進專案。那份已落地的資產目錄必須被回收，否則每重試
     // 一次就多一份孤兒（專案看不到、容量統計算不到，硬碟卻被佔著）。
     const failing = await createProject();
-    outlineMode = "invalid";
+    outlineMode = "returned-out-of-range";
     await expect(generateOutline(failing.id)).rejects.toThrow();
     expect(await listSources(failing.id)).toEqual([]);
     // 回收只針對這次失敗的專案，不能把別的專案已落地的資產一起刪掉。
