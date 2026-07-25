@@ -2098,6 +2098,35 @@ describe("Editor MVP navigation", () => {
     );
   });
 
+  it("文字修復預設關閉，選「大綱修復」後才隨請求送出", async () => {
+    const project = extractionProject();
+    const fetchMock = extractionFetchMock(project, false);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    // 預設：不論大綱有沒有相似句，OCR 讀到的字原樣保留。
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({ body: expect.stringContaining('"textRepair":"off"') }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "調整文字抽離選項" }));
+    const repairSelect = (await screen.findByLabelText("文字修復")) as HTMLSelectElement;
+    expect(repairSelect.value).toBe("off");
+    fireEvent.change(repairSelect, { target: { value: "outline" } });
+    fireEvent.click(screen.getByRole("button", { name: "抽離文字" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({ body: expect.stringContaining('"textRepair":"outline"') }),
+      ),
+    );
+  });
+
   it("opens a project and exposes slide, source, project and export workflows", async () => {
     const project = createProject({
       topic: "UI 測試專案",

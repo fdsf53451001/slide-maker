@@ -2207,6 +2207,9 @@ export function Editor() {
   const [showTextThreshold, setShowTextThreshold] = useState(false);
   // 抹字引擎：本地 OpenCV inpaint（快、零配額，預設）或專案組合的生圖模型。
   const [textExtractEngine, setTextExtractEngine] = useState<"opencv" | "model">("opencv");
+  // 文字修復：預設關（OCR 讀到什麼就是什麼）。「大綱修復」拿這頁的大綱回頭改 OCR 的字，
+  // 圖上文字逐字來自大綱時能修好空格與誤認字，否則會把正確的字換成大綱裡的相似片段。
+  const [textRepair, setTextRepair] = useState<"off" | "outline">("off");
   /**
    * 文字圖層正在跑的工作。分成三種而不是一個 boolean：三者耗時與意義都不同——`save` 是每次
    * 編輯後的自動儲存重繪（伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒），
@@ -3228,6 +3231,7 @@ export function Editor() {
         textExtractEngine === "opencv" ? "local-inpaint" : effectiveImageProviderId,
         textThreshold,
         acceptUnknownReadiness,
+        textRepair,
       );
       setProject(await api.getProject(project.id));
     } catch (reason) {
@@ -4026,6 +4030,23 @@ export function Editor() {
                         <option value="model">生圖模型</option>
                       </select>
                     </label>
+                    <label className="extract-engine">
+                      文字修復
+                      <select
+                        aria-label="文字修復"
+                        value={textRepair}
+                        onChange={(event) => setTextRepair(event.target.value as "off" | "outline")}
+                      >
+                        <option value="off">關閉（預設，照 OCR 讀到的）</option>
+                        <option value="outline">大綱修復</option>
+                      </select>
+                    </label>
+                    {textRepair === "outline" && (
+                      <small className="extract-hint">
+                        以這頁的大綱為準修掉 OCR 的空格與誤認字；圖上文字若不是逐字來自大綱，
+                        可能被改成大綱裡的相似句子。
+                      </small>
+                    )}
                     <label className="threshold-slider">
                       門檻 <b>{textThreshold.toFixed(2)}</b>
                       <input

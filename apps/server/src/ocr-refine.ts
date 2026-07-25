@@ -56,6 +56,9 @@ const LETTER_SPACING_PASSES = 3;
 const EDGE_MATCH_TOLERANCE = 0.4;
 const EDGE_MATCH_FLOOR = 2;
 
+/** 抽離文字時要不要拿大綱回頭修 OCR 讀到的字。 */
+export type TextRepairMode = "off" | "outline";
+
 export interface RasterImage {
   /** RGB(A) 像素，需與 canvas 尺寸一致（extract-text 已 normalize 成 canvas 大小）。 */
   data: Uint8Array;
@@ -74,8 +77,17 @@ export interface MaskRect {
 }
 
 export interface OcrRefineOptions {
-  /** 投影片的已知文字來源（大綱 content、layoutHint 等），逐行做模糊比對。 */
-  sourceTexts: readonly string[];
+  /**
+   * 投影片的已知文字來源（大綱 content、layoutHint 等）。
+   *
+   * **只在 `textRepair: "outline"` 時生效**；預設不做校正，見 `refineOcrBoxes` 的說明。
+   */
+  sourceTexts?: readonly string[];
+  /**
+   * 文字修復模式。`"off"`（預設）＝ OCR 讀到什麼就是什麼；
+   * `"outline"` ＝ 以 `sourceTexts` 為錨做模糊比對校正（取捨見 `refineOcrBoxes`）。
+   */
+  textRepair?: TextRepairMode;
   /** 原圖像素；提供時會以實際字墨校正每個框的字級與位置。 */
   image?: RasterImage;
   /** 字形量測器；預設用與合成同一條渲染路徑的量測器，測試可注入替身。 */
@@ -248,7 +260,8 @@ export function correctTextFromSources(
   return replacement ? { text: replacement, appendedChars } : unchanged;
 }
 
-function foldSources(sourceTexts: readonly string[]): FoldedText[] {
+/** 只在 `textRepair: "outline"` 這條路上呼叫，見 `refineOcrBoxes`。 */
+export function foldSources(sourceTexts: readonly string[]): FoldedText[] {
   return sourceTexts
     .flatMap((source) => source.split("\n"))
     .map((line) => line.trim())
@@ -826,29 +839,43 @@ export async function applyStyleRefinement(
 }
 
 /**
- * OCR 框的確定性後處理：來源錨定文字校正 → 合併框拆分 → 字墨對位 → 字級聚類。
- * 不依賴外部服務；沒有來源時跳過校正，沒有影像時跳過對位。
+ * OCR 框的確定性後處理：（可選）來源錨定文字校正 → 合併框拆分 → 字墨對位 → 字級聚類。
+ * 不依賴外部服務；沒有影像時跳過對位。
  * maskRects 保留每框的「偵測範圍 ∪ 字墨範圍」，抹除遮罩必須用它而非收緊後的
  * 渲染框，否則偵測框邊緣的殘墨會留在背景上。
+ *
+ * **來源錨定校正預設關閉**（`textRepair: "off"`），因為它的淨效益是負的：實測 103 頁
+ * 3657 個框，校正改寫了 624 個，抽樣核對原圖後推估其中約 380 個是改壞的。根因是
+ * 「圖上的字一定來自大綱」這個前提不成立——投影片文字多半是生圖模型自行擴寫，大綱裡
+ * 只有相似片段，`bestWindow` 又允許對上來源行的任意子視窗，於是把正確的辨識結果換成
+ * 鄰近的來源文字（`UI Agent`→`AI Agent`、`運行中`→`運行狀`、
+ * `cli2redmine：提升`→`cli2redmine 與 sl`）。短字串受害最重：`MAX_ERROR_RATIO` 是
+ * 相對比例，行越短越容易通過，所以小字內文中招、大標題幾乎不受影響。
+ *
+ * 開啟（`"outline"`）換得的是 OCR 三類系統性誤差被修好：中英文間被吃掉的空格、
+ * 全形標點認成半形、`OpenAl`／`Devicelnfo` 這類混淆字與簡體混入；以及「標題｜內文」
+ * 黏成一框時把分隔線從大綱還原回來（那是這一框拆得開的唯一線索）。**用在圖上文字
+ * 確實逐字來自大綱的簡報才划算**，例如版面單純、模型沒有自行擴寫的頁。
  */
 export async function refineOcrBoxes(
   boxes: readonly EditableTextBox[],
   options: OcrRefineOptions,
 ): Promise<RefineResult> {
-  const sources = foldSources(options.sourceTexts);
-  // 先拆一次：OCR 會把「編號徽章｜問句」「標題｜內文」併進同一框。若整框直接去對位來源，
-  // 完全命中的長段（問句）會稀釋短前綴（徽章「01」）的誤差，讓校正把 OCR 已正確辨識的
-  // 編號改寫成來源的鄰詞（「研究主線」→「主線」）。拆開後逐段各自錨定，徽章在大綱裡找不到
-  // 匹配便原封保留，問句照常校正。
+  // OCR 會把「編號徽章｜問句」「標題｜內文」併進同一框，字級差很多時要拆開才不會
+  // 讓內文以標題的大字級粗體渲染。
   const preSplit = boxes.flatMap((box) => splitMergedBox(box));
-  const corrected = preSplit.map((box) => {
-    if (!sources.length) return box;
-    const { text, appendedChars } = correctTextFromSources(box.text, sources);
-    // 補回的行尾標點在原圖上緊接在偵測框右緣之外，放寬框寬讓量測與遮罩蓋到。
-    return { ...box, text, width: box.width + appendedChars * box.fontSize };
-  });
+  // 先拆再校正：整框直接去對位來源時，完全命中的長段（問句）會稀釋短前綴（徽章「01」）
+  // 的誤差，讓校正把 OCR 已正確辨識的編號改寫成來源的鄰詞（「研究主線」→「主線」）。
+  const sources = options.textRepair === "outline" ? foldSources(options.sourceTexts ?? []) : [];
+  const corrected = sources.length
+    ? preSplit.map((box) => {
+        const { text, appendedChars } = correctTextFromSources(box.text, sources);
+        // 補回的行尾標點在原圖上緊接在偵測框右緣之外，放寬框寬讓量測與遮罩蓋到。
+        return { ...box, text, width: box.width + appendedChars * box.fontSize };
+      })
+    : preSplit;
   // 再拆一次：校正可能還原被 OCR 吃掉的分隔線（｜ 認成「一」或整個漏掉），此時才拆得開。
-  const split = corrected.flatMap((box) => splitMergedBox(box));
+  const split = sources.length ? corrected.flatMap((box) => splitMergedBox(box)) : corrected;
   const metrics = options.metrics ?? defaultTextMetrics;
   const maskRects = new Map<string, MaskRect>();
   const inkGeometry = new Map<string, InkGeometry>();

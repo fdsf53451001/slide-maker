@@ -2593,13 +2593,15 @@ export async function createApp(
   app.post("/api/projects/:projectId/slides/:slideId/extract-text", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
     const slideId = idSchema.parse(request.params.slideId);
-    const { providerId, threshold, acceptUnknownReadiness } = z
+    const { providerId, threshold, acceptUnknownReadiness, textRepair } = z
       .object({
         // 預設走本地 OpenCV inpaint（快、零配額）；前端選「生圖模型」時
         // 才帶專案組合解析出的影像 providerId。
         providerId: z.string().default("local-inpaint"),
         threshold: z.number().min(0.5).max(0.95).default(0.75),
         acceptUnknownReadiness: z.boolean().default(false),
+        // 預設 off：拿大綱回頭改 OCR 讀到的字，實測改壞的比修好的多（見 `refineOcrBoxes`）。
+        textRepair: z.enum(["off", "outline"]).default("off"),
       })
       .parse(request.body ?? {});
     const ocrStatus = await ocr.status();
@@ -2651,11 +2653,12 @@ export async function createApp(
     );
     const normalizedInputPath = repository.assetPath(projectId, inputPath.replace(/^assets\//, ""));
     const result = await ocr.recognize(normalizedInputPath);
-    // 投影片文字的生成來源就是大綱：以 content/layoutHint 為錨校正 OCR 誤認字
-    // （簡體混入、破折號認成「一」）、拆開黏成一框的「標題｜內文」，再以原圖
-    // 字墨對位校正字級與位置（偵測框帶 unclip 外擴，直接換算會偏大偏移）。
+    // 拆開黏成一框的「標題｜內文」，再以原圖字墨對位校正字級與位置（偵測框帶
+    // unclip 外擴，直接換算會偏大偏移）。文字本身預設沿用 OCR 的辨識結果，只有
+    // 使用者挑「大綱修復」時才以 content/layoutHint 為錨改寫（見 `refineOcrBoxes`）。
     const rawImage = await sharp(normalized).raw().toBuffer({ resolveWithObject: true });
     const refined = await refineOcrBoxes(boxesFromOcr(result, project.canvas, threshold), {
+      textRepair,
       sourceTexts: [slide.content, slide.layoutHint],
       image: {
         data: new Uint8Array(rawImage.data),
