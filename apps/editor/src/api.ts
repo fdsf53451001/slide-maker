@@ -295,6 +295,20 @@ export const api = {
         body: JSON.stringify({ boxes, ...(threshold === undefined ? {} : { threshold }) }),
       },
     ),
+  /**
+   * 在一個還沒有文字層的版本上建立手動文字層（背景就是原圖，一個字都不抹）。
+   * 伺服器會開一個新版本並切過去，所以回應是整份專案，前端靠它換畫布。
+   */
+  createManualTextLayer: (
+    projectId: string,
+    slideId: string,
+    versionId: string,
+    boxes: EditableTextBox[],
+  ) =>
+    request<PresentationProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/manual-text-layer`,
+      { method: "POST", body: JSON.stringify({ boxes }) },
+    ),
   addSlide: (
     projectId: string,
     input?: Partial<

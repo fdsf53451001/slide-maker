@@ -3413,6 +3413,81 @@ describe("文字圖層鍵盤快捷鍵", () => {
     expect(textLayerCalls()).toBe(callsBefore);
   });
 
+  /**
+   * 預覽歷史版本時，快捷鍵不得改到畫面上沒顯示的那一版。
+   *
+   * 這條原本不可能出錯——文字工具列會整條卸載，使用者沒有入口。工具列改成「有圖就佔位」
+   * 之後，四顆按鈕各自帶了 `!activeTextLayer` 守門，但快捷鍵走的是另外兩個 effect，靠的是
+   * 它們開頭的 `if (!textEditing) return`（`textEditing = !!activeTextLayer`，預覽時為 false）。
+   * 那道 gate 現在是唯一的防線：`textBoxes`／`selectedTextId` 在預覽期間仍然是**目前版本**的
+   * （重新播種只跟著 currentVersionId 走），而自動儲存的 effect 刻意不看 `textEditing`，
+   * 所以一旦快捷鍵改到 `textBoxes`，650ms 後就會寫回目前版本。
+   */
+  it("預覽歷史版本時，Delete／⌘Z／⌘V 都不會改到目前版本，也不觸發自動儲存", async () => {
+    const project = textLayerProject("預覽中不吃快捷鍵");
+    const slide = project.slides[0]!;
+    // 補一個更舊的版本才有東西可以預覽（預覽的是「不是目前版本」的那一版）。
+    slide.versions.unshift({
+      id: `${slide.id}-v0`,
+      imagePath: `assets/generated/${slide.id}-v0.png`,
+      prompt: "",
+      providerId: "mock-image",
+      model: "mock",
+      parameters: {},
+      styleVersion: 1,
+      sources: [],
+      createdAt: new Date().toISOString(),
+    });
+    const fetchMock = stubPersistingTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("預覽中不吃快捷鍵");
+    fireEvent.pointerDown(boxElements()[0]!);
+    // 正對照：畫布作用中時這些鍵確實有效（不然下面全是空跑），並順手堆出 undo 歷史與剪貼簿。
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    // 沖掉 setup 期間的自動儲存 debounce，之後寫入次數才數得準。
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const textLayerCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/text-layer")).length;
+    const callsBefore = textLayerCalls();
+
+    // 進入歷史版本預覽：工具列還在（常駐佔位），但畫布已經換成單純的 <img>。
+    fireEvent.click(screen.getByRole("button", { name: /^版本 1/ }));
+    await waitFor(() => expect(document.querySelector(".version-preview-actions")).not.toBeNull());
+    expect(document.querySelector(".text-layer-rail")).not.toBeNull();
+    expect(boxElements()).toHaveLength(0);
+
+    // 每一組按鍵各自斷言，中間都等過 650ms 的 debounce：合在一起按會讓錯誤互相抵銷——
+    // ⌘Z 誤還原成 1 個框、⇧⌘Z 再誤重做回 2 個框，`sameBoxes` 就成立、自動儲存不會送出，
+    // 少掉的那道 gate 於是完全看不出來（實測：合著按時拿掉 undo 那條 gate 仍會通過）。
+    const pressAndSettle = async (init: Partial<KeyboardEventInit> & { key: string }) => {
+      fireEvent.keyDown(window, init);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    };
+    // 自動儲存的 effect 刻意不看 `textEditing`，所以只要 textBoxes 被改到就會送出一筆。
+    await pressAndSettle({ key: "Delete" });
+    expect(textLayerCalls(), "Delete 改到了目前版本").toBe(callsBefore);
+    await pressAndSettle({ key: "Backspace" });
+    expect(textLayerCalls(), "Backspace 改到了目前版本").toBe(callsBefore);
+    await pressAndSettle({ key: "v", ctrlKey: true });
+    expect(textLayerCalls(), "⌘V 改到了目前版本").toBe(callsBefore);
+    await pressAndSettle({ key: "z", ctrlKey: true });
+    expect(textLayerCalls(), "⌘Z 改到了目前版本").toBe(callsBefore);
+    await pressAndSettle({ key: "z", metaKey: true, shiftKey: true });
+    expect(textLayerCalls(), "⇧⌘Z 改到了目前版本").toBe(callsBefore);
+
+    // 回到目前版本：兩個框都還在（既沒被刪、也沒被還原掉、也沒多貼一個），
+    // 而且伺服器上存的也還是兩個。
+    fireEvent.click(screen.getByRole("button", { name: "返回目前版本" }));
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(textLayerCalls()).toBe(callsBefore);
+    expect(
+      slide.versions.find((version) => version.id === slide.currentVersionId)?.textLayer?.boxes,
+    ).toHaveLength(2);
+  });
+
   it("系統設定對話框開著時，快捷鍵不會打到底下的畫布", async () => {
     const project = textLayerProject("對話框擋住畫布");
     stubTextLayerApi(project);
@@ -4232,5 +4307,398 @@ describe("文字框底色", () => {
     await waitFor(() =>
       expect(backgroundBoxes()[0]!.style.background).toBe("rgba(255, 0, 0, 0.4)"),
     );
+  });
+});
+
+/**
+ * 在「沒有跑過文字抽離」的圖片上手動新增文字：工具列的出現條件、按下去會建立文字編輯版本，
+ * 以及手動層上「抽離文字」要可按（合併）。
+ */
+describe("手動文字層", () => {
+  type Version = PresentationProject["slides"][number]["versions"][number];
+
+  const now = new Date().toISOString();
+  const plainVersion = (id: string): Version => ({
+    id,
+    imagePath: `assets/generated/${id}.png`,
+    prompt: "",
+    providerId: "mock-image",
+    model: "mock",
+    parameters: {},
+    styleVersion: 1,
+    sources: [],
+    createdAt: now,
+  });
+  const withLayer = (id: string, origin?: "manual" | "extracted"): Version => ({
+    ...plainVersion(id),
+    textLayer: {
+      originalVersionId: "base-version",
+      backgroundPath: "assets/generated/base-version.png",
+      compositePath: `assets/generated/${id}-composite.png`,
+      threshold: 0.75,
+      renderRevision: 0,
+      boxes: [makeBox()],
+      ...(origin ? { origin } : {}),
+      extractedAt: now,
+      updatedAt: now,
+    },
+  });
+
+  const manualProject = (topic: string, versions: Version[], currentVersionId?: string) => {
+    const project = createProject({ topic, brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    project.slides[0]!.versions = versions;
+    if (currentVersionId ?? versions.at(-1)?.id)
+      project.slides[0]!.currentVersionId = currentVersionId ?? versions.at(-1)!.id;
+    else delete project.slides[0]!.currentVersionId;
+    return project;
+  };
+
+  /**
+   * 記下每一次 POST /manual-text-layer 的框，並把新版本落地回專案（伺服器就是這樣做的）。
+   *
+   * `hang` 讓指定的路徑永不回應，用來停在「請求還在飛」的那一刻檢查按鈕狀態——那正是
+   * 工具列的 disabled 條件唯一有意義的時間窗，用回應很快的 stub 根本量不到。
+   */
+  const stubApi = (
+    project: PresentationProject,
+    options: {
+      hang?: (path: string, init?: RequestInit) => boolean;
+      /**
+       * 讓建立手動層的請求失敗。伺服器的錯誤主體是 `{ error: 代碼 }`，可行動的那幾種
+       * （如 422 全是裝飾框）另外帶 `message`——`failureMessage()` 有 message 就只顯示它。
+       */
+      failManual?: { status: number; error: string; message?: string };
+    } = {},
+  ) => {
+    const created: import("@slide-maker/core").EditableTextBox[][] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (options.hang?.(path, init)) return new Promise<Response>(() => {});
+      if (options.failManual && path.endsWith("/manual-text-layer") && init?.method === "POST")
+        return Response.json(
+          {
+            error: options.failManual.error,
+            ...(options.failManual.message ? { message: options.failManual.message } : {}),
+          },
+          { status: options.failManual.status },
+        );
+      if (path.endsWith("/manual-text-layer") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as {
+          boxes: import("@slide-maker/core").EditableTextBox[];
+        };
+        created.push(body.boxes);
+        const slide = project.slides[0]!;
+        const original = slide.versions.find((version) => version.id === slide.currentVersionId)!;
+        slide.versions = [
+          ...slide.versions,
+          {
+            ...original,
+            id: "manual-version",
+            imagePath: "assets/generated/manual-composite.png",
+            label: "文字編輯",
+            textLayer: {
+              originalVersionId: original.id,
+              backgroundPath: original.imagePath,
+              compositePath: "assets/generated/manual-composite.png",
+              threshold: 0.75,
+              renderRevision: 0,
+              boxes: body.boxes.map((box) => editableTextBoxSchema.parse(box)),
+              origin: "manual",
+              extractedAt: now,
+              updatedAt: now,
+            },
+          },
+        ];
+        slide.currentVersionId = "manual-version";
+        return Response.json(project, { status: 201 });
+      }
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true, imageEditing: true, maskedEditing: false },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { created, fetchMock };
+  };
+
+  const rail = () => screen.queryByRole("group", { name: "文字工具" });
+
+  it("沒有文字層時工具列照樣出現，但只有「新增文字框」按得下去", async () => {
+    stubApi(manualProject("手動文字層入口", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("手動文字層入口"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    const buttons = (label: string) =>
+      within(rail()!).getByRole("button", { name: label }) as HTMLButtonElement;
+    expect(buttons("新增文字框").disabled).toBe(false);
+    expect(buttons("刪除文字框").disabled).toBe(true);
+    expect(buttons("復原").disabled).toBe(true);
+    expect(buttons("重做").disabled).toBe(true);
+  });
+
+  it("按「新增文字框」會建立文字編輯版本，並讓新框保持選取", async () => {
+    const { created } = stubApi(manualProject("建立文字編輯版本", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("建立文字編輯版本"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    fireEvent.click(within(rail()!).getByRole("button", { name: "新增文字框" }));
+
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toHaveLength(1);
+    expect(created[0]![0]).toMatchObject({ text: "新增文字", fontSize: 44, color: "#ffffff" });
+    // 新版本換上來後畫布切成文字圖層，而且剛加的框仍是選取狀態（重新播種的 effect 不得清掉它）。
+    expect(await screen.findByLabelText("可編輯簡報文字")).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        (within(rail()!).getByRole("button", { name: "刪除文字框" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  /**
+   * 工具列常駐佔位（有圖就在），語意靠 disabled 表達。
+   *
+   * 掛載／卸載會直接改變畫布可用寬度（實測 1440×900 下 597px ↔ 649px，約 9%），而預覽歷史
+   * 版本與生成中都會觸發，使用者眼中就是圖忽大忽小。這條測試釘的是「出現但全灰」——尤其
+   * 後三顆：`textBoxes` 與 `selectedTextId` 在預覽期間仍是**目前版本**的，按得下去就會改到
+   * 畫面上沒顯示的那一版。
+   */
+  it("預覽歷史版本與生成中：工具列照樣佔位，但每一顆都按不下去", async () => {
+    const allDisabled = () => {
+      const buttons = within(rail()!).getAllByRole("button") as HTMLButtonElement[];
+      expect(buttons).toHaveLength(4);
+      return buttons.every((button) => button.disabled);
+    };
+    // 預覽歷史版本：畫面上的圖不是「等一下會被掛上文字層的那一版」。
+    stubApi(
+      manualProject("預覽中不給加字", [plainVersion("base-version"), plainVersion("second")]),
+    );
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("預覽中不給加字"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^版本 1/ }));
+    await waitFor(() => expect(screen.getByText("歷史版本預覽")).toBeTruthy());
+    expect(rail()).toBeTruthy();
+    expect(allDisabled()).toBe(true);
+    cleanup();
+
+    // 預覽一個**有文字層**的版本時同樣全灰：這是後三顆最容易漏的那條路。
+    stubApi(manualProject("預覽中不給改字", [plainVersion("base"), withLayer("layer", "manual")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("預覽中不給改字"));
+    expect(await screen.findByLabelText("可編輯簡報文字")).toBeTruthy();
+    fireEvent.pointerDown(
+      screen.getByLabelText("可編輯簡報文字").closest(".editable-text-box") as HTMLElement,
+    );
+    // 選中一個框之後「刪除文字框」本來是亮的，切進預覽就該全部熄掉。
+    await waitFor(() =>
+      expect(
+        (within(rail()!).getByRole("button", { name: "刪除文字框" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^版本 1/ }));
+    await waitFor(() => expect(screen.getByText("歷史版本預覽")).toBeTruthy());
+    expect(allDisabled()).toBe(true);
+    cleanup();
+
+    // 生成中。
+    const generating = manualProject("生成中不給加字", [plainVersion("base-version")]);
+    generating.jobs = [
+      {
+        id: "job-1",
+        projectId: generating.id,
+        slideId: generating.slides[0]!.id,
+        providerId: "mock-image",
+        status: "running",
+        operation: "generate",
+        attempt: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    stubApi(generating);
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("生成中不給加字"));
+    await screen.findByText("SLIDE SPEC");
+    expect(rail()).toBeTruthy();
+    expect(allDisabled()).toBe(true);
+  });
+
+  it("連圖都還沒生成時工具列不出現（空畫布狀態，沒有東西可編輯）", async () => {
+    stubApi(manualProject("沒有圖不給加字", []));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("沒有圖不給加字"));
+    await screen.findByText("SLIDE SPEC");
+    expect(rail()).toBeNull();
+  });
+
+  /**
+   * 「新增文字框」的 disabled 條件有兩邊，兩邊都要釘：抽字往返期間必須按不下去（那段
+   * `activeJob` 還沒進專案狀態，工具列還在，按下去建出來的手動層會被隨後完成的抽字版本
+   * 擠掉 currentVersionId），而有文字層時的 autosave 不能讓它變灰（那是打字期間的常態）。
+   */
+  describe("新增文字框的 disabled 條件", () => {
+    const addButton = () =>
+      within(rail()!).getByRole("button", { name: "新增文字框" }) as HTMLButtonElement;
+
+    it("沒有文字層時，抽字請求還在飛的期間按不下去", async () => {
+      stubApi(manualProject("抽字途中不給加字", [plainVersion("base-version")]), {
+        hang: (path) => path.endsWith("/extract-text"),
+      });
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("抽字途中不給加字"));
+      await waitFor(() => expect(rail()).toBeTruthy());
+      expect(addButton().disabled).toBe(false);
+
+      fireEvent.click(screen.getByRole("button", { name: "抽離文字" }));
+      // 工具列還在（`activeJob` 尚未寫回專案），但那一顆已經熄了。
+      await waitFor(() => expect(screen.getByText("正在抽取文字…")).toBeTruthy());
+      expect(rail()).toBeTruthy();
+      expect(addButton().disabled).toBe(true);
+    });
+
+    it("有文字層時，autosave 進行中仍然可以繼續加框", async () => {
+      stubApi(manualProject("存檔途中照樣加字", [plainVersion("base"), withLayer("layer")]), {
+        hang: (path, init) => path.endsWith("/text-layer") && init?.method === "PUT",
+      });
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("存檔途中照樣加字"));
+      expect(await screen.findByLabelText("可編輯簡報文字")).toBeTruthy();
+      // 加一個框讓 650ms debounce 的自動儲存跑起來，並停在請求飛行中。
+      fireEvent.click(addButton());
+      await waitFor(() => expect(screen.getByText("正在重繪並自動儲存…")).toBeTruthy(), {
+        timeout: 3000,
+      });
+      expect(addButton().disabled).toBe(false);
+    });
+  });
+
+  /**
+   * 建立失敗的收尾。整條路只有這裡會讓工具列**永久**失效：那一顆的 disabled 條件之一是
+   * `textLayerTask === "create"`，`finally` 少清一次，使用者就只剩重新整理一途，而畫面上
+   * 還掛著「正在建立文字編輯版本…」看起來像伺服器沒回應。
+   */
+  it("建立失敗時不卡在進度文案，訊息可讀，而且還能再按一次", async () => {
+    const { created, fetchMock } = stubApi(
+      manualProject("建立失敗", [plainVersion("base-version")]),
+      {
+        // 伺服器唯一會讓使用者真的看到的失敗：整批框都是 logo／裝飾文字（422），
+        // 它帶著可行動的 message。
+        failManual: {
+          status: 422,
+          error: "MANUAL_TEXT_NO_PRESENTATION_BOX",
+          message: "這些文字框都標成了 logo 或裝飾文字，請至少放一個一般文字框再試一次。",
+        },
+      },
+    );
+    const manualCalls = () =>
+      fetchMock.mock.calls.filter(([input, init]) => {
+        const raw =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        return raw.endsWith("/manual-text-layer") && init?.method === "POST";
+      }).length;
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("建立失敗"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    const addButton = () =>
+      within(rail()!).getByRole("button", { name: "新增文字框" }) as HTMLButtonElement;
+    fireEvent.click(addButton());
+
+    // 伺服器寫的那句話要原樣送到畫面上（不是裸錯誤碼）。
+    await waitFor(() => expect(screen.getByText(/請至少放一個一般文字框/)).toBeTruthy());
+    expect(screen.queryByText("正在建立文字編輯版本…")).toBeNull();
+    // 畫布沒有換成文字圖層（失敗就不該有文字框冒出來）。
+    expect(screen.queryByLabelText("可編輯簡報文字")).toBeNull();
+    // 還能再試一次：這一顆沒有被 textLayerTask 卡住。
+    expect(addButton().disabled).toBe(false);
+    fireEvent.click(addButton());
+    await waitFor(() => expect(manualCalls()).toBe(2));
+    // 失敗兩次就是兩次，沒有任何框被寫進專案。
+    expect(created).toHaveLength(0);
+  });
+
+  it("手動層上的「抽離文字」可按（合併），抽出來的文字層仍然停用", async () => {
+    stubApi(
+      manualProject("手動層可再抽字", [
+        plainVersion("base-version"),
+        withLayer("manual-version", "manual"),
+      ]),
+    );
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("手動層可再抽字"));
+    const extract = (await screen.findByRole("button", { name: "抽離文字" })) as HTMLButtonElement;
+    expect(extract.disabled).toBe(false);
+    expect(extract.title).toContain("合併");
+    cleanup();
+
+    stubApi(
+      manualProject("抽過的層不再抽", [
+        plainVersion("base-version"),
+        withLayer("extracted-version"),
+      ]),
+    );
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("抽過的層不再抽"));
+    expect(
+      ((await screen.findByRole("button", { name: "抽離文字" })) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  /**
+   * 手動層的新版本是 `{ ...原版本 }` 複製出來的，所以在 PDF 匯入的原圖上手動加字，新版本
+   * 會同時滿足 `isPdfImportVersion() && textLayer`。那條一次性提示說的是「PDF 原生文字層被
+   * 收斂成系統字型，切回原始頁面版本才保真」——對手動打的字全都不成立，而且它記在
+   * localStorage：在這裡被按掉，真正的 PDF 文字版本就再也不會提示。
+   */
+  describe("PDF 匯入頁上的手動層不觸發原生字型提示", () => {
+    /** PDF 匯入落地的版本標記（`isPdfImportVersion` 認的就是這兩個欄位）。 */
+    const asPdfImport = (version: Version): Version => ({
+      ...version,
+      providerId: "pdf-import",
+      model: "pdf-import",
+      parameters: { pdfImport: true, pdfPage: 1 },
+    });
+    const notice = () => screen.queryByText(/從 PDF 匯入的「可編輯文字」版本/);
+
+    it("手動層不提示", async () => {
+      localStorage.clear();
+      stubApi(
+        manualProject("PDF 手動層", [
+          asPdfImport(plainVersion("base-version")),
+          asPdfImport(withLayer("manual-version", "manual")),
+        ]),
+      );
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("PDF 手動層"));
+      expect(await screen.findByLabelText("可編輯簡報文字")).toBeTruthy();
+      expect(notice()).toBeNull();
+    });
+
+    it("PDF 原生文字層照樣提示（上面那條不是靠提示整體失效通過的）", async () => {
+      localStorage.clear();
+      stubApi(
+        manualProject("PDF 原生文字層", [
+          asPdfImport(plainVersion("base-version")),
+          asPdfImport(withLayer("text-version")),
+        ]),
+      );
+      render(<Editor />);
+      fireEvent.click(await screen.findByText("PDF 原生文字層"));
+      await waitFor(() => expect(notice()).toBeTruthy());
+    });
   });
 });

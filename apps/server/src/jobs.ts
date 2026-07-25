@@ -15,7 +15,7 @@ import {
 import type { ImageProviderSource } from "./readiness.js";
 import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
-import { renderComposite } from "./text-layers.js";
+import { renderComposite, unerasedImagePath } from "./text-layers.js";
 
 const PHASE_STEP = {
   queued: 1,
@@ -47,6 +47,30 @@ function outlineSnapshot(slide: SlideSpec): SlideOutlineSnapshot {
     imagePrompt: slide.imagePrompt,
     sourceIds: [...slide.sourceIds],
   };
+}
+
+/**
+ * 編輯／抹字任務要動刀的底圖。
+ *
+ * 兩條分支同源：都是「使用者手上那張圖在**文字被畫上去之前**的樣子」。文字層的
+ * `imagePath` 是合成圖（背景 ＋ 可編輯文字），拿它當底圖會把那些字烘成再也刪不掉的像素，
+ * 而下一次 `renderComposite()` 還會把同一批字**再畫一次**——同一句話於是出現兩份。
+ *
+ * 分支不同的只有「哪一張算是文字被畫上去之前」：
+ * - `edit` 是在背景上動刀，所以任何文字層都取 `backgroundPath`（抽出來的層那張已抹乾淨，
+ *   正是編輯該動的那一張）。
+ * - `extract-text` 要抹的字必須還在圖上，只有手動層的背景符合（＝`unerasedImagePath`）；
+ *   抽出來的層根本不會走到這裡，`extract-text` 端點會先回頭找 `originalVersionId` 那一版。
+ *
+ * 抽成函式是因為同一個判斷在 `run()` 裡出現兩次（送給 provider 的 reference、與
+ * `compositeMaskedEdit` 的底圖），兩處一漂就會變成「模型看到 A、合成用 B」的無聲錯位。
+ */
+function editBaseImagePath(
+  version: Pick<SlideSpec["versions"][number], "imagePath" | "textLayer">,
+  operation: GenerationJob["operation"],
+): string {
+  if (operation === "edit") return version.textLayer?.backgroundPath ?? version.imagePath;
+  return unerasedImagePath(version);
 }
 
 function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean {
@@ -704,10 +728,7 @@ export class JobRunner {
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
         if (!baseVersion || !job.editInstruction) throw new Error("EDIT_BASE_VERSION_MISSING");
-        const basePath =
-          job.operation === "edit" && baseVersion.textLayer
-            ? baseVersion.textLayer.backgroundPath
-            : baseVersion.imagePath;
+        const basePath = editBaseImagePath(baseVersion, job.operation);
         const baseRelative = basePath.replace(/^assets\//, "");
         const baseMediaType = /\.jpe?g$/i.test(baseRelative) ? "image/jpeg" : "image/png";
         // 底圖與遮罩是編輯任務的內建輸入，必須標成 base／mask：標成 content 會讓合約
@@ -779,10 +800,9 @@ export class JobRunner {
         job.baseVersionId
       ) {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId)!;
-        const basePath =
-          job.operation === "edit" && baseVersion.textLayer
-            ? baseVersion.textLayer.backgroundPath
-            : baseVersion.imagePath;
+        // 與上面送給 provider 的 base reference 必須是同一張圖（見 editBaseImagePath）：
+        // 這裡是遮罩外原樣保留的來源，兩者分歧就等於「改的是 A、貼回 B」。
+        const basePath = editBaseImagePath(baseVersion, job.operation);
         const [baseBytes, maskBytes] = await Promise.all([
           readFile(this.repository.assetPath(projectId, basePath.replace(/^assets\//, ""))),
           readFile(this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, ""))),

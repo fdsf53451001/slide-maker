@@ -1323,8 +1323,10 @@ header {
   min-width: 0;
   min-height: 0;
   /* 左右留白刻意比視覺舒適值再緊一些：畫布在寬度受限的視窗（全螢幕 1920×1080／2560×1440）
-     下，這裡每省下的寬度都直接變成更大的畫布；高度受限的視窗則不受影響。見 .text-layer-rail。 */
-  padding: 20px clamp(20px, 2.4vw, 40px);
+     下，這裡每省下的寬度都直接變成更大的畫布；高度受限的視窗則不受影響。見 .text-layer-rail。
+     右邊可以再更緊：貼著這條邊的是垂直的文字工具列（圖示按鈕），不是畫布本身，
+     所以那 28px 全額變成畫布寬度，而工具列離 inspector 太近並不會讓人看不懂。 */
+  padding: 20px 12px 20px clamp(20px, 2.4vw, 40px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1810,7 +1812,8 @@ header {
     grid-template-columns: 190px minmax(540px, 1fr) 330px;
   }
   .stage {
-    padding: 20px;
+    /* 與上面同一套不對稱：右邊貼的是文字工具列。 */
+    padding: 20px 12px 20px 20px;
   }
 }
 .workspace-nav {

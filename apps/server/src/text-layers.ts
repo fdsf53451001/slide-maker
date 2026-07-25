@@ -1,9 +1,33 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
-import type { EditableTextBox, EditableTextLayer, PresentationProject } from "@slide-maker/core";
+import type {
+  EditableTextBox,
+  EditableTextLayer,
+  PresentationProject,
+  SlideVersion,
+} from "@slide-maker/core";
 import type { RawOcrResult } from "./ocr.js";
 import type { FileProjectRepository } from "./repository.js";
+
+/**
+ * 這個版本「畫面上看得到、而且還沒有被抹過字」的那張圖。
+ *
+ * 抽字（OCR 的輸入、抹字的底圖）一律要以它為基準，不可以直接讀 `version.imagePath`：
+ * 手動文字層的 `imagePath` 是「背景 ＋ 使用者手打的字」的合成圖，拿它去抹字會把使用者
+ * 打的字一起烘進背景，變成再也刪不掉的像素。
+ *
+ * 只認 `origin === "manual"` 是刻意的，不是漏寫：手動層的背景從來沒被抹過（一開始別名
+ * 指向原圖版本的 `imagePath`，被「編輯當頁圖片」換掉的也是同樣未抹過的新圖），所以它就是
+ * 這一版「原本的字還在」的那張；抽出來的層反過來——它的 `backgroundPath` 已經抹乾淨了，
+ * 拿它當抽字基準只會抽到一片空白。那正是 extract-text 要回頭找 `originalVersionId` 那一版
+ * 的原因（別動那條），也讓這個函式的遞迴深度只有 1。
+ */
+export function unerasedImagePath(version: Pick<SlideVersion, "imagePath" | "textLayer">): string {
+  return version.textLayer?.origin === "manual"
+    ? version.textLayer.backgroundPath
+    : version.imagePath;
+}
 
 function xml(value: string): string {
   return value

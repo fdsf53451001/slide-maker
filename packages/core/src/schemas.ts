@@ -184,13 +184,35 @@ export const editableTextBoxSchema = z.object({
   role: z.enum(["presentation", "logo", "incidental"]).default("presentation"),
 });
 
+/**
+ * 一個文字層最多幾個框。
+ *
+ * 抽成常數而不是三處各寫一個 `500`：文字層自己、job 的 `textExtraction`（它的框最後就是
+ * 要寫成一個新層，上限必須相同），以及 `extract-text` 端點在合併手動框之前的預檢。三者
+ * 一漂就會出現「端點放行、寫檔時 ZodError」的死路——而那時 OCR 與可選的樣式精修（會花
+ * 模型配額）都已經跑完了，使用者只拿得到一份 zod issue dump。
+ */
+export const EDITABLE_TEXT_BOX_LIMIT = 500;
+
 export const editableTextLayerSchema = z.object({
   originalVersionId: z.string().min(1),
   backgroundPath: z.string().min(1),
   compositePath: z.string().min(1),
   threshold: z.number().min(0.5).max(0.95).default(0.75),
   renderRevision: z.number().int().nonnegative().default(0),
-  boxes: z.array(editableTextBoxSchema).max(500),
+  boxes: z.array(editableTextBoxSchema).max(EDITABLE_TEXT_BOX_LIMIT),
+  /**
+   * 這一層的框從哪裡來：`extracted` 是 OCR／PDF 原生文字層抽出來的（背景已抹字），
+   * `manual` 是使用者在沒抽離過的原圖上手動加的（背景一個字都沒抹，`backgroundPath`
+   * 就別名指向原圖版本的 `imagePath`）。兩者的差別只有兩處讀取端在意：手動層的
+   * 「抽離文字」是合併＋開新版本（不可就地取代，否則手打的字整份消失），且刪除確認
+   * 文字不同。
+   * 維持 optional 而不是 `.default("extracted")`：default 會讓這個欄位在推導出的型別裡
+   * 變成必填，逼所有既有的 textLayer fixture 與建構點一起改，卻換不到任何行為差異——
+   * 讀取端一律 `?? "extracted"`，舊專案檔載入後行為與加入這個欄位前完全相同
+   * （與 `pinnedSourceIds`、`backgroundColor` 同一套理由）。
+   */
+  origin: z.enum(["extracted", "manual"]).optional(),
   extractedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -324,7 +346,8 @@ export const generationJobSchema = z.object({
       originalVersionId: z.string().min(1),
       replaceVersionId: z.string().min(1).optional(),
       threshold: z.number().min(0.5).max(0.95),
-      boxes: z.array(editableTextBoxSchema).max(500),
+      // 與 editableTextLayerSchema 同一個上限：這些框最後原封不動變成新版本的文字層。
+      boxes: z.array(editableTextBoxSchema).max(EDITABLE_TEXT_BOX_LIMIT),
     })
     .optional(),
 });

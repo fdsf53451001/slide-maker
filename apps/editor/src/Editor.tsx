@@ -97,11 +97,46 @@ function isPdfImportVersion(version?: {
  * PDF 匯入的可編輯文字版本是匯入當下用 PDF 原生文字層一次做出來的，刪掉就再也造不回來：
  * 重做只剩 extract-text 那條 OCR＋遮罩重繪的路，字框幾何明顯比原生文字層粗糙。泛用的
  * 「無法復原」在這裡等於沒說，使用者無從知道自己要付的是這個代價。
+ *
+ * `origin !== "manual"` 不是多餘的：手動文字層的新版本是 `{ ...原版本 }` 複製出來的，所以在
+ * PDF 匯入的原圖版本上手動加字，新版本會同時滿足 `isPdfImportVersion() && textLayer`——
+ * 少了這個條件，確認框會把「使用者剛手打的字」說成「PDF 匯入時建立的可編輯文字版本」。
  */
 function versionDeleteConfirmText(version: SlideVersion): string {
-  return isPdfImportVersion(version) && version.textLayer
-    ? "這是 PDF 匯入時建立的可編輯文字版本，刪掉後只能改用 OCR 重新抽字（字框會比原生文字層粗糙），確定嗎？"
-    : "刪除這個版本後無法復原，確定嗎？";
+  if (isPdfImportVersion(version) && version.textLayer && version.textLayer.origin !== "manual")
+    return "這是 PDF 匯入時建立的可編輯文字版本，刪掉後只能改用 OCR 重新抽字（字框會比原生文字層粗糙），確定嗎？";
+  if (version.textLayer?.origin === "manual")
+    return "這個版本裡手動加上的文字會一併刪除，刪掉後無法復原，確定嗎？";
+  return "刪除這個版本後無法復原，確定嗎？";
+}
+
+/**
+ * 工具列「新增文字框」的預設框（白字 44px）。
+ *
+ * 抽成函式是因為兩條路要一模一樣的東西：已有文字層時直接推進 `textBoxes`，還沒有時
+ * 得先拿它去建立文字編輯版本。
+ */
+function defaultTextBox(): EditableTextBox {
+  return {
+    id: crypto.randomUUID(),
+    text: "新增文字",
+    x: 120,
+    y: 120,
+    width: 420,
+    height: 80,
+    fontFamily: "Arial",
+    fontSize: 44,
+    fontWeight: 400,
+    color: "#ffffff",
+    opacity: 1,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    align: "left",
+    verticalAlign: "top",
+    rotation: 0,
+    confidence: 1,
+    role: "presentation",
+  };
 }
 
 /** 這份專案是不是由 PDF 匯入建立的（決定 setup 階段要走分析頁而不是四步 wizard）。 */
@@ -2156,16 +2191,29 @@ export function Editor() {
    */
   const pendingTextSave = useRef<PendingTextSave>(undefined);
   const [selectedTextId, setSelectedTextId] = useState<string>();
+  /**
+   * 手動建立文字編輯版本後要選中的那個框。
+   *
+   * 走 ref 而不是在回應裡直接 `setSelectedTextId`：新版本一換上來，下面重新播種的 effect
+   * 就會跑，而它會把選取清成 undefined（effect 永遠在同一批 setState 之後）。交給那個
+   * effect 消化，選取才留得住。
+   *
+   * 連 versionId 一起記，是因為「設下這個 ref」與「重新播種的 effect 消化它」之間沒有保證
+   * 一定接得上：使用者在請求飛行途中換頁時，回應寫回的是別頁的專案，重新播種不會跑，
+   * 這個 ref 就留到下一次換頁才被讀到——那時它已經是別的版本裡不存在的 id。
+   */
+  const pendingTextSelect = useRef<{ versionId: string; boxId: string }>(undefined);
   const [textThreshold, setTextThreshold] = useState(0.75);
   const [showTextThreshold, setShowTextThreshold] = useState(false);
   // 抹字引擎：本地 OpenCV inpaint（快、零配額，預設）或專案組合的生圖模型。
   const [textExtractEngine, setTextExtractEngine] = useState<"opencv" | "model">("opencv");
   /**
-   * 文字圖層正在跑的工作。分成兩種而不是一個 boolean：兩者耗時與意義都不同——`save` 是每次
-   * 編輯後的自動儲存重繪（伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒）。
-   * 只報「處理中」等於把兩件事混成一句話，使用者無從判斷該不該等。
+   * 文字圖層正在跑的工作。分成三種而不是一個 boolean：三者耗時與意義都不同——`save` 是每次
+   * 編輯後的自動儲存重繪（伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒），
+   * `create` 是在沒有文字層的版本上建立文字編輯版本（一次合成＋開版本）。
+   * 只報「處理中」等於把幾件事混成一句話，使用者無從判斷該不該等。
    */
-  const [textLayerTask, setTextLayerTask] = useState<"save" | "extract">();
+  const [textLayerTask, setTextLayerTask] = useState<"save" | "extract" | "create">();
   const textLayerBusy = textLayerTask !== undefined;
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
@@ -2328,10 +2376,20 @@ export function Editor() {
    * 內嵌字型收斂成 Arial／Times New Roman／Courier New（那些字型在瀏覽器與伺服器都
    * 不存在，必然 fallback），所以切到這個版本整頁字型會肉眼可見地改變。不解釋的話
    * 使用者只會覺得「這一頁壞了」。
+   *
+   * 手動層要排除，理由與 `versionDeleteConfirmText` 那個 `origin !== "manual"` 同一個
+   * spread 陷阱：手動層的新版本是 `{ ...原版本 }` 複製出來的，在 PDF 匯入的原圖上手動加字
+   * 就同時滿足 `isPdfImportVersion() && textLayer`。那份文字不是 PDF 的原生文字層，字型
+   * 沒有被收斂過，而提示說的「切回原始頁面版本就保真」在這裡等於叫使用者丟掉剛打的字。
+   * 更糟的是這是 localStorage 記住的一次性提示：在這裡被看掉、按掉，真正的 PDF 文字版本
+   * 就永遠不會再提示。
    */
   const pdfFontNotice = useOneTimeNotice("pdf-import-text-layer-font");
   const showPdfFontNotice =
-    !!activeTextLayer && isPdfImportVersion(selectedVersion) && pdfFontNotice.pending;
+    !!activeTextLayer &&
+    activeTextLayer.origin !== "manual" &&
+    isPdfImportVersion(selectedVersion) &&
+    pdfFontNotice.pending;
   const lastJob = useMemo(
     () => project?.jobs.filter((job) => job.slideId === selected?.id).at(-1),
     [project?.jobs, selected?.id],
@@ -2347,7 +2405,14 @@ export function Editor() {
     setPreviewVersionId(undefined);
   }, [selected?.id]);
   useEffect(() => {
-    setSelectedTextId(undefined);
+    // 剛手動建立的框要保住選取（見 `pendingTextSelect`）；其餘情形一律清空。
+    const pendingSelect = pendingTextSelect.current;
+    pendingTextSelect.current = undefined;
+    setSelectedTextId(
+      pendingSelect && pendingSelect.versionId === selectedVersion?.id
+        ? pendingSelect.boxId
+        : undefined,
+    );
     setTextUndo([]);
     setTextRedo([]);
     textDirty.current = false;
@@ -2947,6 +3012,18 @@ export function Editor() {
 
   const activeImage = selected ? currentImage(project, selected) : undefined;
   const image = previewVersion ? imageUrl(project.id, previewVersion.imagePath) : activeImage;
+  /**
+   * 這一版還沒有文字層，但可以就地建立一個（背景就是原圖，一個字都不抹）。
+   *
+   * 排除條件與 `activeTextLayer` 同一套：預覽歷史版本或有進行中的 job 時，畫面上的圖並不是
+   * 「等一下會被掛上文字層的那一版」；沒有圖更是連背景都沒有。
+   */
+  const canStartManualText =
+    !previewVersion &&
+    !activeJob &&
+    !!selectedVersion &&
+    !!activeImage &&
+    !selectedVersion.textLayer;
   const outlineView = previewVersion
     ? draft && previewVersion.outlineSnapshot
       ? // 指定的來源刻意不在 outlineSnapshot 裡（它只描述「圖是照什麼大綱畫的」），
@@ -3107,6 +3184,36 @@ export function Editor() {
         return rest;
       }),
     );
+  };
+  /**
+   * 工具列「新增文字框」：這一版已經有文字層就直接加一個框，還沒有的話先請伺服器建立
+   * 「文字編輯版本」（背景＝原圖，一個字都不抹），再由新版本承接這個框。
+   */
+  const addTextBox = () => {
+    const box = defaultTextBox();
+    if (activeTextLayer) {
+      changeTextBoxes([...textBoxes, box]);
+      setSelectedTextId(box.id);
+      return;
+    }
+    if (!selected || !selectedVersion || !canStartManualText) return;
+    setTextLayerTask("create");
+    setError(undefined);
+    void api
+      .createManualTextLayer(project.id, selected.id, selectedVersion.id, [box])
+      .then((updated) => {
+        const nextVersionId = updated.slides.find(
+          (candidate) => candidate.id === selected.id,
+        )?.currentVersionId;
+        if (nextVersionId) pendingTextSelect.current = { versionId: nextVersionId, boxId: box.id };
+        setProject(updated);
+      })
+      .catch((reason: unknown) =>
+        // 刻意沒有 `TEXT_LAYER_EXISTS` 的翻譯：伺服器允許同一張原圖有多個手動層版本，而這一顆
+        // 只在「這一版沒有文字層」時按得下去，所以那個代碼在這條路上定義上到不了畫面上。
+        setError(reason instanceof Error ? reason.message : "建立文字編輯版本失敗"),
+      )
+      .finally(() => setTextLayerTask(undefined));
   };
   const startTextExtraction = async () => {
     if (!selected || !selectedVersion) return;
@@ -3407,44 +3514,58 @@ export function Editor() {
             {textLayerTask && (
               <div className="text-layer-progress" role="status">
                 <i className="text-layer-progress-dot" />
-                {textLayerTask === "extract" ? "正在抽取文字…" : "正在重繪並自動儲存…"}
+                {textLayerTask === "extract"
+                  ? "正在抽取文字…"
+                  : textLayerTask === "create"
+                    ? "正在建立文字編輯版本…"
+                    : "正在重繪並自動儲存…"}
               </div>
             )}
           </div>
-          {activeTextLayer && (
+          {/*
+            工具列**只要這一頁有圖就佔位**，按不按得下去交給每一顆自己的 disabled。
+            它是畫布右側的一欄，掛載與卸載會直接改變畫布可用寬度：實測 1440×900 下畫布在
+            597px ↔ 649px 之間跳約 9%，而預覽歷史版本、生成中、剛建立文字層都會觸發，
+            使用者眼中就是圖自己忽大忽小。語意沒有放寬——預覽與生成中依然不能加字，
+            只是按鈕變灰而不是整條消失。
+            剩下唯一還會跳的情形是「這一頁連圖都還沒生成」：那時畫布是空狀態插畫、
+            使用者也沒有東西可編輯，跳一次可以接受，不值得為它留一條空工具列。
+          */}
+          {image && (
             <div className="text-layer-rail" role="group" aria-label="文字工具">
               <button
-                onClick={() => {
-                  const box: EditableTextBox = {
-                    id: crypto.randomUUID(),
-                    text: "新增文字",
-                    x: 120,
-                    y: 120,
-                    width: 420,
-                    height: 80,
-                    fontFamily: "Arial",
-                    fontSize: 44,
-                    fontWeight: 400,
-                    color: "#ffffff",
-                    opacity: 1,
-                    lineHeight: 1.2,
-                    letterSpacing: 0,
-                    align: "left",
-                    verticalAlign: "top",
-                    rotation: 0,
-                    confidence: 1,
-                    role: "presentation",
-                  };
-                  changeTextBoxes([...textBoxes, box]);
-                  setSelectedTextId(box.id);
-                }}
+                onClick={addTextBox}
+                /*
+                 * 沒有文字層時，任何進行中的文字圖層工作都要擋住這一顆：
+                 * - `create` 是連按第二下，會生出第二個手動層版本。
+                 * - `extract` 更隱蔽：`startTextExtraction` 要等一次往返才把 job 寫進專案狀態，
+                 *   在那之前 `activeJob` 還是 undefined、`canStartManualText` 仍然成立，按下去
+                 *   建出來的手動層會被隨後完成的抽字版本擠掉 currentVersionId（字沒丟，但要去
+                 *   版本列表才找得回來）。
+                 * 有文字層時**不能**用 textLayerBusy 擋：那條路的 busy 幾乎都是編輯後的常駐
+                 * autosave（`save`），擋掉等於打字期間不准加框。
+                 * 第一項 `!activeTextLayer && !canStartManualText` 是工具列改成常駐佔位之後的
+                 * 主要守門：預覽歷史版本、生成中，以及「這一版已經有文字層但現在不可互動」
+                 * 都落在這裡。
+                 */
+                disabled={
+                  (!activeTextLayer && !canStartManualText) ||
+                  textLayerTask === "create" ||
+                  (!activeTextLayer && textLayerBusy)
+                }
                 aria-label="新增文字框"
-                title="新增文字框"
+                title={activeTextLayer ? "新增文字框" : "新增文字框（會先建立可編輯文字的新版本）"}
               >
                 <TextToolIcon shape="add" />
               </button>
+              {/*
+                後面三顆都要自己帶上 `!activeTextLayer`，不能只靠「沒有選中框／沒有歷史」：
+                工具列常駐之後，預覽歷史版本時 `textBoxes` 與 `selectedTextId` 仍然是**目前
+                版本**的（重新播種只跟著 currentVersionId 走），按下去會改到畫面上根本沒顯示
+                的那一版，而且會觸發自動儲存。工具列還會卸載的時代這是不可能發生的。
+              */}
               <button
-                disabled={!selectedText}
+                disabled={!activeTextLayer || !selectedText}
                 aria-label="刪除文字框"
                 title="刪除文字框（Delete）"
                 onClick={() => {
@@ -3455,7 +3576,7 @@ export function Editor() {
                 <TextToolIcon shape="delete" />
               </button>
               <button
-                disabled={!textUndo.length}
+                disabled={!activeTextLayer || !textUndo.length}
                 aria-label="復原"
                 title="復原（⌘/Ctrl+Z）"
                 onClick={() => {
@@ -3473,7 +3594,7 @@ export function Editor() {
                 <TextToolIcon shape="undo" />
               </button>
               <button
-                disabled={!textRedo.length}
+                disabled={!activeTextLayer || !textRedo.length}
                 aria-label="重做"
                 title="重做（⇧⌘/Ctrl+Shift+Z）"
                 onClick={() => {
@@ -3862,16 +3983,20 @@ export function Editor() {
                       !!activeJob ||
                       !!previewVersion ||
                       textLayerBusy ||
-                      // 這個版本已經有文字層了：再抽一次是拿 OCR ＋ 抹字引擎重做一份
-                      // 已經精確而且零成本的東西（PDF 匯入的文字層取自原生文字層）。
-                      !!selectedVersion?.textLayer ||
+                      // 這個版本已經有抽出來的文字層了：再抽一次是拿 OCR ＋ 抹字引擎重做一份
+                      // 已經精確而且零成本的東西（PDF 匯入的文字層取自原生文字層）。手動層
+                      // 不在此列——它的背景一個字都沒抹，圖上原本的文字還等著被抽出來。
+                      (!!selectedVersion?.textLayer &&
+                        (selectedVersion.textLayer.origin ?? "extracted") === "extracted") ||
                       // OpenCV 引擎在本機跑，不受生圖模型的 maskedEditing 能力限制。
                       (textExtractEngine === "model" && !provider?.capabilities.maskedEditing)
                     }
                     title={
-                      selectedVersion?.textLayer
-                        ? "這個版本已經有可編輯文字層了"
-                        : "以 OCR 抽離文字並抹除原圖上的文字"
+                      selectedVersion?.textLayer?.origin === "manual"
+                        ? "把圖上原本的文字也抽出來（會與你手動加的文字合併成新版本）"
+                        : selectedVersion?.textLayer
+                          ? "這個版本已經有可編輯文字層了"
+                          : "以 OCR 抽離文字並抹除原圖上的文字"
                     }
                   >
                     {textLayerBusy ? "處理中…" : "抽離文字"}
