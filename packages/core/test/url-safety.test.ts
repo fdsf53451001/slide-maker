@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { assertPublicHttpUrl, isPublicHttpUrl, isReadableWebUrl } from "../src/url-safety.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  assertPublicHttpUrl,
+  assertPublicHttpUrlResolved,
+  type HostLookup,
+  isPublicHttpUrl,
+  isReadableWebUrl,
+} from "../src/url-safety.js";
 
 /*
  * 直接測這個模組本身：它是 server 來源抓取與 Gemini 搜尋 provider 共用的 SSRF 防線，
@@ -96,6 +102,84 @@ describe("isPublicHttpUrl", () => {
     expect(isPublicHttpUrl("http://10.0.0.1/")).toBe(false);
     expect(isPublicHttpUrl("file:///etc/passwd")).toBe(false);
     expect(isPublicHttpUrl("garbage")).toBe(false);
+  });
+});
+
+describe("assertPublicHttpUrlResolved", () => {
+  /** 回一組固定 IP 的假解析器：釘住「公開域名解析到內網」而不真打 DNS。 */
+  const lookupReturning = (...ips: string[]): HostLookup => {
+    const fn = vi.fn(async (_host: string) =>
+      ips.map((address) => ({ address, family: address.includes(":") ? 6 : 4 })),
+    );
+    return fn as unknown as HostLookup;
+  };
+
+  it("blocks public wildcard domains that resolve to loopback/internal IPs (sslip.io / nip.io)", async () => {
+    // 主機名字面上是合法公開域名，危險全在解析結果裡——純字面比對永遠攔不到。
+    await expect(
+      assertPublicHttpUrlResolved("http://127.0.0.1.sslip.io/", lookupReturning("127.0.0.1")),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+    await expect(
+      assertPublicHttpUrlResolved(
+        "https://169.254.169.254.nip.io/latest/meta-data",
+        lookupReturning("169.254.169.254"),
+      ),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+    await expect(
+      assertPublicHttpUrlResolved("http://internal.example.test/", lookupReturning("10.0.0.5")),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  });
+
+  it("blocks a domain that resolves to an internal IPv6 address", async () => {
+    await expect(
+      assertPublicHttpUrlResolved("http://rebind.example.test/", lookupReturning("fe80::1")),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+    await expect(
+      assertPublicHttpUrlResolved("http://rebind.example.test/", lookupReturning("::1")),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  });
+
+  it("rejects when any resolved address is private, even if others are public", async () => {
+    // 一個內網位址就足以構成 SSRF：多重 A 記錄裡只要有一個是私有就整筆拒收。
+    await expect(
+      assertPublicHttpUrlResolved(
+        "http://mixed.example.test/",
+        lookupReturning("93.184.216.34", "127.0.0.1"),
+      ),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  });
+
+  it("rejects when the domain resolves to nothing", async () => {
+    await expect(
+      assertPublicHttpUrlResolved("http://empty.example.test/", lookupReturning()),
+    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  });
+
+  it("allows a public domain that resolves to a public IP and returns the parsed URL", async () => {
+    const url = await assertPublicHttpUrlResolved(
+      "https://good.example.test/path",
+      lookupReturning("93.184.216.34"),
+    );
+    expect(url.toString()).toBe("https://good.example.test/path");
+  });
+
+  it("keeps the literal-prefilter guarantees before any DNS lookup", async () => {
+    // 字面 IP 主機由同步預篩涵蓋，不該（也無從）再解析：假解析器若被呼叫就讓測試失敗。
+    const lookup = vi.fn(async () => {
+      throw new Error("lookup must not run for literal-IP hosts");
+    }) as unknown as HostLookup;
+    expect((await assertPublicHttpUrlResolved("http://8.8.8.8/", lookup)).hostname).toBe("8.8.8.8");
+    await expect(assertPublicHttpUrlResolved("http://127.0.0.1/", lookup)).rejects.toThrow(
+      "WEB_SOURCE_URL_PRIVATE",
+    );
+    // 協定預篩也先於解析。
+    await expect(assertPublicHttpUrlResolved("file:///etc/passwd", lookup)).rejects.toThrow(
+      "WEB_SOURCE_URL_UNSUPPORTED",
+    );
+    // localhost 這種名稱由字面預篩擋下，同樣不進 DNS。
+    await expect(assertPublicHttpUrlResolved("http://localhost/", lookup)).rejects.toThrow(
+      "WEB_SOURCE_URL_PRIVATE",
+    );
   });
 });
 

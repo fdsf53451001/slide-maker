@@ -1,4 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// 單元測試不打真 DNS：SSRF 解析版驗證退化成同步字面檢查（見 web-capture.test.ts 的說明）。
+vi.mock("@slide-maker/core/url-safety", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@slide-maker/core/url-safety")>();
+  return {
+    ...actual,
+    assertPublicHttpUrlResolved: async (value: string) => actual.assertPublicHttpUrl(value),
+  };
+});
+
 import { captureWebPage, looksLikeEmptyShell } from "../src/web-capture.js";
 import type { HtmlRenderer } from "../src/web-render.js";
 

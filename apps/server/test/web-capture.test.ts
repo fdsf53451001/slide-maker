@@ -1,4 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+
+// 單元測試不打真 DNS：把 SSRF 解析版驗證退化成同步字面檢查（協定／字面私有 IP 仍會擋，
+// 只是不做 DNS 解析）。「公開域名解析到內網」的行為在 packages/core 的 url-safety 測試用
+// 注入的假 lookup 直接釘住；連線路徑確實走 resolveUrl 這件事，另用注入的假 resolveUrl 驗。
+vi.mock("@slide-maker/core/url-safety", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@slide-maker/core/url-safety")>();
+  return {
+    ...actual,
+    assertPublicHttpUrlResolved: async (value: string) => actual.assertPublicHttpUrl(value),
+  };
+});
+
 import {
   captureWebPage,
   documentTitle,
@@ -48,14 +60,48 @@ describe("web source capture", () => {
     expect(captured.metadata.contentStatus).toBe("full");
   });
 
-  it("blocks private IPv4 addresses embedded in IPv6", async () => {
-    await expect(
-      captureWebPage(
-        { url: "http://[::ffff:127.0.0.1]/", title: "Private", summary: "Private" },
-        undefined,
-        async () => new Response("must not fetch"),
-      ),
-    ).rejects.toThrow("WEB_SOURCE_URL_PRIVATE");
+  it("does not throw on a private starting URL: degrades to summary_only without fetching", async () => {
+    // 契約是「失敗不 throw」。私有／畸形的起始 URL 若在 try 外驗證會直接 reject，違反契約並
+    // 讓上游整批中止。放進 try 後，這一筆降級為 summary_only + failureReason，整批不受影響，
+    // 而且絕不對私有位址發出請求。
+    const fetcher = vi.fn(async () => new Response("must not fetch"));
+    const captured = await captureWebPage(
+      { url: "http://[::ffff:127.0.0.1]/", title: "Private", summary: "私有摘要" },
+      undefined,
+      fetcher,
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_URL_PRIVATE");
+    expect(captured.text).toContain("## 未驗證搜尋摘要\n\n私有摘要");
+  });
+
+  it("does not throw on a malformed starting URL either: degrades to summary_only", async () => {
+    const fetcher = vi.fn(async () => new Response("must not fetch"));
+    const captured = await captureWebPage(
+      { url: "not a url", title: "", summary: "摘要" },
+      undefined,
+      fetcher,
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    // 起始 URL 連解析都失敗時，resolvedUrl 退回原始輸入字串。
+    expect(captured.metadata.url).toBe("not a url");
+  });
+
+  it("routes the fetch path through the injected resolver: a domain flagged private is blocked pre-fetch", async () => {
+    // 釘住「連線路徑確實走 resolveUrl」：假解析器把某個公開域名判成私有（模擬 sslip.io 類
+    // DNS 解析到內網），擷取就必須在發出請求前失敗，且降級為 summary_only。
+    const fetcher = vi.fn(async () => new Response("must not fetch"));
+    const captured = await captureWebPage(
+      { url: "https://127-0-0-1.sslip.io/", title: "", summary: "摘要" },
+      undefined,
+      fetcher,
+      { resolveUrl: async () => Promise.reject(new Error("WEB_SOURCE_URL_PRIVATE")) },
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_URL_PRIVATE");
   });
 
   it("validates redirects before fetching their destination", async () => {
@@ -89,8 +135,74 @@ describe("web source capture", () => {
     expect(captured.text).not.toContain("�");
   });
 
+  it("enforces the byte cap while streaming, before the whole body is buffered", async () => {
+    // chunked（無誠實 content-length）時，舊版先 arrayBuffer() 把整個 body 緩衝進記憶體才檢查
+    // 長度，2MiB 上限形同虛設。改成邊讀邊數：一超過上限就 throw 並取消串流——絕不讀完整個
+    // body。這裡的假串流若被讀完會吐 100MiB；我們斷言它在拉幾塊之後就停了。
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 100) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(1024 * 1024)); // 每塊 1MiB
+      },
+    });
+    const captured = await captureWebPage(
+      { url: "https://example.com/huge", title: "Huge", summary: "太大摘要" },
+      undefined,
+      // 刻意不帶 content-length（chunked）：讓串流上限成為唯一的硬邊界。
+      async () => new Response(stream, { headers: { "content-type": "text/html" } }),
+    );
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_TOO_LARGE");
+    // 2MiB 上限：拉到第 3 塊（3MiB）才超標，遠在讀完 100 塊之前就停了。
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it("still enforces the byte cap when content-length lies (understates the body)", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(3 * 1024 * 1024)); // 一次就 3MiB > 2MiB
+        controller.close();
+      },
+    });
+    const captured = await captureWebPage(
+      { url: "https://example.com/liar", title: "Liar", summary: "摘要" },
+      undefined,
+      async () =>
+        new Response(stream, { headers: { "content-type": "text/html", "content-length": "10" } }),
+    );
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_TOO_LARGE");
+  });
+
   it("normalizes basic HTML", () =>
     expect(readableHtml("<h1>A &amp; B</h1><p>C</p>")).toBe("A & B\n\nC"));
+
+  describe("HTML 實體解碼永不 throw（decodeEntities）", () => {
+    // 【缺陷】超範圍數值字元參照與大寫 &#X..; 會讓 String.fromCodePoint / parseInt 丟例外，而
+    // decodeEntities 在 try 外經由 htmlTitle/documentTitle/readableHtml 被呼叫→整批來源匯入回 500。
+    it("preserves out-of-range numeric references instead of throwing", () => {
+      expect(readableHtml("<p>a &#99999999; b</p>")).toBe("a &#99999999; b");
+      expect(readableHtml("<p>a &#xFFFFFFFF; b</p>")).toBe("a &#xFFFFFFFF; b");
+      // 這些畸形實體出現在 <title> 裡時，htmlTitle/documentTitle 也不能炸。
+      expect(() => documentTitle("<title>x &#99999999; y</title>", "")).not.toThrow();
+      expect(documentTitle("<title>x &#99999999; y</title>", "")).toBe("x &#99999999; y");
+    });
+
+    it("decodes uppercase hex references (&#X41;) as well as lowercase and named", () => {
+      expect(readableHtml("<p>&#X41;&#x42;&#67;</p>")).toBe("ABC");
+      expect(readableHtml("<p>&#x4e2d;&#25991;</p>")).toBe("中文");
+      expect(readableHtml("<p>&amp;&lt;&gt;&quot;&#x2764;</p>")).toBe('&<>"❤');
+    });
+
+    it("leaves unknown named entities untouched without throwing", () => {
+      expect(readableHtml("<p>&bogusentity; &notareal;</p>")).toBe("&bogusentity; &notareal;");
+    });
+  });
 });
 
 /** 一段夠長的真實正文（>1200 字元），用來確認「有內容的頁」不會被誤判成空殼。 */
