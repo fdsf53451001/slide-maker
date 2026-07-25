@@ -430,6 +430,52 @@ export function textBoxBackground(box: EditableTextBox): string | undefined {
   return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${box.backgroundOpacity ?? 1})`;
 }
 
+/**
+ * 文字工具列的圖示。
+ *
+ * 一律用 inline SVG，不用 `↺`／`🗑` 這類符號字元：符號在不同平台會落到不同的 fallback
+ * 字型（甚至變成彩色 emoji），同一排圖示的粗細與視覺大小就會對不齊——這個專案已經踩過
+ * 一次跨機器字型 fallback 的坑。`currentColor` 讓 disabled 態沿用按鈕自己的文字色。
+ */
+function TextToolIcon({ shape }: { shape: "add" | "delete" | "undo" | "redo" }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="15"
+      height="15"
+      aria-hidden="true"
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/*
+        新增／刪除是同一個「T」配右下角不同的角標，兩顆一看就是一組。
+        刻意畫 T 而不是畫方框：方框配 ＋／✕ 在 15px 下會被讀成播放／停止鍵（實測比對過），
+        T 則直接說明這顆按鈕動的是文字。
+      */}
+      {(shape === "add" || shape === "delete") && <path d="M3.2 4.6h7.6M7 4.6v7.6" />}
+      {shape === "add" && <path d="M12 9.4v3.8M10.1 11.3h3.8" />}
+      {shape === "delete" && <path d="M10.4 9.7l3.2 3.2M13.6 9.7l-3.2 3.2" />}
+      {shape === "undo" && (
+        <>
+          <path d="M6.1 3.6 3.3 6.2l2.8 2.6" />
+          <path d="M3.3 6.2h6a3.3 3.3 0 1 1 0 6.6H7.2" />
+        </>
+      )}
+      {/* 重做＝復原的水平鏡射（箭頭在右、弧線往左繞），兩顆才會是明確的一對。 */}
+      {shape === "redo" && (
+        <>
+          <path d="M9.9 3.6 12.7 6.2l-2.8 2.6" />
+          <path d="M12.7 6.2h-6a3.3 3.3 0 1 0 0 6.6H8.8" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 export function TextLayerCanvas({
   background,
   boxes,
@@ -2114,7 +2160,13 @@ export function Editor() {
   const [showTextThreshold, setShowTextThreshold] = useState(false);
   // 抹字引擎：本地 OpenCV inpaint（快、零配額，預設）或專案組合的生圖模型。
   const [textExtractEngine, setTextExtractEngine] = useState<"opencv" | "model">("opencv");
-  const [textLayerBusy, setTextLayerBusy] = useState(false);
+  /**
+   * 文字圖層正在跑的工作。分成兩種而不是一個 boolean：兩者耗時與意義都不同——`save` 是每次
+   * 編輯後的自動儲存重繪（伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒）。
+   * 只報「處理中」等於把兩件事混成一句話，使用者無從判斷該不該等。
+   */
+  const [textLayerTask, setTextLayerTask] = useState<"save" | "extract">();
+  const textLayerBusy = textLayerTask !== undefined;
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
   /**
@@ -2407,7 +2459,7 @@ export function Editor() {
   const saveTextLayer = (pending: PendingTextSave) => {
     if (pendingTextSave.current !== pending) return;
     pendingTextSave.current = undefined;
-    setTextLayerBusy(true);
+    setTextLayerTask("save");
     void api
       .updateTextLayer(
         pending.projectId,
@@ -2420,7 +2472,7 @@ export function Editor() {
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "文字圖層自動儲存失敗"),
       )
-      .finally(() => setTextLayerBusy(false));
+      .finally(() => setTextLayerTask(undefined));
   };
   useEffect(() => {
     // 只在使用者實際編輯過（textDirty）才儲存：常駐的文字圖層不能把重新播種前的舊狀態寫回伺服器。
@@ -3058,7 +3110,7 @@ export function Editor() {
   };
   const startTextExtraction = async () => {
     if (!selected || !selectedVersion) return;
-    setTextLayerBusy(true);
+    setTextLayerTask("extract");
     setError(undefined);
     try {
       const status = await api.ocrStatus();
@@ -3074,7 +3126,7 @@ export function Editor() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "文字抽離失敗");
     } finally {
-      setTextLayerBusy(false);
+      setTextLayerTask(undefined);
     }
   };
   return (
@@ -3291,47 +3343,154 @@ export function Editor() {
             >
               ＋ 將圖片加入風格庫
             </button>
+            {/* 文字圖層的操作說明放在這條既有的狀態列，不另闢一行：快捷鍵只在這裡寫著，是
+                這個功能唯一的發現途徑（圖示工具列只有 tooltip），但它不值得再吃掉畫布高度。
+                進行中的工作**不**擠進來——那是畫布下方 `.text-layer-progress` 的事。 */}
+            {activeTextLayer && (
+              <span className="text-layer-status" title={textLayerHint}>
+                {textLayerHint}
+              </span>
+            )}
             <span>
               {activeJob
                 ? `● ${PHASE_LABELS[activeJob.phase ?? activeJob.status] ?? activeJob.status}`
                 : previewVersion
                   ? "歷史版本預覽"
-                  : "16:9 PREVIEW"}
+                  : "16:9"}
             </span>
           </span>
         </div>
-        <div className="canvas-fit" onWheel={handleStageWheel}>
-          <div
-            className={`canvas ${activeJob ? "generating" : ""}`}
-            // `--ar` 是純數字（寬÷高）餵給 styles.css 算 letterbox 尺寸——`calc()` 要拿它當
-            // 除數，寫成 "1920 / 1080" 會展開成 `100cqw / 1920 / 1080`。
-            // 用 aspect-ratio 則會被 max-width 夾掉而失效，見 styles.css 的 `.canvas`。
-            style={{ "--ar": project.canvas.width / project.canvas.height } as CSSProperties}
-          >
-            {activeTextLayer ? (
-              <TextLayerCanvas
-                background={imageUrl(project.id, activeTextLayer.backgroundPath)}
-                boxes={textBoxes}
-                canvasWidth={project.canvas.width}
-                canvasHeight={project.canvas.height}
-                selectedId={selectedTextId}
-                onSelect={setSelectedTextId}
-                onChange={changeTextBoxes}
-              />
-            ) : image ? (
-              <img src={image} alt={`Slide ${(selected?.order ?? 0) + 1}`} />
-            ) : (
-              <div className="canvas-empty">
-                <div className="orbit" />
-                <strong>{selected?.purpose || "尚未設定頁面目的"}</strong>
-                <p>請輸入頁面目的後，點下方生成大綱，再生成圖片。</p>
-                <p>同時可以至來源頁添加素材，生成大綱時會一併引用。</p>
+        {/*
+          畫布與文字工具列同一列：工具列是**垂直**的側欄，放在畫布右側而不是畫布下方，
+          舞台的垂直空間全部留給畫布本身。
+        */}
+        <div className="canvas-row">
+          <div className="canvas-fit" onWheel={handleStageWheel}>
+            <div
+              className={`canvas ${activeJob ? "generating" : ""}`}
+              // `--ar` 是純數字（寬÷高）餵給 styles.css 算 letterbox 尺寸——`calc()` 要拿它當
+              // 除數，寫成 "1920 / 1080" 會展開成 `100cqw / 1920 / 1080`。
+              // 用 aspect-ratio 則會被 max-width 夾掉而失效，見 styles.css 的 `.canvas`。
+              style={{ "--ar": project.canvas.width / project.canvas.height } as CSSProperties}
+            >
+              {activeTextLayer ? (
+                <TextLayerCanvas
+                  background={imageUrl(project.id, activeTextLayer.backgroundPath)}
+                  boxes={textBoxes}
+                  canvasWidth={project.canvas.width}
+                  canvasHeight={project.canvas.height}
+                  selectedId={selectedTextId}
+                  onSelect={setSelectedTextId}
+                  onChange={changeTextBoxes}
+                />
+              ) : image ? (
+                <img src={image} alt={`Slide ${(selected?.order ?? 0) + 1}`} />
+              ) : (
+                <div className="canvas-empty">
+                  <div className="orbit" />
+                  <strong>{selected?.purpose || "尚未設定頁面目的"}</strong>
+                  <p>請輸入頁面目的後，點下方生成大綱，再生成圖片。</p>
+                  <p>同時可以至來源頁添加素材，生成大綱時會一併引用。</p>
+                </div>
+              )}
+              {(activeTextLayer || image) && selected && (
+                <PageNumberOverlay project={pageNumberProject} index={selected.order} />
+              )}
+            </div>
+            {/*
+              進行中的工作要有自己的一條狀態欄，不能塞進上面那排說明——「正在重繪」與
+              「正在抽取文字」是使用者需要等的事，得看得見。
+
+              放在畫布那一欄（而不是整列）才會對齊畫布中線；刻意絕對定位、不佔版面高度：
+              自動儲存在每次編輯後都會出現一次，若它撐開版面，畫布會在打字途中反覆縮放。
+            */}
+            {textLayerTask && (
+              <div className="text-layer-progress" role="status">
+                <i className="text-layer-progress-dot" />
+                {textLayerTask === "extract" ? "正在抽取文字…" : "正在重繪並自動儲存…"}
               </div>
             )}
-            {(activeTextLayer || image) && selected && (
-              <PageNumberOverlay project={pageNumberProject} index={selected.order} />
-            )}
           </div>
+          {activeTextLayer && (
+            <div className="text-layer-rail" role="group" aria-label="文字工具">
+              <button
+                onClick={() => {
+                  const box: EditableTextBox = {
+                    id: crypto.randomUUID(),
+                    text: "新增文字",
+                    x: 120,
+                    y: 120,
+                    width: 420,
+                    height: 80,
+                    fontFamily: "Arial",
+                    fontSize: 44,
+                    fontWeight: 400,
+                    color: "#ffffff",
+                    opacity: 1,
+                    lineHeight: 1.2,
+                    letterSpacing: 0,
+                    align: "left",
+                    verticalAlign: "top",
+                    rotation: 0,
+                    confidence: 1,
+                    role: "presentation",
+                  };
+                  changeTextBoxes([...textBoxes, box]);
+                  setSelectedTextId(box.id);
+                }}
+                aria-label="新增文字框"
+                title="新增文字框"
+              >
+                <TextToolIcon shape="add" />
+              </button>
+              <button
+                disabled={!selectedText}
+                aria-label="刪除文字框"
+                title="刪除文字框（Delete）"
+                onClick={() => {
+                  changeTextBoxes(textBoxes.filter((box) => box.id !== selectedTextId));
+                  setSelectedTextId(undefined);
+                }}
+              >
+                <TextToolIcon shape="delete" />
+              </button>
+              <button
+                disabled={!textUndo.length}
+                aria-label="復原"
+                title="復原（⌘/Ctrl+Z）"
+                onClick={() => {
+                  const previous = textUndo.at(-1);
+                  if (!previous) return;
+                  textDirty.current = true;
+                  setTextRedo((history) => pushHistory(history, textBoxes));
+                  setTextBoxes(previous);
+                  setTextUndo((history) => history.slice(0, -1));
+                  // 還原後若選中的文字框已不在快照中，清掉選取，避免「刪除」按鈕看起來莫名熄滅。
+                  if (selectedTextId && !previous.some((box) => box.id === selectedTextId))
+                    setSelectedTextId(undefined);
+                }}
+              >
+                <TextToolIcon shape="undo" />
+              </button>
+              <button
+                disabled={!textRedo.length}
+                aria-label="重做"
+                title="重做（⇧⌘/Ctrl+Shift+Z）"
+                onClick={() => {
+                  const next = textRedo.at(-1);
+                  if (!next) return;
+                  textDirty.current = true;
+                  setTextUndo((history) => pushHistory(history, textBoxes));
+                  setTextBoxes(next);
+                  setTextRedo((history) => history.slice(0, -1));
+                  if (selectedTextId && !next.some((box) => box.id === selectedTextId))
+                    setSelectedTextId(undefined);
+                }}
+              >
+                <TextToolIcon shape="redo" />
+              </button>
+            </div>
+          )}
         </div>
         {showPdfFontNotice && (
           <div className="pdf-font-notice" role="status">
@@ -3340,83 +3499,6 @@ export function Editor() {
               不同。要保留原始字型外觀，請切回「原始頁面」版本，匯出時也會保真。
             </span>
             <button onClick={pdfFontNotice.acknowledge}>知道了</button>
-          </div>
-        )}
-        {activeTextLayer && (
-          <div className="text-layer-toolbar">
-            {/* 這個 span 是 nowrap + ellipsis：快捷鍵擺在字串尾端，畫布欄一窄就正好被吃掉，
-                而它是這個功能唯一的發現途徑，所以排在操作說明前面，另外用 title 補完整內容。 */}
-            <span title={textLayerHint}>
-              {textLayerBusy ? "正在重繪並自動儲存…" : textLayerHint}
-            </span>
-            <button
-              onClick={() => {
-                const box: EditableTextBox = {
-                  id: crypto.randomUUID(),
-                  text: "新增文字",
-                  x: 120,
-                  y: 120,
-                  width: 420,
-                  height: 80,
-                  fontFamily: "Arial",
-                  fontSize: 44,
-                  fontWeight: 400,
-                  color: "#ffffff",
-                  opacity: 1,
-                  lineHeight: 1.2,
-                  letterSpacing: 0,
-                  align: "left",
-                  verticalAlign: "top",
-                  rotation: 0,
-                  confidence: 1,
-                  role: "presentation",
-                };
-                changeTextBoxes([...textBoxes, box]);
-                setSelectedTextId(box.id);
-              }}
-            >
-              ＋ 文字框
-            </button>
-            <button
-              disabled={!selectedText}
-              onClick={() => {
-                changeTextBoxes(textBoxes.filter((box) => box.id !== selectedTextId));
-                setSelectedTextId(undefined);
-              }}
-            >
-              刪除文字框
-            </button>
-            <button
-              disabled={!textUndo.length}
-              onClick={() => {
-                const previous = textUndo.at(-1);
-                if (!previous) return;
-                textDirty.current = true;
-                setTextRedo((history) => pushHistory(history, textBoxes));
-                setTextBoxes(previous);
-                setTextUndo((history) => history.slice(0, -1));
-                // 還原後若選中的文字框已不在快照中，清掉選取，避免「刪除」按鈕看起來莫名熄滅。
-                if (selectedTextId && !previous.some((box) => box.id === selectedTextId))
-                  setSelectedTextId(undefined);
-              }}
-            >
-              復原
-            </button>
-            <button
-              disabled={!textRedo.length}
-              onClick={() => {
-                const next = textRedo.at(-1);
-                if (!next) return;
-                textDirty.current = true;
-                setTextUndo((history) => pushHistory(history, textBoxes));
-                setTextBoxes(next);
-                setTextRedo((history) => history.slice(0, -1));
-                if (selectedTextId && !next.some((box) => box.id === selectedTextId))
-                  setSelectedTextId(undefined);
-              }}
-            >
-              重做
-            </button>
           </div>
         )}
         {previewVersion && selected && (
@@ -3500,8 +3582,9 @@ export function Editor() {
             生成失敗{lastJob.errorCode ? `（${lastJob.errorCode}）` : ""}：{lastJob.error}
           </div>
         )}
+        {/* 刻意不放「版本歷史」標題：縮圖卡片本身已帶時間戳與「使用中」標記，
+            省下的高度全部讓給畫布。無障礙資訊仍在每張卡片的 aria-label 上。 */}
         <div className="versions">
-          <div className="section-label">版本歷史</div>
           <div className="version-list">
             {selected?.versions.length === 0 && <span className="empty-inline">尚無版本</span>}
             {[...(selected?.versions ?? [])].reverse().map((version) => {
@@ -4250,9 +4333,6 @@ export function Editor() {
               <span>SOURCES</span>
               <b>{project.sources.length}/100</b>
             </div>
-            <p className="source-panel-intro">
-              管理 AI 可使用的參考資料。點擊預覽可檢查擷取文字或原始圖片。
-            </p>
             <SourcePanel project={project} onProject={setProject} onError={setError} />
           </div>
         )}
