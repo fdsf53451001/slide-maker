@@ -45,6 +45,23 @@ export function outlineContentCharBudget(density: ImageGenerationRequest["style"
 }
 
 /**
+ * 重試用盡後仍超標時，還願意採用的長度倍率（相對於 hard）。
+ *
+ * 超標的後果通常只是版面較擠，所以硬上限不再是失敗原因——但「完全沒有上限」等於 hard
+ * 只剩觸發重試的作用。實測資料只給得出一個未被設限的觀測：啟用硬上限之前有一頁寫到
+ * 556 單位（超出 hard 42.6%），那種長度不是擠，是讀不了。倍率放在這裡而不是 app.ts，
+ * 是為了讓「長度上限」的唯一真相與 outlineContentCharBudget 留在同一個檔案。
+ */
+export const OUTLINE_CONTENT_ACCEPT_MULTIPLIER = 2;
+
+/** 降級採用的理智上限：超過這個長度就寧可讓請求失敗，也不落地一頁讀不了的投影片。 */
+export function outlineContentAcceptCeiling(
+  density: ImageGenerationRequest["style"]["density"],
+): number {
+  return Math.round(outlineContentCharBudget(density).hard * OUTLINE_CONTENT_ACCEPT_MULTIPLIER);
+}
+
+/**
  * 計算 content 的可見長度（不計空白），用於硬上限驗證。
  *
  * 以「中文字寬」為單位：中文字與全形標點算 1，ASCII 字母、數字、半形符號算 0.5。
@@ -105,7 +122,9 @@ export function outlineDataFidelityInstruction(): string {
 }
 
 /**
- * content 超標後，重試時追加的指令。
+ * 單頁重生的 content 超標後，重試時追加的指令。整份大綱走
+ * outlineDeckOverflowRetryInstruction：那裡有多頁、每頁的超額不同，把單一數字編進句子
+ * 會讓只超 5 單位的頁被要求砍 100。
  *
  * 必須帶上實際測得的單位數：只說「太長了」而不說「你上次寫了 312」，模型無從判斷該砍
  * 多少。這裡是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限，長度回饋全靠這條。
@@ -124,6 +143,29 @@ export function outlineOverflowRetryInstruction(
   const { soft, hard } = outlineContentCharBudget(density);
   const excess = Math.max(1, Math.round(measuredUnits - hard));
   return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. That draft is supplied as previousAttempt in the untrusted input below. Revise that draft instead of starting over: keep its structure and its decisions about what to cover. Cut at least ${excess} units of real copy out of that draft — shorten its wording or drop its weakest information unit; do not merely reformat it, and do not set it aside and write the slide again from the original content. Preserve any complete source dataset that this slide's page purpose requires the audience to inspect, regardless of whether it is presented as a table, bullets, chart labels, or another structure; cut optional synthesis and commentary before that required data. Do not protect or sacrifice content merely because it is formatted as a table. If required source data still cannot fit in full, state explicitly that the slide shows a partial view rather than silently dropping items.`;
+}
+
+/**
+ * 整份大綱的 content 超標後，重試時追加的指令。
+ *
+ * 與單頁版分開的兩個理由，合成一個函式參數塞不下：
+ *
+ * ① **受詞是整份草稿，不是超標頁**。runStructured 是單次無狀態呼叫，模型看不到自己上
+ *    一輪的輸出。「其餘頁維持與上次相同」若沒有把那些頁真的放進 prompt，就與「砍掉上次
+ *    那份稿子」少了受詞是同一個失敗模式——模型只能從原始輸入再寫一次，於是沒超標的頁也
+ *    跟著漂移。所以呼叫端要把上一輪的**每一頁**依原順序放進 previousAttempt，順序由陣列
+ *    本身承載（prompt 從未建立過 order 欄位的基準，用它指認頁面會指到別頁）。
+ * ② **要砍多少是逐頁的**。兩頁分別超 +100 與 +5 時，共用最長頁的超額等於要求第二頁砍
+ *    100——那正是 outlineDataFidelityInstruction 要防的過度刪減。數字因此不編進句子，而是
+ *    由每筆 previousAttempt 自帶 measuredUnits 與 cutUnits。
+ *
+ * 硬上限一樣不寫進 prompt：模型算不準這套自訂單位，逐頁的「要砍多少」已經承載了同一件事。
+ */
+export function outlineDeckOverflowRetryInstruction(
+  density: ImageGenerationRequest["style"]["density"],
+): string {
+  const { soft } = outlineContentCharBudget(density);
+  return `Some slides in your previous attempt ran too long. That complete outline is supplied as previousAttempt in the untrusted input below: one entry per slide, listed in the order you returned them, each carrying the content, narrative, layoutHint, and sourceUrls you wrote for it. Return the whole outline again in that same order. Reproduce every entry marked "overflow": false exactly as supplied, including its narrative, layoutHint, and sourceUrls — those slides are already accepted and must not drift. Revise only the entries marked "overflow": true. For each of those, revise that entry's own draft instead of starting over: keep its structure, its decisions about what to cover, and its sources. Each such entry reports measuredUnits, the length the system measured for it against a target of roughly ${soft}, and cutUnits, the amount of real copy you must cut from that entry — apply each entry's own cutUnits to that entry only, and never carry one slide's number over to another. Shorten wording or drop the weakest information unit; do not merely reformat, and do not set a draft aside and write that slide again from the original content. Preserve any complete source dataset that a slide's page purpose requires the audience to inspect, regardless of whether it is presented as a table, bullets, chart labels, or another structure; cut optional synthesis and commentary before that required data. Do not protect or sacrifice content merely because it is formatted as a table. If required source data still cannot fit in full, state explicitly that the slide shows a partial view rather than silently dropping items.`;
 }
 
 /**

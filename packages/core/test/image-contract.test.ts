@@ -4,9 +4,11 @@ import {
   imageGenerationInput,
   informationDensityInstruction,
   outlineBrevityInstruction,
+  outlineContentAcceptCeiling,
   outlineContentCharBudget,
   outlineContentLength,
   outlineDataFidelityInstruction,
+  outlineDeckOverflowRetryInstruction,
   outlineOverflowRetryInstruction,
   outlineStructureInstruction,
   serializeImageGenerationInput,
@@ -130,6 +132,63 @@ describe("outline overflow retry", () => {
     const instruction = outlineOverflowRetryInstruction("high", 500);
     expect(instruction).not.toMatch(/counts as 0\.5/);
     expect(instruction).not.toMatch(/full-width units:/);
+  });
+});
+
+describe("deck outline overflow retry", () => {
+  it("points at the complete previous outline, not just the slides that ran over", () => {
+    // runStructured 是單次無狀態呼叫：「其餘頁維持上次那樣」若那些頁不在 prompt 裡，
+    // 就與「砍掉上次那份稿子」少了受詞是同一個失敗模式。
+    const instruction = outlineDeckOverflowRetryInstruction("high");
+    expect(instruction).toMatch(/complete outline is supplied as previousAttempt/);
+    expect(instruction).toMatch(/one entry per slide/);
+    expect(instruction).toMatch(/in the order you returned them/);
+    expect(instruction).toMatch(/Reproduce every entry marked "overflow": false exactly as/);
+    expect(instruction).toMatch(/Revise only the entries marked "overflow": true/);
+  });
+
+  it("makes each slide carry its own numbers instead of baking one into the sentence", () => {
+    // 兩頁分別超 +100 與 +5 時，共用一個數字等於要求第二頁砍 100。
+    const instruction = outlineDeckOverflowRetryInstruction("high");
+    expect(instruction).toMatch(/apply each entry's own cutUnits to that entry only/);
+    expect(instruction).toMatch(/never carry one slide's number over to another/);
+    expect(instruction).not.toMatch(/Cut at least \d+ units/);
+  });
+
+  it("identifies slides by list position, not by an order field the prompt never established", () => {
+    // prompt 從未建立過 order 這個欄位的存在與基準（0-based？1-based？），而重試允許回傳
+    // 不同頁數——用它指認頁面會指到別頁。順序改由陣列本身承載。
+    const instruction = outlineDeckOverflowRetryInstruction("high");
+    expect(instruction).toMatch(/listed in the order you returned them/);
+    expect(instruction).not.toMatch(/its order|"order"|order field|identified by its/);
+  });
+
+  it("states the soft target but never the hard limit", () => {
+    const { soft, hard } = outlineContentCharBudget("high");
+    const instruction = outlineDeckOverflowRetryInstruction("high");
+    expect(instruction).toContain(`target of roughly ${soft}`);
+    expect(instruction).not.toContain(String(hard));
+  });
+
+  it("carries the structural fields the instruction tells the model to keep", () => {
+    const instruction = outlineDeckOverflowRetryInstruction("high");
+    expect(instruction).toMatch(/content, narrative, layoutHint, and sourceUrls/);
+    expect(instruction).toMatch(/keep its structure, its decisions about what to cover/);
+  });
+});
+
+describe("outline content accept ceiling", () => {
+  it("is a fixed multiple of the hard limit, defined next to the budget", () => {
+    // 降級採用完全無上限時，hard 只剩「觸發重試」的作用；實測有一頁 556 單位讀不了。
+    for (const density of ["low", "medium", "high"] as const)
+      expect(outlineContentAcceptCeiling(density)).toBe(outlineContentCharBudget(density).hard * 2);
+  });
+
+  it("stays above the hard limit for every density", () => {
+    for (const density of ["low", "medium", "high"] as const)
+      expect(outlineContentAcceptCeiling(density)).toBeGreaterThan(
+        outlineContentCharBudget(density).hard,
+      );
   });
 });
 

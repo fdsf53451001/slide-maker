@@ -99,6 +99,11 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     return { status: response.status, body: (await response.json()) as T };
   }
 
+  async function get<T>(path: string): Promise<T> {
+    const response = await fetch(`${baseUrl}${path}`);
+    return (await response.json()) as T;
+  }
+
   /** 搜尋一律關掉：這裡驗的是長度收斂，不是來源流程。 */
   const createProject = async (desiredSlideCount = 2) => {
     const { body } = await post<PresentationProject>("/api/projects", {
@@ -187,14 +192,42 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     expect(untrustedPayload(prompts[0]!).previousAttempt).toBeUndefined();
     expect(prompts[0]).not.toContain("previousAttempt");
     // 「至少砍掉 N 單位」必須有受詞：上一輪那份稿子本身要在 prompt 裡。
+    // 指令說「keep its structure」，記錄結構的 narrative／layoutHint 也要跟著回去。
     expect(untrustedPayload(prompts[1]!).previousAttempt).toEqual({
       content: firstDraft,
+      narrative: "講者補充",
+      layoutHint: "單欄重點",
       measuredUnits: HARD_LIMIT + 60 + 5,
     });
     expect(prompts[1]).toContain("Revise that draft instead of starting over");
   });
 
-  it("整份大綱重試時只把超標的那一頁餵回去", async (context) => {
+  it("單頁重試餵回目前最短的那一份，而不是最近一輪", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    const slide = project.slides[0]!;
+    // 第二輪比第一輪更長：第三輪若拿最近一輪去砍，等於從更糟的版本起步。
+    const drafts = [
+      `${units(HARD_LIMIT + 30)}短`,
+      `${units(HARD_LIMIT + 200)}長`,
+      `${units(HARD_LIMIT + 300)}更長`,
+    ];
+    stubTextProvider((attempt) => slideReply(drafts[attempt - 1]!));
+    captureWarnings();
+
+    const { status, body } = await regenerateSlide(project.id, slide.id);
+
+    expect(status).toBe(200);
+    expect(prompts).toHaveLength(3);
+    expect(untrustedPayload(prompts[2]!).previousAttempt).toMatchObject({
+      content: drafts[0],
+      measuredUnits: HARD_LIMIT + 31,
+    });
+    // 降級採用的與餵回去的必須是同一份，否則最後一輪是在砍一份不會被採用的稿子。
+    expect(body.slides.find((item) => item.id === slide.id)?.content).toBe(drafts[0]);
+  });
+
+  it("整份大綱重試時把整份草稿依原順序餵回去，逐頁標記是否超標", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject();
     const overflowPage = `${units(HARD_LIMIT + 40)}超標頁`;
@@ -211,15 +244,153 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     expect(status).toBe(200);
     expect(prompts).toHaveLength(2);
     expect(untrustedPayload(prompts[0]!).previousAttempt).toBeUndefined();
-    // 整份草稿塞回去會讓 prompt 爆量；沒超標的頁本來就沒有要改。
+    // 指令行也不得洩漏這個欄位：第一輪的 prompt 要與加入這條路之前逐字元相同。
+    expect(prompts[0]).not.toContain("previousAttempt");
+    // 單次無狀態呼叫看不到「上次那份」：沒超標的頁也必須在 prompt 裡，「其餘頁原樣回傳」
+    // 才有受詞。順序由陣列承載，不再用 order 指認頁面。
     expect(untrustedPayload(prompts[1]!).previousAttempt).toEqual([
       {
-        order: 1,
+        purpose: "第 1 頁",
+        content: shortPage,
+        narrative: "講者補充",
+        layoutHint: "單欄重點",
+        sourceUrls: [],
+        overflow: false,
+      },
+      {
         purpose: "第 2 頁",
         content: overflowPage,
-        measuredUnits: HARD_LIMIT + 40 + 3,
+        narrative: "講者補充",
+        layoutHint: "單欄重點",
+        sourceUrls: [],
+        overflow: true,
+        measuredUnits: HARD_LIMIT + 43,
+        cutUnits: 43,
       },
     ]);
-    expect(prompts[1]).toContain("previousAttempt lists only the slides that ran too long");
+    expect(prompts[1]).toContain('Reproduce every entry marked "overflow": false exactly as');
+    expect(JSON.stringify(untrustedPayload(prompts[1]!).previousAttempt)).not.toContain('"order"');
+  });
+
+  it("整份大綱多頁同時超標時，每一頁拿到的是自己的砍字數", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    // +5 的頁被要求砍 100 正是 outlineDataFidelityInstruction 要防的過度刪減。
+    const barelyOver = units(HARD_LIMIT + 5);
+    const wayOver = units(HARD_LIMIT + 100);
+    stubTextProvider((attempt) =>
+      attempt === 1 ? deckReply([barelyOver, wayOver]) : deckReply([units(10), units(11)]),
+    );
+    captureWarnings();
+
+    const { status } = await post<PresentationProject>(`/api/projects/${project.id}/outline`, {
+      replace: true,
+    });
+
+    expect(status).toBe(200);
+    const fedBack = untrustedPayload(prompts[1]!).previousAttempt as {
+      measuredUnits?: number;
+      cutUnits?: number;
+    }[];
+    expect(fedBack.map((entry) => entry.cutUnits)).toEqual([5, 100]);
+    expect(fedBack.map((entry) => entry.measuredUnits)).toEqual([HARD_LIMIT + 5, HARD_LIMIT + 100]);
+    // 單一數字若編進指令句子，兩頁就會共用最長那頁的超額。
+    expect(prompts[1]).not.toContain("Cut at least 100 units");
+  });
+
+  it("整份大綱挑最短時比的是所有超標頁的超額總和，不是單一最長頁", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject(3);
+    // 第一輪：一頁超 +100，總超額 100。第二輪：三頁各超 +95，最長頁較短但整體更糟。
+    stubTextProvider((attempt) => {
+      if (attempt === 1) return deckReply([units(HARD_LIMIT + 100), units(10), units(11)]);
+      return deckReply([units(HARD_LIMIT + 95), units(HARD_LIMIT + 95), units(HARD_LIMIT + 95)]);
+    });
+    const readWarnings = captureWarnings();
+
+    const { status, body } = await post<PresentationProject>(
+      `/api/projects/${project.id}/outline`,
+      { replace: true },
+    );
+
+    expect(status).toBe(200);
+    expect(body.slides.map((item) => item.content)).toEqual([
+      units(HARD_LIMIT + 100),
+      units(10),
+      units(11),
+    ]);
+    const accepted = readWarnings().filter(
+      (entry) => entry.event === "outline_content_overflow_accepted",
+    );
+    expect(accepted[0]).toMatchObject({
+      longestMeasuredUnits: HARD_LIMIT + 100,
+      totalExcessUnits: 100,
+    });
+  });
+
+  it("最短的那一版剛好落在 hard 的兩倍以內時照樣採用", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    const slide = project.slides[0]!;
+    const atCeiling = units(HARD_LIMIT * 2);
+    stubTextProvider(() => slideReply(atCeiling));
+    const readWarnings = captureWarnings();
+
+    const { status, body } = await regenerateSlide(project.id, slide.id);
+
+    expect(status).toBe(200);
+    expect(body.slides.find((item) => item.id === slide.id)?.content).toBe(atCeiling);
+    const warnings = readWarnings();
+    expect(
+      warnings.filter((entry) => entry.event === "outline_content_overflow_accepted"),
+    ).toHaveLength(1);
+    expect(
+      warnings.filter((entry) => entry.event === "outline_content_overflow_rejected"),
+    ).toHaveLength(0);
+  });
+
+  it("最短的那一版超過 hard 的兩倍時單頁重生失敗，不落地讀不了的長度", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    const slide = project.slides[0]!;
+    const original = slide.content;
+    stubTextProvider(() => slideReply(units(HARD_LIMIT * 2 + 1)));
+    const readWarnings = captureWarnings();
+
+    const { status, body } = await regenerateSlide(project.id, slide.id);
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("CODEX_OUTLINE_CONTENT_UNREADABLE");
+    expect(prompts).toHaveLength(3);
+    expect(
+      readWarnings().filter((entry) => entry.event === "outline_content_overflow_rejected"),
+    ).toHaveLength(1);
+    // 失敗的重生不得留下任何痕跡：那一頁維持原本的內容。
+    const after = await get<PresentationProject>(`/api/projects/${project.id}`);
+    expect(after.slides.find((item) => item.id === slide.id)?.content).toBe(original);
+  });
+
+  it("整份大綱最短的那一版超過 hard 的兩倍時整批失敗", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    stubTextProvider(() => deckReply([units(HARD_LIMIT * 2 + 1), units(10)]));
+    const readWarnings = captureWarnings();
+
+    const { status, body } = await post<PresentationProject & { error?: string }>(
+      `/api/projects/${project.id}/outline`,
+      { replace: true },
+    );
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("CODEX_OUTLINE_CONTENT_UNREADABLE");
+    expect(prompts).toHaveLength(3);
+    const rejected = readWarnings().filter(
+      (entry) => entry.event === "outline_content_overflow_rejected",
+    );
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      longestMeasuredUnits: HARD_LIMIT * 2 + 1,
+      acceptCeiling: HARD_LIMIT * 2,
+    });
   });
 });
