@@ -108,8 +108,11 @@ export function outlineDataFidelityInstruction(): string {
  * content 超標後，重試時追加的指令。
  *
  * 必須帶上實際測得的單位數：只說「太長了」而不說「你上次寫了 312」，模型無從判斷該砍
- * 多少，於是三次重試常常犯同一個錯，最後以 CODEX_OUTLINE_CONTENT_TOO_LONG 收場。這裡
- * 是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限，長度回饋全靠這條。
+ * 多少。這裡是模型唯一拿得到真實長度的地方——首次指令刻意不談硬上限，長度回饋全靠這條。
+ *
+ * 語意是「修改上一輪那份草稿」而不是「重新生成並寫短一點」：呼叫端必須把上一輪的稿子
+ * 以 previousAttempt 放進 untrusted input。少了那份稿子，「至少砍掉 N 單位」就沒有受詞——
+ * 模型手上只剩與第一輪相同的輸入，只能再生成一次，三輪落在同一個長度後整批失敗。
  *
  * 砍的順序依頁面目的與來源完整性，而不是依格式。完整資料不一定是表格；表格也不一定是
  * 本頁必要資料。若按格式一律保護表格，模型只要把內容改排成表格就能逃過刪減。
@@ -120,7 +123,7 @@ export function outlineOverflowRetryInstruction(
 ): string {
   const { soft, hard } = outlineContentCharBudget(density);
   const excess = Math.max(1, Math.round(measuredUnits - hard));
-  return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. Cut at least ${excess} units of real copy this time — shorten wording or drop the weakest information unit; do not merely reformat. Preserve any complete source dataset that this slide's page purpose requires the audience to inspect, regardless of whether it is presented as a table, bullets, chart labels, or another structure; cut optional synthesis and commentary before that required data. Do not protect or sacrifice content merely because it is formatted as a table. If required source data still cannot fit in full, state explicitly that the slide shows a partial view rather than silently dropping items.`;
+  return `A previous attempt ran too long for the slide: its content measured ${Math.round(measuredUnits)} full-width units against a target of roughly ${soft}. That draft is supplied as previousAttempt in the untrusted input below. Revise that draft instead of starting over: keep its structure and its decisions about what to cover. Cut at least ${excess} units of real copy out of that draft — shorten its wording or drop its weakest information unit; do not merely reformat it, and do not set it aside and write the slide again from the original content. Preserve any complete source dataset that this slide's page purpose requires the audience to inspect, regardless of whether it is presented as a table, bullets, chart labels, or another structure; cut optional synthesis and commentary before that required data. Do not protect or sacrifice content merely because it is formatted as a table. If required source data still cannot fit in full, state explicitly that the slide shows a partial view rather than silently dropping items.`;
 }
 
 /**

@@ -98,6 +98,17 @@ describe("outline overflow retry", () => {
     expect(instruction).toContain("Cut at least 42 units");
   });
 
+  it("asks the model to trim the previous draft instead of generating a fresh one", () => {
+    // 「重寫一次並寫短一點」沒有受詞：模型手上只剩與第一輪相同的輸入，於是三輪落在
+    // 同一個長度。指令必須指向呼叫端附上的 previousAttempt，砍的對象才存在。
+    const instruction = outlineOverflowRetryInstruction("high", 400);
+    expect(instruction).toMatch(/previousAttempt/);
+    expect(instruction).toMatch(/Revise that draft instead of starting over/);
+    expect(instruction).toMatch(/keep its structure and its decisions about what to cover/);
+    expect(instruction).toMatch(/out of that draft/);
+    expect(instruction).toMatch(/do not set it aside and write the slide again/);
+  });
+
   it("protects purpose-required source data rather than a particular format", () => {
     const instruction = outlineOverflowRetryInstruction("high", 400);
     expect(instruction).toMatch(/complete source dataset that this slide's page purpose requires/);
