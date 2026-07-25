@@ -294,6 +294,26 @@ describe("extract-text route with local-inpaint (default engine)", () => {
       expect(((await denied.json()) as { error?: string }).error).toBe(
         "FULL_SLIDE_GENERATION_UNSUPPORTED",
       );
+
+      // 文字修復是 opt-in 的列舉：認得 "outline"，其餘值一律擋在端點。
+      const repaired = await json<GenerationJob>(
+        `/api/projects/${project.id}/slides/${slideId}/extract-text`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ textRepair: "outline" }),
+        },
+      );
+      expect(repaired.operation).toBe("extract-text");
+      const rejected = await fetch(
+        `${baseUrl}/api/projects/${project.id}/slides/${slideId}/extract-text`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ textRepair: "guess" }),
+        },
+      );
+      expect(rejected.ok).toBe(false);
     });
   }, 30_000);
 });

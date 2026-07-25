@@ -54,8 +54,18 @@ function box(overrides: Partial<EditableTextBox>): EditableTextBox {
   };
 }
 
+/** 預設路徑：帶了來源也不修（`textRepair` 未指定即 `"off"`）。 */
 const refine = async (boxes: EditableTextBox[]) =>
   (await refineOcrBoxes(boxes, { sourceTexts: [SLIDE_CONTENT, LAYOUT_HINT] })).boxes;
+
+/** 使用者在抽離文字選單挑「大綱修復」時的路徑。 */
+const repair = async (boxes: EditableTextBox[]) =>
+  (
+    await refineOcrBoxes(boxes, {
+      sourceTexts: [SLIDE_CONTENT, LAYOUT_HINT],
+      textRepair: "outline",
+    })
+  ).boxes;
 
 /** 建立單色底的合成畫布，並以純色矩形模擬字墨帶。 */
 function raster(
@@ -79,9 +89,9 @@ function raster(
   return { data, width, height, channels: 3 };
 }
 
-// 來源錨定校正已停用（見 `refineOcrBoxes` 的說明）：不論大綱裡有沒有相似片段，
-// OCR 辨識到的文字一律原樣保留。這一組把「不再改寫」釘住，避免無意間接回去。
-describe("source anchoring is disabled: OCR text is never rewritten", () => {
+// 預設 `textRepair: "off"`（見 `refineOcrBoxes` 的說明）：即使呼叫端帶了 sourceTexts，
+// 不論大綱裡有沒有相似片段，OCR 辨識到的文字一律原樣保留。
+describe("text repair off (default): OCR text is never rewritten", () => {
   it("keeps OCR text even when the outline holds a near-identical line", async () => {
     // 舊行為：命中來源後改寫成「將代理部署至 AWS，」（修好簡體與被吃掉的空格）。
     const [kept] = await refine([box({ text: "将代理部署至AWS，" })]);
@@ -114,6 +124,55 @@ describe("source anchoring is disabled: OCR text is never rewritten", () => {
     const [kept] = await refine([footer]);
     expect(kept?.text).toBe("重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法");
     expect(kept?.width).toBeCloseTo(1562, 1);
+  });
+});
+
+// 使用者在抽離文字選單挑「大綱修復」時走的路徑：以大綱為錨改寫 OCR 誤認字。
+// 這是 opt-in，取捨（會把不在大綱裡的字改成大綱的相似片段）由使用者自己決定。
+describe('text repair "outline": rewrites OCR text from the slide outline', () => {
+  it("fixes simplified-character misreads and restores designed spacing", async () => {
+    const [corrected] = await repair([box({ text: "将代理部署至AWS，" })]);
+    expect(corrected?.text).toBe("將代理部署至 AWS，");
+  });
+
+  it("fixes em-dashes misread as 一", async () => {
+    const [corrected] = await repair([box({ text: "把建置一競賽一診斷一" })]);
+    expect(corrected?.text).toBe("把建置—競賽—診斷—");
+  });
+
+  it("appends the source's trailing full-width punctuation and widens the box", async () => {
+    const footer = box({
+      text: "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法",
+      width: 1562,
+      fontSize: 48.4,
+    });
+    const [corrected] = await repair([footer]);
+    expect(corrected?.text).toBe(
+      "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法。",
+    );
+    expect(corrected?.width).toBeCloseTo(1562 + 48.4, 1);
+  });
+
+  it("keeps text that has no close match in the sources", async () => {
+    const [kept] = await repair([box({ text: "全然無關的浮水印" })]);
+    expect(kept?.text).toBe("全然無關的浮水印");
+  });
+
+  it("restores a separator swallowed by OCR so the merged box can split", async () => {
+    // 分隔線只存在於大綱裡，這一框要靠校正還原「｜」才拆得開。
+    const merged = box({
+      text: "改進有據依比賽回饋、行動紀錄與",
+      x: 953,
+      y: 496,
+      width: 513,
+      height: 65,
+      fontSize: 50.7,
+      fontWeight: 700,
+    });
+    const result = await repair([merged]);
+    expect(result.map((item) => item.text)).toEqual(["改進有據", "依比賽回饋、行動紀錄與"]);
+    expect(result[0]?.fontWeight).toBe(700);
+    expect(result[1]?.fontWeight).toBe(400);
   });
 });
 
