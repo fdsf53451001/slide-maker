@@ -8,9 +8,11 @@ import {
   buildImageGenerationContract,
   informationDensityInstruction,
   outlineBrevityInstruction,
+  outlineContentAcceptCeiling,
   outlineContentCharBudget,
   outlineContentLength,
   outlineDataFidelityInstruction,
+  outlineDeckOverflowRetryInstruction,
   outlineOverflowRetryInstruction,
   SafeProviderError,
   serializeImageGenerationInput,
@@ -38,9 +40,11 @@ export const SUPPORTED_CODEX_APP_SERVER_VERSION = "0.144.4";
 export {
   informationDensityInstruction,
   outlineBrevityInstruction,
+  outlineContentAcceptCeiling,
   outlineContentCharBudget,
   outlineContentLength,
   outlineDataFidelityInstruction,
+  outlineDeckOverflowRetryInstruction,
   outlineOverflowRetryInstruction,
 };
 
