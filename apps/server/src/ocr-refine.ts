@@ -74,8 +74,13 @@ export interface MaskRect {
 }
 
 export interface OcrRefineOptions {
-  /** 投影片的已知文字來源（大綱 content、layoutHint 等），逐行做模糊比對。 */
-  sourceTexts: readonly string[];
+  /**
+   * 投影片的已知文字來源（大綱 content、layoutHint 等）。
+   *
+   * **目前不再使用**：以此為錨的模糊比對校正已停用，見 `refineOcrBoxes` 的說明。
+   * 欄位保留是為了讓恢復（或改成受限的等價替換）不必動呼叫端簽名。
+   */
+  sourceTexts?: readonly string[];
   /** 原圖像素；提供時會以實際字墨校正每個框的字級與位置。 */
   image?: RasterImage;
   /** 字形量測器；預設用與合成同一條渲染路徑的量測器，測試可注入替身。 */
@@ -248,7 +253,11 @@ export function correctTextFromSources(
   return replacement ? { text: replacement, appendedChars } : unchanged;
 }
 
-function foldSources(sourceTexts: readonly string[]): FoldedText[] {
+/**
+ * 與 `correctTextFromSources` 一組，目前**沒有呼叫端**（校正已停用，見 `refineOcrBoxes`）。
+ * 保留是因為要恢復時（或改成受限的等價替換）需要它，刪掉等於把整套比對重寫一次。
+ */
+export function foldSources(sourceTexts: readonly string[]): FoldedText[] {
   return sourceTexts
     .flatMap((source) => source.split("\n"))
     .map((line) => line.trim())
@@ -826,29 +835,29 @@ export async function applyStyleRefinement(
 }
 
 /**
- * OCR 框的確定性後處理：來源錨定文字校正 → 合併框拆分 → 字墨對位 → 字級聚類。
- * 不依賴外部服務；沒有來源時跳過校正，沒有影像時跳過對位。
+ * OCR 框的確定性後處理：合併框拆分 → 字墨對位 → 字級聚類。
+ * 不依賴外部服務；沒有影像時跳過對位。
  * maskRects 保留每框的「偵測範圍 ∪ 字墨範圍」，抹除遮罩必須用它而非收緊後的
  * 渲染框，否則偵測框邊緣的殘墨會留在背景上。
+ *
+ * **來源錨定文字校正已停用**（`correctTextFromSources` 保留但不再接上）。實測 103 頁
+ * 3657 個框：校正改寫了 624 個，抽樣核對原圖後推估其中約 380 個是改壞的，淨效益為負。
+ * 根因是「圖上的字一定來自大綱」這個前提不成立——投影片文字多半是生圖模型自行擴寫，
+ * 大綱裡只有相似片段，模糊比對於是把正確的 OCR 文字換成鄰近的來源片段
+ *（`UI Agent`→`AI Agent`、`運行中`→`運行狀`、`cli2redmine：提升`→`cli2redmine 與 sl`）。
+ * 短字串受害最重：`MAX_ERROR_RATIO` 是相對比例，行越短越容易通過。
+ *
+ * 代價是 OCR 的三類系統性誤差不再被修（中英文間空格被吃掉、全形標點認成半形、
+ * `OpenAl`／`Devicelnfo` 這類混淆字與簡體混入），以及「標題｜內文」黏成一框且分隔線
+ * 被 OCR 吃掉時不再拆得開（分隔線原本是靠校正從大綱還原的）。
  */
 export async function refineOcrBoxes(
   boxes: readonly EditableTextBox[],
   options: OcrRefineOptions,
 ): Promise<RefineResult> {
-  const sources = foldSources(options.sourceTexts);
-  // 先拆一次：OCR 會把「編號徽章｜問句」「標題｜內文」併進同一框。若整框直接去對位來源，
-  // 完全命中的長段（問句）會稀釋短前綴（徽章「01」）的誤差，讓校正把 OCR 已正確辨識的
-  // 編號改寫成來源的鄰詞（「研究主線」→「主線」）。拆開後逐段各自錨定，徽章在大綱裡找不到
-  // 匹配便原封保留，問句照常校正。
-  const preSplit = boxes.flatMap((box) => splitMergedBox(box));
-  const corrected = preSplit.map((box) => {
-    if (!sources.length) return box;
-    const { text, appendedChars } = correctTextFromSources(box.text, sources);
-    // 補回的行尾標點在原圖上緊接在偵測框右緣之外，放寬框寬讓量測與遮罩蓋到。
-    return { ...box, text, width: box.width + appendedChars * box.fontSize };
-  });
-  // 再拆一次：校正可能還原被 OCR 吃掉的分隔線（｜ 認成「一」或整個漏掉），此時才拆得開。
-  const split = corrected.flatMap((box) => splitMergedBox(box));
+  // OCR 會把「編號徽章｜問句」「標題｜內文」併進同一框，字級差很多時要拆開才不會
+  // 讓內文以標題的大字級粗體渲染。文字本身一律沿用 OCR 的辨識結果。
+  const split = boxes.flatMap((box) => splitMergedBox(box));
   const metrics = options.metrics ?? defaultTextMetrics;
   const maskRects = new Map<string, MaskRect>();
   const inkGeometry = new Map<string, InkGeometry>();

@@ -2464,12 +2464,11 @@ export async function createApp(
     );
     const normalizedInputPath = repository.assetPath(projectId, inputPath.replace(/^assets\//, ""));
     const result = await ocr.recognize(normalizedInputPath);
-    // 投影片文字的生成來源就是大綱：以 content/layoutHint 為錨校正 OCR 誤認字
-    // （簡體混入、破折號認成「一」）、拆開黏成一框的「標題｜內文」，再以原圖
-    // 字墨對位校正字級與位置（偵測框帶 unclip 外擴，直接換算會偏大偏移）。
+    // 拆開黏成一框的「標題｜內文」，再以原圖字墨對位校正字級與位置（偵測框帶
+    // unclip 外擴，直接換算會偏大偏移）。文字本身一律沿用 OCR 的辨識結果：
+    // 以大綱 content/layoutHint 為錨的模糊比對校正已停用（見 `refineOcrBoxes`）。
     const rawImage = await sharp(normalized).raw().toBuffer({ resolveWithObject: true });
     const refined = await refineOcrBoxes(boxesFromOcr(result, project.canvas, threshold), {
-      sourceTexts: [slide.content, slide.layoutHint],
       image: {
         data: new Uint8Array(rawImage.data),
         width: rawImage.info.width,
