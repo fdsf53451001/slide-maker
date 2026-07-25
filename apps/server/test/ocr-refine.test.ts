@@ -54,8 +54,18 @@ function box(overrides: Partial<EditableTextBox>): EditableTextBox {
   };
 }
 
+/** 預設路徑：帶了來源也不修（`textRepair` 未指定即 `"off"`）。 */
 const refine = async (boxes: EditableTextBox[]) =>
   (await refineOcrBoxes(boxes, { sourceTexts: [SLIDE_CONTENT, LAYOUT_HINT] })).boxes;
+
+/** 使用者在抽離文字選單挑「大綱修復」時的路徑。 */
+const repair = async (boxes: EditableTextBox[]) =>
+  (
+    await refineOcrBoxes(boxes, {
+      sourceTexts: [SLIDE_CONTENT, LAYOUT_HINT],
+      textRepair: "outline",
+    })
+  ).boxes;
 
 /** 建立單色底的合成畫布，並以純色矩形模擬字墨帶。 */
 function raster(
@@ -79,20 +89,19 @@ function raster(
   return { data, width, height, channels: 3 };
 }
 
-describe("source-anchored OCR text correction", () => {
-  it("fixes simplified-character misreads and restores designed spacing from the outline", async () => {
-    const [corrected] = await refine([box({ text: "将代理部署至AWS，" })]);
-    expect(corrected?.text).toBe("將代理部署至 AWS，");
+// 預設 `textRepair: "off"`（見 `refineOcrBoxes` 的說明）：即使呼叫端帶了 sourceTexts，
+// 不論大綱裡有沒有相似片段，OCR 辨識到的文字一律原樣保留。
+describe("text repair off (default): OCR text is never rewritten", () => {
+  it("keeps OCR text even when the outline holds a near-identical line", async () => {
+    // 舊行為：命中來源後改寫成「將代理部署至 AWS，」（修好簡體與被吃掉的空格）。
+    const [kept] = await refine([box({ text: "将代理部署至AWS，" })]);
+    expect(kept?.text).toBe("将代理部署至AWS，");
   });
 
-  it("fixes em-dashes misread as 一", async () => {
-    const [corrected] = await refine([box({ text: "把建置一競賽一診斷一" })]);
-    expect(corrected?.text).toBe("把建置—競賽—診斷—");
-  });
-
-  it("matches arrow chains from the layout hint", async () => {
-    const [corrected] = await refine([box({ text: "建置→部署 →協作 →診斷 →理解→移轉" })]);
-    expect(corrected?.text).toBe("建置→部署→協作→診斷→理解→移轉");
+  it("keeps OCR text when only a prefix matches a source line", async () => {
+    // 這正是停用的原因：前綴相同就整段換成來源的鄰詞，把正確的辨識結果改壞。
+    const [kept] = await refine([box({ text: "建置→部署 →協作 →診斷 →理解→移轉" })]);
+    expect(kept?.text).toBe("建置→部署 →協作 →診斷 →理解→移轉");
   });
 
   it("keeps text that has no close match in the sources", async () => {
@@ -104,6 +113,67 @@ describe("source-anchored OCR text correction", () => {
     const [kept] = await refine([box({ text: "5" })]);
     expect(kept?.text).toBe("5");
   });
+
+  it("does not append trailing punctuation that only exists in the source", async () => {
+    // 舊行為：補上大綱行尾的「。」並放寬框寬；圖上沒有這個字時等於憑空多一個標點。
+    const footer = box({
+      text: "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法",
+      width: 1562,
+      fontSize: 48.4,
+    });
+    const [kept] = await refine([footer]);
+    expect(kept?.text).toBe("重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法");
+    expect(kept?.width).toBeCloseTo(1562, 1);
+  });
+});
+
+// 使用者在抽離文字選單挑「大綱修復」時走的路徑：以大綱為錨改寫 OCR 誤認字。
+// 這是 opt-in，取捨（會把不在大綱裡的字改成大綱的相似片段）由使用者自己決定。
+describe('text repair "outline": rewrites OCR text from the slide outline', () => {
+  it("fixes simplified-character misreads and restores designed spacing", async () => {
+    const [corrected] = await repair([box({ text: "将代理部署至AWS，" })]);
+    expect(corrected?.text).toBe("將代理部署至 AWS，");
+  });
+
+  it("fixes em-dashes misread as 一", async () => {
+    const [corrected] = await repair([box({ text: "把建置一競賽一診斷一" })]);
+    expect(corrected?.text).toBe("把建置—競賽—診斷—");
+  });
+
+  it("appends the source's trailing full-width punctuation and widens the box", async () => {
+    const footer = box({
+      text: "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法",
+      width: 1562,
+      fontSize: 48.4,
+    });
+    const [corrected] = await repair([footer]);
+    expect(corrected?.text).toBe(
+      "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法。",
+    );
+    expect(corrected?.width).toBeCloseTo(1562 + 48.4, 1);
+  });
+
+  it("keeps text that has no close match in the sources", async () => {
+    const [kept] = await repair([box({ text: "全然無關的浮水印" })]);
+    expect(kept?.text).toBe("全然無關的浮水印");
+  });
+
+  it("restores a separator swallowed by OCR so the merged box can split", async () => {
+    // 分隔線只存在於大綱裡，這一框要靠校正還原「｜」才拆得開。
+    const merged = box({
+      text: "改進有據依比賽回饋、行動紀錄與",
+      x: 953,
+      y: 496,
+      width: 513,
+      height: 65,
+      fontSize: 50.7,
+      fontWeight: 700,
+    });
+    const result = await repair([merged]);
+    expect(result.map((item) => item.text)).toEqual(["改進有據", "依比賽回饋、行動紀錄與"]);
+    expect(result[0]?.fontWeight).toBe(700);
+    expect(result[1]?.fontWeight).toBe(400);
+  });
 });
 
 describe("merged heading/body box splitting", () => {
@@ -111,7 +181,7 @@ describe("merged heading/body box splitting", () => {
     // 第八頁卡片 4 實測值：標題「改進有據」(48px 粗體) 與內文黏成一框，
     // 內文因此以 50.7px 粗體渲染。
     const merged = box({
-      text: "改進有據依比賽回饋、行動紀錄與",
+      text: "改進有據｜依比賽回饋、行動紀錄與",
       x: 953,
       y: 496,
       width: 513,
@@ -132,6 +202,22 @@ describe("merged heading/body box splitting", () => {
     expect(body!.x + body!.width).toBeLessThanOrEqual(merged.x + merged.width + 1);
   });
 
+  it("no longer splits when OCR swallowed the separator entirely", async () => {
+    // 停用來源錨定校正的已知退化：分隔線原本是靠大綱還原的（OCR 把 ｜ 認成「一」或
+    // 整個漏掉時），沒有來源可對，這一框就只能整段留著、以標題的字級渲染。
+    const merged = box({
+      text: "改進有據依比賽回饋、行動紀錄與",
+      x: 953,
+      y: 496,
+      width: 513,
+      height: 65,
+      fontSize: 50.7,
+      fontWeight: 700,
+    });
+    const result = await refine([merged]);
+    expect(result.map((item) => item.text)).toEqual(["改進有據依比賽回饋、行動紀錄與"]);
+  });
+
   it("does not split when both sides render at a similar size", () => {
     const inline = box({ text: "上半場｜下半場", width: 420, fontSize: 30, height: 38 });
     expect(splitMergedBox(inline)).toHaveLength(1);
@@ -146,9 +232,9 @@ describe("merged heading/body box splitting", () => {
 });
 
 describe("number badge glued to body text by OCR", () => {
-  it("splits before correcting so the badge digits are not rewritten into a source neighbour", async () => {
-    // 封面研究主線實測：OCR 把數字徽章「01」併進後方問句成同一框。整框先去對位來源時，
-    // 完全命中的問句會稀釋「01」的誤差，讓校正把它改寫成來源鄰詞「主線」。先拆再校正即可避免。
+  it("splits the badge from the question without pulling in source wording", async () => {
+    // 封面研究主線實測：OCR 把數字徽章「01」併進後方問句成同一框，拆開後兩段各自成框。
+    // 校正停用後這一框不再有被改寫成來源鄰詞（「研究主線」→「主線」）的可能。
     const raw = {
       width: 1920,
       height: 1080,
@@ -173,21 +259,6 @@ describe("number badge glued to body text by OCR", () => {
     expect(texts).toContain("01");
     expect(texts).toContain("它為何受到關注？");
     expect(texts).not.toContain("主線");
-  });
-});
-
-describe("trailing punctuation restore", () => {
-  it("appends the source's trailing full-width punctuation and widens the box", async () => {
-    const footer = box({
-      text: "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法",
-      width: 1562,
-      fontSize: 48.4,
-    });
-    const [corrected] = await refine([footer]);
-    expect(corrected?.text).toBe(
-      "重點：目標不是只贏一場，而是帶走一套能建置、驗證與改進自主系統的方法。",
-    );
-    expect(corrected?.width).toBeCloseTo(1562 + 48.4, 1);
   });
 });
 
@@ -372,7 +443,7 @@ describe("font size clustering", () => {
 });
 
 describe("end-to-end refinement of the slide-8 regression", () => {
-  it("corrects, splits, and unifies the real page-8 boxes", async () => {
+  it("leaves every OCR string untouched and still unifies body font sizes", async () => {
     const boxes = [
       box({
         id: "title",
@@ -399,18 +470,15 @@ describe("end-to-end refinement of the slide-8 regression", () => {
       box({ id: "b3", text: "接入即時比賽環境", fontSize: 27.3, height: 35 }),
     ];
     const result = await refine(boxes);
+    // 大綱裡有這幾行的正確寫法，校正停用後一律不套用：簡體、被吃掉的空格、
+    // 行尾頓號都維持 OCR 讀到的樣子，合併框也因為沒有分隔線而不拆。
+    expect(result.map((item) => item.text)).toEqual(boxes.map((item) => item.text));
+    // 幾何後處理不受影響：內文群仍貼齊同一字級。
     const byText = new Map(result.map((item) => [item.text, item]));
-    expect(byText.get("活動目標：用一場球賽，完成代理式 AI 的實戰閉環")).toBeDefined();
-    expect(byText.get("將代理部署至 AWS，")).toBeDefined();
-    // 原圖在此換行點確實渲染了行尾頓號，標點補回會還原它。
-    expect(byText.get("理解提示、結構化輸出、")).toBeDefined();
-    // 合併框拆開後，標題群與內文群各自貼齊同一字級。
-    const heading = byText.get("改進有據");
-    const body = byText.get("依比賽回饋、行動紀錄與");
-    expect(heading).toBeDefined();
+    const body = byText.get("将代理部署至AWS，");
     expect(body).toBeDefined();
-    expect(heading?.fontSize).toBe(byText.get("部署得動")?.fontSize);
     expect(body?.fontSize).toBe(byText.get("接入即時比賽環境")?.fontSize);
+    expect(body?.fontSize).toBe(byText.get("理解提示、结構化輸出")?.fontSize);
     expect(body?.fontWeight).toBe(400);
   });
 });
