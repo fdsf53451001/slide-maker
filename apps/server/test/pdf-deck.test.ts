@@ -9,7 +9,11 @@ import {
   renderDeckPages,
   renderDeckPreviews,
 } from "../src/pdf-deck.js";
-import { renderDeckPagesInThread } from "../src/pdf-deck-render.js";
+import {
+  inspectLoadedDeck,
+  loadPdfDocument,
+  renderDeckPagesInThread,
+} from "../src/pdf-deck-render.js";
 import { extractPdfTextLayer } from "../src/pdf-text-layer.js";
 
 interface TestPage {
@@ -112,6 +116,46 @@ describe("inspectPdfDeck", () => {
     await expect(
       inspectPdfDeck(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x00])),
     ).rejects.toThrow("PDF_RENDER_FAILED");
+  });
+});
+
+/**
+ * fix #2（inspect 無 per-page 隔離）的回歸測試。
+ *
+ * 造一份第 1 頁合法 16:9 的 PDF，再把某一頁的 `getPage` 換成 reject 來模擬 page dict／
+ * page tree 損壞（造真的損壞 fixture 太難）。斷言 inspect 不會因單頁而整份 throw，
+ * 損壞頁記進 `failedPages`；若損壞的是參考頁（第 1 頁）則回可讀的具名錯誤。
+ */
+describe("inspectLoadedDeck per-page isolation", () => {
+  type PatchableDoc = { getPage: (pageNumber: number) => Promise<unknown> };
+
+  it("單頁 page dict 損壞時仍回傳其餘頁，損壞頁記進 failedPages", async () => {
+    const document = await loadPdfDocument(await makeDeck([{}, {}, {}]));
+    try {
+      const realGetPage = document.getPage.bind(document);
+      (document as unknown as PatchableDoc).getPage = (pageNumber) =>
+        pageNumber === 2 ? Promise.reject(new Error("bad page dict")) : realGetPage(pageNumber);
+      const inspection = await inspectLoadedDeck(document);
+      expect(inspection.failedPages).toEqual([2]);
+      expect(inspection.acceptedPages).toEqual([1, 3]);
+      expect(inspection.skippedPages).toEqual([]);
+      expect(inspection.pages.map((page) => page.pageNumber)).toEqual([1, 3]);
+      expect(inspection.totalPages).toBe(3);
+    } finally {
+      await document.destroy().catch(() => undefined);
+    }
+  });
+
+  it("參考頁（第 1 頁）損壞時給出可讀的具名錯誤，而非裸 pdf.js 錯誤", async () => {
+    const document = await loadPdfDocument(await makeDeck([{}, {}]));
+    try {
+      const realGetPage = document.getPage.bind(document);
+      (document as unknown as PatchableDoc).getPage = (pageNumber) =>
+        pageNumber === 1 ? Promise.reject(new Error("bad page dict")) : realGetPage(pageNumber);
+      await expect(inspectLoadedDeck(document)).rejects.toThrow("PDF_FIRST_PAGE_UNREADABLE");
+    } finally {
+      await document.destroy().catch(() => undefined);
+    }
   });
 });
 
