@@ -10,6 +10,7 @@ import {
   editableTextBoxSchema,
   isRedactedKey,
   logError,
+  logInfo,
   logWarn,
   modelConnectionSchema,
   modelCombinationSchema,
@@ -59,6 +60,7 @@ import {
   parseCodexModel,
   parseCodexReasoningEffort,
   parseCodexTimeoutMs,
+  parseImageDescriptionMode,
   parseOcrDetSideLen,
   parseOcrModelTier,
   parseOpenAiBaseUrl,
@@ -88,6 +90,15 @@ import {
   renderDeckPreviews,
 } from "./pdf-deck.js";
 import { ingestSource, safeFilename, searchSources } from "./sources.js";
+import {
+  IMAGE_DESCRIPTION_FAILURE_KEY,
+  ImageDescriptionQueue,
+  classifyImageDescriptionFailure,
+  describeImage,
+  imageDescriptionFields,
+  shouldDescribeImageSource,
+  type ImageDescriptionFailure,
+} from "./image-description.js";
 import {
   exportFilename,
   exportPresentation,
@@ -447,9 +458,35 @@ export async function createApp(
     parseOptionalString(process.env.SLIDE_MAKER_SEARCH_INDEX_PATH) ??
       join(dataRoot, "index", "sources.sqlite"),
   );
-  for (const project of await repository.listProjects())
-    retriever.index(project.id, project.sources);
+  // 上一輪程序在圖片描述途中被砍時，來源會永遠停在 parsing：背景描述沒有持久化，重啟後
+  // 沒有人接手，前端就一直顯示「分析中」。放回 indexed——那正是「沒有描述」這個既有狀態。
+  // 刻意不動 updatedAt：這是修復而非編輯，動了會打亂專案列表的排序。
+  const clearStalledParsing = async (
+    project: PresentationProject,
+  ): Promise<PresentationProject> => {
+    if (!project.sources.some((source) => source.status === "parsing")) return project;
+    logWarn("image_description_parsing_reset", { projectId: project.id });
+    // 走 updateProject 而不是拿列表快照直接 saveProject：後者的讀在鎖外，等於用一份可能
+    // 過期的整份專案盲寫回去。
+    return repository
+      .updateProject(project.id, (draft) => {
+        for (const source of draft.sources)
+          if (source.status === "parsing") source.status = "indexed";
+        return structuredClone(draft);
+      })
+      .catch((error: unknown) => {
+        logWarn("image_description_parsing_reset_failed", { projectId: project.id }, error);
+        return project;
+      });
+  };
+  for (const project of await repository.listProjects()) {
+    const repaired = await clearStalledParsing(project);
+    retriever.index(repaired.id, repaired.sources);
+  }
   const codexSandbox = process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX === "1";
+  // 上傳圖片是否自動跑背景描述（預設 on）。這是唯一由「上傳檔案」觸發的模型呼叫，
+  // 配額敏感或離線的部署要能整條關掉，而不是靠使用者逐張取消勾選。
+  const imageDescriptionMode = parseImageDescriptionMode(process.env.SLIDE_MAKER_IMAGE_DESCRIPTION);
   // env 提供 seed 素材與 system 未設時的回退預設；模型庫存在後即以 JSON 為準。
   const envDefaults = {
     codexTimeoutMs: parseCodexTimeoutMs(process.env.SLIDE_MAKER_CODEX_TIMEOUT_MS),
@@ -547,6 +584,126 @@ export async function createApp(
   // 依專案綁定的組合解析文字／搜尋 provider（無 project 時退回預設組合）。
   const resolveStructuredText = (project?: PresentationProject): StructuredTextProvider =>
     runtime.resolveTextProvider(project?.combinationId);
+
+  // 圖片來源的背景描述佇列。上傳端點只負責排隊，絕不等它。
+  const imageDescriptions = new ImageDescriptionQueue();
+
+  /**
+   * 現在有沒有可用的文字模型可以跑圖片描述。
+   *
+   * 這件事必須在回應 201 之前就知道：沒有可用模型時連 `parsing` 都不該標，否則前端會閃
+   * 一下「分析中」再默默變回去。解析失敗（組合沒設文字模型、模型庫沒有預設組合）屬可選
+   * 步驟的正常降級，安靜略過。`SLIDE_MAKER_IMAGE_DESCRIPTION=off` 時整條路直接不存在。
+   */
+  const imageDescriptionProvider = (
+    project: PresentationProject,
+  ): StructuredTextProvider | undefined => {
+    if (imageDescriptionMode === "off") return undefined;
+    try {
+      const provider = resolveStructuredText(project);
+      return provider.availability.status === "available" ? provider : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * 把卡在 parsing 的來源放回 indexed，並記下失敗原因。
+   *
+   * 狀態不收尾的話前端會一直轉圈；而只收尾不記原因的話，「跑過但失敗」與「從來沒跑過」
+   * 在 UI 上長得一模一樣——最常見的失敗（選到的文字模型不會讀圖）就會變成每上傳一張圖
+   * 都白打一次請求，使用者卻永遠看不到線索。
+   */
+  const releaseParsingStatus = async (
+    projectId: string,
+    sourceId: string,
+    failure?: ImageDescriptionFailure,
+  ): Promise<void> => {
+    try {
+      await repository.updateProject(projectId, (draft) => {
+        const target = draft.sources.find((item) => item.id === sourceId);
+        if (!target) return;
+        if (target.status === "parsing") target.status = "indexed";
+        if (failure) target.metadata[IMAGE_DESCRIPTION_FAILURE_KEY] = failure;
+      });
+    } catch (error) {
+      logWarn("image_description_release_failed", { projectId, sourceId }, error);
+    }
+  };
+
+  /**
+   * 背景產生圖片來源的可檢索描述，並寫回 extractedText／chunks／索引。
+   *
+   * 全程可降級：任何一步失敗都只留一筆 log，來源回到「沒有描述」的既有狀態，上傳本身
+   * 早已回過 201，不受影響。provider 在工作真正開跑時才解析，排隊期間使用者換了模型組合
+   * 也算數。
+   */
+  const scheduleImageDescription = (projectId: string, sourceId: string): void => {
+    void imageDescriptions.enqueue(async (signal) => {
+      try {
+        if (signal.aborted) throw new Error("IMAGE_DESCRIPTION_ABORTED");
+        const current = await repository.loadProject(projectId);
+        const source = current?.sources.find((item) => item.id === sourceId);
+        // 排隊期間來源（或整個專案）被刪掉：沒有東西要收尾，也沒有失敗可言。
+        if (!current || !source) return;
+        // **授權要在送出的那一刻重新確認，不是排隊的那一刻。**一次拖五張圖時後面幾張會
+        // 排隊十幾秒，使用者這段時間完全可能取消某張的「AI 使用」或改掉用途；沿用排隊當時
+        // 的判斷等於把圖片照樣送出去。這是這個功能唯一的硬條件，只能以最新狀態為準。
+        if (!shouldDescribeImageSource(source)) {
+          await releaseParsingStatus(projectId, sourceId);
+          return;
+        }
+        const provider = imageDescriptionProvider(current);
+        if (!provider) throw new Error("IMAGE_DESCRIPTION_PROVIDER_UNAVAILABLE");
+        const description = await describeImage({
+          provider,
+          imagePath: repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
+          language: current.brief.language,
+          timeoutMs: runtime.system.codexTimeoutMs,
+          signal,
+        });
+        const fields = imageDescriptionFields(sourceId, description);
+        if (!fields) throw new Error("IMAGE_DESCRIPTION_EMPTY");
+        const entry = runtime.library.models.find((model) => model.id === provider.id);
+        const updated = await repository.updateProject(projectId, (draft) => {
+          const target = draft.sources.find((item) => item.id === sourceId);
+          if (!target) return undefined;
+          // in-flight 的那一段擋不住「已經送出去了」，但至少不讓它落地：使用者在請求途中
+          // 收回授權時，描述不得寫進專案，也就不會進到大綱 prompt。
+          if (!target.allowModelAccess) {
+            if (target.status === "parsing") target.status = "indexed";
+            return undefined;
+          }
+          target.extractedText = fields.extractedText;
+          target.chunks = fields.chunks;
+          target.status = "indexed";
+          // 模型衍生物必須可查證：留下是誰產生的這份描述。
+          target.metadata = {
+            ...target.metadata,
+            imageDescriptionProvider: provider.id,
+            imageDescriptionModel: entry?.model || entry?.name || "unknown",
+            imageDescribedAt: new Date().toISOString(),
+          };
+          delete target.metadata[IMAGE_DESCRIPTION_FAILURE_KEY];
+          target.updatedAt = new Date().toISOString();
+          // 刻意不動 draft.updatedAt：那是「使用者改了這個專案」的時間戳，專案列表照它排序。
+          // 背景寫入去碰它的話，使用者離開專案十幾秒後它會自己跳到列表最前面。
+          return structuredClone(draft);
+        });
+        if (!updated) return;
+        retriever.index(updated.id, updated.sources);
+        logInfo("image_description_indexed", {
+          projectId,
+          sourceId,
+          chunkCount: fields.chunks.length,
+        });
+      } catch (error) {
+        const failure = classifyImageDescriptionFailure(error);
+        logWarn("image_description_failed", { projectId, sourceId, failure }, error);
+        await releaseParsingStatus(projectId, sourceId, failure);
+      }
+    });
+  };
   const searchFor =
     (project: PresentationProject) =>
     (query: string, limit: number, target: PresentationProject): Promise<WebSearchResult[]> => {
@@ -767,6 +924,8 @@ export async function createApp(
   await jobs.recoverInterruptedJobs();
   app.locals.jobRunner = jobs;
   app.locals.providerReadiness = readiness;
+  // 關機時要 abort 進行中的描述請求並丟掉排隊中的工作（見 shutdown.ts）。
+  app.locals.imageDescriptions = imageDescriptions;
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "8mb" }));
@@ -2700,7 +2859,14 @@ export async function createApp(
           name: z.string().min(1),
           mediaType: z.string().min(1),
           usage: sourceUsageSchema.optional(),
-          allowModelAccess: z.coerce.boolean().default(true),
+          // **不可用 `z.coerce.boolean()`**：query string 一律是字串，而 `Boolean("false")`
+          // 與 `Boolean("0")` 都是 `true`，等於這個欄位永遠關不掉。以前只是「欄位標錯」，
+          // 加入圖片描述之後它變成外送決策——`shouldDescribeImageSource()` 的授權閘門會
+          // 直接失效，使用者明明選了不給 AI 讀取，圖片照樣送去模型。
+          allowModelAccess: z
+            .enum(["true", "false"])
+            .default("true")
+            .transform((value) => value === "true"),
         })
         .parse(request.query);
       const bytes =
@@ -2719,6 +2885,10 @@ export async function createApp(
         `sources/${source.id}/${safeFilename(source.name)}`,
         bytes,
       );
+      // 圖片的內容描述在背景跑，但「要不要跑」現在就得決定：先標成 parsing，201 的回應
+      // 本身就帶著這個狀態，前端不必等下一次輪詢才知道有東西正在分析。
+      const describable = shouldDescribeImageSource(source) && !!imageDescriptionProvider(existing);
+      if (describable) source.status = "parsing";
       const project = await repository.updateProject(projectId, (current) => {
         if (
           current.sources.length >= 100 ||
@@ -2731,6 +2901,7 @@ export async function createApp(
         return structuredClone(current);
       });
       retriever.index(project.id, project.sources);
+      if (describable) scheduleImageDescription(project.id, source.id);
       response.status(201).json(project);
     },
   );
@@ -2922,16 +3093,36 @@ export async function createApp(
         name: z.string().trim().min(1).max(255).optional(),
         usage: sourceUsageSchema.optional(),
         allowModelAccess: z.boolean().optional(),
+        /**
+         * 改成「視覺參考」時要不要順便補跑一次內容描述。
+         *
+         * 預設 false，且必須由前端在**跟使用者確認過會呼叫模型、消耗配額**之後才送 true：
+         * 這條路是使用者在下拉選單裡改個用途就觸發模型呼叫，靜默地做等於偷花配額。
+         */
+        describeImage: z.boolean().optional(),
       })
       .parse(request.body);
+    let describable = false;
     const project = await repository.updateProject(projectId, (current) => {
       const source = current.sources.find((item) => item.id === sourceId);
       if (!source) throw new Error("Source not found");
-      Object.assign(source, patch, { updatedAt: new Date().toISOString() });
+      const { describeImage: _requested, ...fields } = patch;
+      Object.assign(source, fields, { updatedAt: new Date().toISOString() });
+      // 冪等由 shouldDescribeImageSource（已經有文字的不再跑）與這裡的 `parsing` 檢查一起
+      // 保證。少了後者有一條可達路徑會讓同一張圖跑兩次：上傳（parsing）→ 改「直接素材」
+      // （狀態不會清、在途工作照跑）→ 改回「視覺參考」並同意 → 又排一次。`shouldDescribe`
+      // 自己不能檢查 `parsing`，因為背景工作送出前的重新確認正是在 parsing 狀態下做的。
+      describable =
+        patch.describeImage === true &&
+        source.status !== "parsing" &&
+        shouldDescribeImageSource(source) &&
+        !!imageDescriptionProvider(current);
+      if (describable) source.status = "parsing";
       current.updatedAt = source.updatedAt!;
       return structuredClone(current);
     });
     retriever.index(project.id, project.sources);
+    if (describable) scheduleImageDescription(project.id, sourceId);
     response.json(project);
   });
 
@@ -3017,6 +3208,12 @@ export async function createApp(
         id,
         name: `${bundle.project.name}（匯入）`,
         jobs: [],
+        // 封存可能是在描述途中做的，於是 parsing 被烘進 zip 裡。啟動修復早就跑完了，
+        // 新專案 id 也沒有任何背景工作認得，留著就是前端永遠顯示「AI 分析圖片內容中…」
+        // 並每 1.5 秒輪詢一次。狀態是執行期的東西，不該跟著封存跨程序旅行。
+        sources: bundle.project.sources.map((source) =>
+          source.status === "parsing" ? { ...source, status: "indexed" as const } : source,
+        ),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };

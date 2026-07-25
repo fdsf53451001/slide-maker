@@ -1,5 +1,6 @@
 import type { SourceAsset } from "@slide-maker/core";
 import type { RetrievedChunk, SqliteFtsRetriever } from "./retriever.js";
+import { SOURCE_CHUNK_CHARS } from "./sources.js";
 
 export interface SourceContextChunk {
   id: string;
@@ -127,7 +128,9 @@ export function knownSourceContext(
       name: chunk.sourceName,
       url: source?.metadata.url,
       locator: chunk.locator,
-      text: chunk.text.slice(0, 1_600),
+      // 與切塊視窗同一個數字：切塊那端已經把衍生內容的前綴算進去了，這裡再用另一個字面量
+      // 的話，兩者一旦不同步就會默默切掉每一塊的尾巴。
+      text: chunk.text.slice(0, SOURCE_CHUNK_CHARS),
     };
   });
 }

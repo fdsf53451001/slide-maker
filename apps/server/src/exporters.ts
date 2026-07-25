@@ -333,7 +333,16 @@ async function exportProject(
   project: PresentationProject,
 ): Promise<Uint8Array> {
   const entries = await collectFiles(repository.projectRoot(project.id));
-  entries["project.json"] = strToU8(`${JSON.stringify(project, null, 2)}\n`);
+  // `parsing` 是執行期狀態（背景圖片描述正在跑），不該跟著封存跨程序旅行：解開它的那個
+  // 程序沒有任何工作認得這筆來源，前端會永遠停在「分析中」。封存當下的真實狀態就是
+  // 「這張圖還沒有描述」＝ indexed。匯入端另有一道同樣的正規化，處理舊版做出來的封存。
+  const archived: PresentationProject = {
+    ...project,
+    sources: project.sources.map((source) =>
+      source.status === "parsing" ? { ...source, status: "indexed" as const } : source,
+    ),
+  };
+  entries["project.json"] = strToU8(`${JSON.stringify(archived, null, 2)}\n`);
   return zipSync(entries, { level: 6 });
 }
 

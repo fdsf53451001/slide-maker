@@ -1495,7 +1495,9 @@ describe("Editor MVP navigation", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/web-sources"))).toBe(
       false,
     );
-    fireEvent.click(screen.getAllByRole("checkbox")[1]!);
+    // 依可及名稱挑，不用 getAllByRole(...)[1]：面板上還有別的 checkbox（例如上傳前的
+    // 「不要讓 AI 讀取這批檔案」），位置索引會隨著周邊 UI 增減而指到別的東西。
+    fireEvent.click(screen.getByRole("checkbox", { name: /Secondary result/ }));
     fireEvent.click(screen.getByRole("button", { name: "加入所選來源（1）" }));
 
     await waitFor(() =>
