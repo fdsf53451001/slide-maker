@@ -1322,7 +1322,9 @@ header {
 .stage {
   min-width: 0;
   min-height: 0;
-  padding: 20px clamp(24px, 4vw, 64px);
+  /* 左右留白刻意比視覺舒適值再緊一些：畫布在寬度受限的視窗（全螢幕 1920×1080／2560×1440）
+     下，這裡每省下的寬度都直接變成更大的畫布；高度受限的視窗則不受影響。見 .text-layer-rail。 */
+  padding: 20px clamp(20px, 2.4vw, 40px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1346,12 +1348,33 @@ header {
   letter-spacing: 0.06em;
 }
 .stage-meta-actions {
-  flex: none;
+  /*
+   * 文字圖層的操作說明也擠在這一排。空間不足時的收縮順序是刻意安排的：
+   * 這一排的 shrink 權重遠高於左邊的「頁面目的」（目的是內容，說明只是提示），
+   * 排內又只有說明那一段可縮——按鈕與狀態字都是 flex: none，否則按鈕會被壓到換行、
+   * 整條 meta 變兩行高，反而吃掉畫布。
+   */
+  flex: 0 999 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
 }
+/* 文字圖層操作說明／重繪狀態：一行寫不完就截斷，完整內容留在 title。
+   選擇器要含父層，否則下面那條 `.stage-meta-actions > span` 的顏色會蓋掉它。 */
+.stage-meta-actions .text-layer-status {
+  /* 保留 8ch，讓「N 個文字框」那截在最窄的視窗也讀得到，不然提示等於消失。 */
+  flex: 0 1 auto;
+  min-width: 8ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #89a0bc;
+  font-size: 10px;
+}
 .stage-meta-actions button {
+  flex: none;
+  white-space: nowrap;
   border: 0;
   border-right: 1px solid #303b50;
   padding: 2px 12px 2px 0;
@@ -1371,15 +1394,30 @@ header {
   cursor: default;
 }
 .stage-meta-actions > span {
+  flex: none;
+  white-space: nowrap;
   color: var(--text-dim-2);
 }
-.canvas-fit {
+/* 畫布 + 右側垂直工具列。垂直空間由 .canvas-fit 吃滿，工具列只佔水平方向。 */
+.canvas-row {
   flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.canvas-fit {
+  /* `.text-layer-progress` 的定位容器。**必須顯式寫 relative**：下面的 `container-type: size`
+     看起來像會建立包含塊，實測不會（computed `contain` 仍是 none），少了這行狀態欄會掉到
+     viewport 底部。 */
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  margin-bottom: 12px;
   overflow: hidden;
   /* 畫布要照 --ar 算出精確的 letterbox 尺寸，需要一個「兩軸都可查詢」的容器。 */
   container-type: size;
@@ -1516,7 +1554,8 @@ header {
   color: #111;
 }
 .versions {
-  margin-top: 28px;
+  /* 沒有「版本歷史」標題了，縮圖列直接貼在畫布下方，省下的高度歸畫布。 */
+  margin-top: 10px;
 }
 .version-list {
   display: flex;
@@ -1524,7 +1563,6 @@ header {
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 10px;
-  margin-top: 10px;
   min-height: 68px;
   /* 一列的高度：縮圖 + 版本名稱 + 時間戳，有 label 的版本才會用到滿。 */
   max-height: 100px;
@@ -2047,14 +2085,10 @@ header {
   color: var(--accent-soft);
   background: rgba(var(--accent-rgb), 0.07);
 }
-.source-panel-intro {
-  margin: -3px 0 13px;
-  color: #77859a;
-  font-size: 11px;
-  line-height: 1.6;
-}
 .source-add-actions {
+  /* 2×2：一列兩顆、共兩列。四顆等寬（`1fr`，不是 `auto`）才不會因為標題長度不同而長短腳。 */
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .upload-source,
@@ -2066,7 +2100,8 @@ header {
   border: 1px dashed var(--accent);
   border-radius: 7px;
   color: var(--accent-soft);
-  padding: 13px 16px;
+  /* 兩欄之後每顆只有約 150px 寬，左右留白得收窄，否則副標的每一行都被擠掉一兩個字。 */
+  padding: 12px 10px;
   text-align: center;
   cursor: pointer;
   font-size: 11px;
@@ -2087,6 +2122,8 @@ header {
     9px "DM Mono",
     monospace;
   letter-spacing: 0.04em;
+  /* 窄欄裡副標一定會折行；平衡各行長度，免得最後一行只剩「文」或「· JPG」一小截。 */
+  text-wrap: balance;
 }
 .upload-source input {
   display: none;
@@ -3534,40 +3571,103 @@ header {
   left: -6px;
   cursor: nw-resize;
 }
-.text-layer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 10px;
-  border: 1px solid #2f4562;
-  border-top: 0;
-  background: #101a29;
-}
-.text-layer-toolbar span {
-  margin-right: auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #89a0bc;
-  font-size: 10px;
-}
-.text-layer-toolbar button {
+/*
+ * 文字圖層工具列：畫布右側的垂直側欄，**只有圖示**、名稱走 aria-label + title。
+ *
+ * 側欄佔的是水平方向，而畫布受限於哪一軸要看視窗（實測 16:9 畫布）：
+ * ・最大化的瀏覽器（1920×940、2560×1300 這種被 chrome 吃掉高度的視窗）＝**高度**受限，
+ *   側欄的寬度不影響畫布大小；
+ * ・全螢幕／無 chrome 的 1920×1080、2560×1440 ＝**寬度**受限，下方反而有 130–190px 空白，
+ *   這時側欄每一個 px 都是從畫布身上拿的。
+ * 圖示化就是為了在後者也幾乎不從畫布身上拿寬度（一排文字標籤要 88px，單欄圖示只要 42px）。
+ */
+.text-layer-rail {
   flex: none;
+  /* 單欄：一行一顆，側欄保持最窄（畫布的寬度比側欄的高度值錢）。 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid #2f4562;
+  background: #101a29;
+  /* 貼齊畫布頂端、只佔內容需要的高度：拉滿整列會在畫布下方留一條空盒子。
+     視窗矮的時候讓側欄自己滾，不去推高畫布列。 */
+  align-self: flex-start;
+  max-height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+.text-layer-rail button {
+  flex: none;
+  /* 正方形觸擊區：圖示只有 15px，靠盒子把它撐到可靠點得到的大小。 */
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 1px solid #3c506c;
   border-radius: 4px;
-  padding: 6px 9px;
   color: #dce7f5;
   background: #172438;
   cursor: pointer;
-  font-size: 10px;
 }
-.text-layer-toolbar button:disabled {
+/* 圖示鈕沒有文字說明，滑過時要看得出「這是可以按的」，tooltip 才有人願意等它浮出來。 */
+.text-layer-rail button:hover:not(:disabled) {
+  border-color: var(--accent-soft);
+  color: #fff;
+  background: #1d2f49;
+}
+.text-layer-rail button:disabled {
   opacity: 1;
   background: #131c2a;
   border-color: #2a3a54;
-  color: #8291a6;
+  color: #6c7c92;
   cursor: not-allowed;
+}
+/*
+ * 文字圖層進行中的工作（重繪／抽取文字）。
+ *
+ * 絕對定位浮在畫布欄底部，不佔版面高度：自動儲存在每次編輯後都會出現一次，若它撐開版面，
+ * 畫布就會在打字途中反覆縮放。定位容器是 `.canvas-fit`（那邊有顯式的 `position: relative`）：
+ * 掛在畫布欄而不是整列（`.canvas-row`），這條才會對齊畫布中線而不是被側欄推偏。
+ */
+.text-layer-progress {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 5px 11px;
+  border: 1px solid #35506f;
+  border-radius: 999px;
+  background: rgba(11, 17, 28, 0.92);
+  color: #cfe0f2;
+  font-size: 11px;
+  white-space: nowrap;
+  /* 只是狀態回報，不該攔住底下畫布的點擊。 */
+  pointer-events: none;
+}
+.text-layer-progress-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: text-layer-progress-pulse 1.1s ease-in-out infinite;
+}
+@keyframes text-layer-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 .text-extraction-control {
   display: flex;
@@ -4281,7 +4381,6 @@ textarea:focus-visible,
    metadata stay compact on purpose — this is a fix, not a density overhaul. */
 .provider-note,
 .provider-warning,
-.source-panel-intro,
 .source-empty,
 .source-empty span,
 .web-source-error,
