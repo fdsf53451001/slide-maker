@@ -114,7 +114,7 @@ describe("大綱 content 超標的重試收斂與降級", () => {
   };
 
   const regenerateSlide = (projectId: string, slideId: string) =>
-    post<PresentationProject & { error?: string }>(
+    post<PresentationProject & { error?: string; message?: string }>(
       `/api/projects/${projectId}/slides/${slideId}/outline`,
       {},
     );
@@ -361,6 +361,9 @@ describe("大綱 content 超標的重試收斂與降級", () => {
 
     expect(status).toBe(400);
     expect(body.error).toBe("CODEX_OUTLINE_CONTENT_UNREADABLE");
+    // 這是使用者唯一還會看到的長度失敗：裸碼在編輯器裡等於叫人再按一次，而再按一次
+    // 通常是同樣結果。訊息必須翻譯過並指出可行的下一步（降密度／拆頁）。
+    expect(body.message).toMatch(/密度|拆成兩頁/);
     expect(prompts).toHaveLength(3);
     expect(
       readWarnings().filter((entry) => entry.event === "outline_content_overflow_rejected"),

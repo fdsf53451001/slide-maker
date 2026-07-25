@@ -162,6 +162,10 @@ const PDF_MESSAGES: Record<string, string> = {
   // `CODEX_STRUCTURED_TIMEOUT`。openai 引擎走 SafeProviderError，不經過這裡。
   CODEX_STRUCTURED_TIMEOUT:
     "分析這幾頁花太久已中止。可以直接重試，或少挑幾頁再分析一次；也可以先用預設風格進編輯器。",
+  // 長度重試三輪後仍超出可接受上限的兩倍。這是使用者唯一還會看到的長度失敗，裸碼在這裡
+  // 等於叫人再按一次（而再按一次通常還是同樣結果）：訊息必須指出可行的下一步。
+  CODEX_OUTLINE_CONTENT_UNREADABLE:
+    "模型連續三次都寫出遠超版面容量的內容，這一頁沒有落地。請把資訊密度調低一級，或把這一頁拆成兩頁，再重新產生一次。",
   PDF_SIZE_INVALID: "檔案是空的或超過 100MB 上限。",
   PDF_INVALID: "這不是一份 PDF 檔。",
   PDF_EMPTY: "這份 PDF 沒有任何頁面。",
