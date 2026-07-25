@@ -8,6 +8,9 @@ dist-lib/
 .slide-maker-data/
 .e2e-data/
 .venv-ocr/
+# scripts/ 底下的 Python（local_inpaint.py、OCR 橋接）被 server 以子行程呼叫，執行後
+# 直譯器會就地留下 bytecode 快取，內容依 Python 版本而異，不入版控。
+__pycache__/
 artifacts/
 coverage/
 playwright-report/
