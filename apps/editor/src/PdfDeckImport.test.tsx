@@ -172,9 +172,11 @@ describe("PDF deck import entry point", () => {
           { status: 400 },
         ),
     });
-    const { container } = render(<Editor />);
+    render(<Editor />);
     fireEvent.click(await screen.findByRole("button", { name: "匯入 PDF" }));
-    const input = container.querySelector('input[type="file"]');
+    // 儀表板上還有「匯入專案檔」的隱藏 file input，要指名對話框裡的那一個。
+    const dialog = await screen.findByRole("dialog", { name: "從 PDF 匯入簡報" });
+    const input = dialog.querySelector('input[type="file"]');
     fireEvent.change(input!, {
       target: { files: [new File([new Uint8Array([1, 2, 3])], "deck.pdf")] },
     });

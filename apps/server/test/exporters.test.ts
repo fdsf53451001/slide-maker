@@ -10,6 +10,7 @@ import { PDFDict, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import { randomBytes } from "node:crypto";
 import {
   compressSlideImage,
+  exportFilename,
   exportPresentation,
   resolvePptxConstructor,
   withPageNumber,
@@ -271,4 +272,23 @@ describe("PDF export", () => {
       expect(actual.equals(expected), `第 ${order + 1} 頁`).toBe(true);
     }
   }, 120_000);
+});
+
+describe("exportFilename", () => {
+  /**
+   * `.slide-project` 在使用者的作業系統上沒有關聯程式，點兩下打不開；
+   * 內容既然是 zip，檔名就要以 `.zip` 結尾。URL 的 path segment 不受影響。
+   */
+  it("以 .slide-project.zip 結尾，其他格式維持原副檔名", () => {
+    const project = createProject({ topic: "季度回顧", name: "季度回顧" });
+    expect(exportFilename(project, "slide-project")).toBe("季度回顧.slide-project.zip");
+    expect(exportFilename(project, "png.zip")).toBe("季度回顧.png.zip");
+    expect(exportFilename(project, "pptx")).toBe("季度回顧.pptx");
+    expect(exportFilename(project, "pdf")).toBe("季度回顧.pdf");
+  });
+
+  it("名稱被清成空字串時退回 presentation", () => {
+    const project = createProject({ topic: "x", name: "///" });
+    expect(exportFilename(project, "slide-project")).toBe("presentation.slide-project.zip");
+  });
 });

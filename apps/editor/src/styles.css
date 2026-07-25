@@ -850,21 +850,52 @@ button {
   justify-content: space-between;
   gap: 24px;
 }
+/* 標題右側擠不下時整排掉到下一行，而不是把標題壓扁。 */
+.dashboard-section-heading {
+  flex-wrap: wrap;
+}
 .dashboard-section-heading h2 {
   margin: 5px 0 0;
   font-size: 21px;
 }
-.dashboard-section-heading > button {
+/*
+  標題右側的動作：可以是單顆按鈕（`style-start-section` 的「查看風格庫 →」），
+  也可以是一組份數文字＋多顆按鈕（`recent-projects` 的兩條匯入入口）。
+  兩種寫法共用同一套外觀，所以選擇器同時涵蓋直接子層與 actions 容器內。
+  注意實際外框來自後面的 `.welcome button`（同分特異性、位置更後面，因此 padding、
+  border、border-radius、font-size 由它決定）；這裡真正生效的是 color 與排版微調。
+*/
+.dashboard-section-heading > button,
+.dashboard-section-actions > button {
   align-self: center;
-  padding: 7px 0;
-  border: 0;
-  background: transparent;
   color: #ff9672;
+  white-space: nowrap;
   cursor: pointer;
 }
-.dashboard-section-heading > span {
+/*
+  匯入中是唯一的進度指示，所以不能套用全域 `button:disabled` 的 opacity: 0.42
+  ——那會讓「匯入中…」這行字掉到約 1.75:1 對比，等於看不見。
+*/
+.dashboard-section-actions > button:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
+.dashboard-section-heading > span,
+.dashboard-section-actions > span {
   color: var(--text-dim-2);
   font-size: 11px;
+}
+.dashboard-section-actions {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 16px;
+  min-width: 0;
+  /* 掉到第二行時 space-between 已經幫不上忙（那是主軸對齊，換行後每行各自從頭排），
+     靠 auto margin 才會繼續貼齊右緣。 */
+  margin-left: auto;
 }
 .style-quick-list {
   display: grid;
@@ -4249,31 +4280,6 @@ textarea:focus-visible,
 /* === PDF 匯入簡報 ===
    首頁的匯入入口、選頁對話框的補充樣式，以及匯入後的風格分析頁。
    選頁網格沿用既有的 .pdf-page* 樣式（同一種 16:9 縮圖挑選介面）。 */
-.import-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 22px 26px;
-  border: 1px solid #2b3850;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #111828, #0c1220);
-}
-.import-panel h2 {
-  margin: 7px 0 6px;
-  font-size: 20px;
-  letter-spacing: -0.02em;
-}
-.import-panel p {
-  margin: 0;
-  color: #8d9ab0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.import-panel button {
-  flex: none;
-  min-width: 132px;
-}
 /*
   匯入報告是資訊性的 toast，不是錯誤：沿用 `.toast` 的定位與陰影，但換成中性配色。
   用 `.toast.import-report` 而不是單一 class，覆蓋才不依賴檔案裡的先後順序。

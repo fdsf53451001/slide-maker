@@ -365,17 +365,33 @@ export function parseProjectBundle(bytes: Uint8Array): {
     if (name.startsWith("/") || name.includes("\\") || name.split("/").includes(".."))
       throw new Error("PROJECT_BUNDLE_UNSAFE_PATH");
   }
-  const project = parseProject(JSON.parse(Buffer.from(projectFile).toString("utf8")));
+  // 解析也要包起來：zip 本身沒壞但 `project.json` 壞掉（截斷的 JSON、`null`、
+  // 別的 schema 版本）同樣是「這個檔案不是有效的專案封存」，而不是伺服器故障。
+  // 少了這一段，`JSON.parse` 的 SyntaxError 與 `parseProject` 的 ZodError 會直接
+  // 穿出去落到 500 INTERNAL_SERVER_ERROR，把使用者選錯檔記成伺服器錯誤。
+  let project: PresentationProject;
+  try {
+    project = parseProject(JSON.parse(Buffer.from(projectFile).toString("utf8")));
+  } catch {
+    throw new Error("PROJECT_BUNDLE_INVALID");
+  }
   const assets = Object.fromEntries(
     Object.entries(files).filter(([name]) => name.startsWith("assets/") && !name.endsWith("/")),
   );
   return { project, assets };
 }
 
+/**
+ * 下載檔名。format 一律當副檔名用，唯一的例外是 `slide-project`：它的內容是 zip，
+ * 但 `.slide-project` 這個副檔名在使用者的作業系統上沒有任何關聯程式，點兩下打不開，
+ * 所以檔名補上 `.zip` 結尾（`png.zip` 本來就已經帶著 `.zip`）。
+ * URL 的 path segment 與 `ExportFormat` 型別不受影響，只有檔名不同。
+ */
 export function exportFilename(project: PresentationProject, format: ExportFormat): string {
   const safe =
     basename(project.name)
       .replace(/[^\p{L}\p{N}._-]+/gu, "-")
       .replace(/^-+|-+$/g, "") || "presentation";
-  return `${safe}.${format}`;
+  const extension = format === "slide-project" ? "slide-project.zip" : format;
+  return `${safe}.${extension}`;
 }

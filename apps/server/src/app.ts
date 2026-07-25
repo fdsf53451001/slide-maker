@@ -137,7 +137,7 @@ class OutlineCountError extends Error {
 }
 
 /**
- * PDF 相關錯誤碼 → 使用者看得懂的原因。
+ * 匯入相關錯誤碼（PDF 與 `.slide-project.zip` 專案封存）→ 使用者看得懂的原因。
  *
  * 這些碼從光柵化管線深處以具名 Error 拋出（跨 worker 執行緒也只剩字串），沒有辦法
  * 在拋出點帶訊息；統一在對外邊界翻譯。匯入對話框是新使用者看到的第一個畫面，
@@ -161,6 +161,11 @@ const PDF_MESSAGES: Record<string, string> = {
   PDF_PAGE_NOT_FOUND: "這一頁不在 PDF 裡。",
   PDF_IMPORT_TIMEOUT: "這份 PDF 處理太久已中止。請減少選取的頁數再試一次。",
   PDF_RENDER_WORKER_FAILED: "PDF 轉檔程序中途結束，沒有完成匯入。請再試一次。",
+  // `.slide-project.zip` 匯入與 PDF 匯入是同一個畫面上的兩顆按鈕，兩邊都不能只回錯誤碼。
+  PROJECT_BUNDLE_INVALID:
+    "這個檔案不是有效的專案封存。請選擇從「備份完整專案」下載的 .slide-project.zip。",
+  PROJECT_BUNDLE_TOO_LARGE: "這份專案封存太大，無法匯入。",
+  PROJECT_BUNDLE_UNSAFE_PATH: "這個專案封存的內容路徑不合法，已拒絕匯入。",
 };
 
 /**

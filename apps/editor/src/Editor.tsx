@@ -982,6 +982,7 @@ function CreateProject({
   onNavigate,
   onDelete,
   onImportNotice,
+  onError,
 }: {
   projects: PresentationProject[];
   styles: StylePreset[];
@@ -992,6 +993,12 @@ function CreateProject({
   onDelete: (project: PresentationProject) => Promise<void>;
   /** 匯入報告要交給上層顯示：`onOpen` 會立刻把這個元件換掉。 */
   onImportNotice: (notice: string | undefined) => void;
+  /**
+   * 失敗訊息也往上交給 App 的那一個 toast。`.toast` 是 `position: fixed` 的固定座標，
+   * 這裡自己再渲染一個會與 App 的疊在同一點（例如開頁時 listProjects 失敗、又接著
+   * 匯入失敗），後蓋前，其中一則就此看不到。
+   */
+  onError: (message: string | undefined) => void;
 }) {
   const [importing, setImporting] = useState(false);
   const [topic, setTopic] = useState("");
@@ -1001,6 +1008,21 @@ function CreateProject({
   const [busy, setBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<PresentationProject | undefined>();
   const [deleting, setDeleting] = useState(false);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const bundleInput = useRef<HTMLInputElement>(null);
+
+  /** 匯入 `.slide-project.zip`：成功就直接進該專案，失敗把伺服器的理由留在畫面上。 */
+  const importBundle = async (file: File) => {
+    setBundleBusy(true);
+    onError(undefined);
+    try {
+      onOpen(await api.importProjectBundle(file));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "匯入專案檔失敗");
+    } finally {
+      setBundleBusy(false);
+    }
+  };
   const styleCard = (style: StylePreset) => {
     const cover =
       style.referenceImages.find((item) => item.id === style.coverImageId) ??
@@ -1068,18 +1090,6 @@ function CreateProject({
               </small>
             </section>
 
-            {/* 匯入 PDF 與「建立簡報」地位對等：不進四步 wizard，選頁後專案立刻落地。 */}
-            <section className="dashboard-section import-panel">
-              <div>
-                <span className="section-label">IMPORT</span>
-                <h2>已經有 PDF 了？</h2>
-                <p>把既有的 16:9 簡報 PDF 匯入成專案，每頁保留原圖，之後可逐頁編輯文字。</p>
-              </div>
-              <button className="primary" onClick={() => setImporting(true)}>
-                匯入 PDF
-              </button>
-            </section>
-
             <section className="dashboard-section style-start-section">
               <div className="dashboard-section-heading">
                 <div>
@@ -1123,7 +1133,39 @@ function CreateProject({
                   <span className="section-label">YOUR WORK</span>
                   <h2>最近簡報</h2>
                 </div>
-                <span>{projects.length} 份簡報</span>
+                {/*
+                  兩條匯入入口與「建立簡報」地位對等，都不進四步 wizard：
+                  PDF 選頁後專案立刻落地，`.slide-project.zip` 則是還原一份既有備份。
+                */}
+                <div className="dashboard-section-actions">
+                  <span>{projects.length} 份簡報</span>
+                  <button type="button" onClick={() => setImporting(true)}>
+                    匯入 PDF
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bundleBusy}
+                    onClick={() => bundleInput.current?.click()}
+                  >
+                    {bundleBusy ? "匯入中…" : "匯入專案檔"}
+                  </button>
+                  {/*
+                    瀏覽器的 accept 只認最後一段副檔名，寫 `.slide-project.zip` 不會生效。
+                    同一個檔案再選一次也要能觸發，所以讀完就把 value 清掉。
+                  */}
+                  <input
+                    ref={bundleInput}
+                    type="file"
+                    accept=".zip"
+                    hidden
+                    aria-hidden="true"
+                    onChange={(event) => {
+                      const picked = event.target.files?.[0];
+                      event.target.value = "";
+                      if (picked) void importBundle(picked);
+                    }}
+                  />
+                </div>
               </div>
               {projects.length === 0 ? (
                 <div className="empty-dashboard">
@@ -2675,7 +2717,13 @@ export function Editor() {
   if (!project || route === "/" || route === "/styles")
     return (
       <>
-        {error && <div className="toast error">{error}</div>}
+        {/* 可關閉且會播報：匯入失敗時畫面上只有按鈕文字從「匯入中…」變回原字，
+            螢幕閱讀器不會有任何提示，而使用者要能把它關掉再換一個檔案重試。 */}
+        {error && (
+          <button className="toast error" role="alert" onClick={() => setError(undefined)}>
+            {error} ×
+          </button>
+        )}
         {importNoticeToast}
         <CreateProject
           key={`${route}:${window.location.search}`}
@@ -2684,6 +2732,7 @@ export function Editor() {
           styleLibrary={route === "/styles"}
           onNavigate={navigate}
           onImportNotice={setImportNotice}
+          onError={setError}
           onOpen={(value) => {
             setProject(value);
             setSelectedId(value.slides[0]?.id);
@@ -4204,7 +4253,7 @@ export function Editor() {
               下載每頁 PNG (.zip)
             </a>
             <a href={`/api/projects/${encodeURIComponent(project.id)}/export/slide-project`}>
-              備份完整專案 (.slide-project)
+              備份完整專案 (.slide-project.zip)
             </a>
           </div>
         )}

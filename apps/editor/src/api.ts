@@ -453,6 +453,29 @@ export const api = {
     if (!response.ok) throw new Error(failureMessage(body, response.statusText));
     return body as { project: PresentationProject; report: PdfDeckImportReport };
   },
+  /**
+   * 匯入 `.slide-project.zip` 備份檔。端點吃 raw bytes（`express.raw`），
+   * 所以直接把 File 當 body 送，不包 FormData。
+   */
+  importProjectBundle: async (file: File): Promise<PresentationProject> => {
+    const response = await fetch("/api/projects/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
+    });
+    // 這是唯一一條會上傳任意大檔的端點，所以中間層（Cloud Run／反向代理）的 413、502、
+    // 504 特別容易打到它，而那些回應是 HTML 或純文字。直接 `response.json()` 會丟出
+    // `SyntaxError: Unexpected token '<'`，那句話會原封不動變成使用者看到的錯誤訊息。
+    const text = await response.text();
+    let body: unknown;
+    try {
+      body = JSON.parse(text) as PresentationProject | ApiFailure;
+    } catch {
+      throw new Error(`匯入專案檔失敗（HTTP ${response.status}）`);
+    }
+    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    return body as PresentationProject;
+  },
   updateStyleSnapshot: (
     projectId: string,
     patch: { designSystem?: string; avoid?: string[]; name?: string; referenceIds?: string[] },
