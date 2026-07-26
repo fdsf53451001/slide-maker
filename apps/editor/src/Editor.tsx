@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -586,8 +587,18 @@ export function TextLayerCanvas({
     const active = drag.current;
     if (!active) return;
     // 死區用螢幕像素判斷（畫布座標會隨顯示尺寸縮放，雙擊間的手震在小視窗會誤觸拖曳）。
+    //
+    // 八個 resize 方向與 `move` 共用同一個死區，不可把 resize 排除在外：把手上的雙擊是
+    // **正式支援的手勢**（見 text-box-handle-doubleclick.test.tsx），而只有一個字的框，
+    // 八個把手幾乎鋪滿整個框身——沒有死區時，雙擊過程中 1 螢幕像素的手抖就會 commit
+    // 一次縮放（960px 畫布渲染 1920 canvas，1px＝2 canvas 單位），連帶標 dirty、推一筆
+    // undo、觸發自動存檔讓伺服器重跑合成，而使用者只是想編輯文字。
+    // 取捨：死區只在 `!active.moved` 時作用，一旦跨過 3px 就 `moved = true`，之後任何
+    // 微小移動照常生效——所以「刻意的 1–2px 微調」不是做不到，只是不能一步到位（先拖出
+    // 3px 再拖回來）；inspector 目前沒有寬高數值欄位可以退回，這一點一併記著。
+    // **不要**改採「在 finish() 比對幾何，沒變就不 onChange」：1px 抖動確實讓幾何變了
+    // （300→302），那個比對照樣會 commit，等於沒修。
     if (
-      active.direction === "move" &&
       !active.moved &&
       Math.hypot(event.clientX - active.clientX, event.clientY - active.clientY) < 3
     )
@@ -739,7 +750,15 @@ export function TextLayerCanvas({
                     aria-label={`調整文字框 ${direction}`}
                     className={`text-resize-handle ${direction}`}
                     onPointerDown={(event) => begin(event, box, direction)}
-                    onDoubleClick={(event) => event.stopPropagation()}
+                    /*
+                     * 雙擊**刻意不攔**，讓它冒泡到框身的「進入編輯」。
+                     *
+                     * 八個把手各 10px 又外擴 6px，只有一個字的框本身可能不到 20px：把手
+                     * 幾乎鋪滿整個框，雙擊必定落在把手上，於是那種框永遠進不了編輯狀態
+                     * （使用者實測回報的正是這個）。縮放靠的是 pointerdown＋拖曳位移，
+                     * 而雙擊的兩次點擊在 pointerup 時就各自 finish() 收乾淨了，零位移的
+                     * 那次不會 commit 任何尺寸，所以放行 dblclick 不會與縮放打架。
+                     */
                   />
                 ))}
             </div>
@@ -2846,6 +2865,57 @@ export function Editor() {
     project?.canvas.width,
     project?.canvas.height,
   ]);
+  /**
+   * 「使用者主動結束這場放映」的唯一出口。三條**會退出的**路徑（Esc、控制列的關閉鈕、
+   * 以 F11／瀏覽器原生方式離開全螢幕）共用這一份，理由與 `nextVisibleIndex` 相同：退出時
+   * 要把選取同步成「剛剛在放映的那一頁」，各自複製一份的話，日後只會有一條路被記得改。
+   *
+   * 退出後選取放映頁，是因為使用者放映到哪就是想從哪繼續編輯；停在進場前那一頁等於
+   * 把整段放映的位移丟掉（縮圖列的自動捲入由既有的 `selectedId` effect 處理）。
+   *
+   * 另外兩種「簡報就這樣沒了」的情形**不走這裡**，各自純清狀態（見下方兩條 effect）：
+   * 離開專案／換路由，以及正在放映的那一頁消失。它們不該同步選取——換專案時同步等於
+   * 拿舊專案的 index 去改寫新專案的選取，刪頁時那個 index 指向的頁已經不存在了。
+   */
+  const exitPresentation = useCallback(() => {
+    // 放映途中該頁在別的分頁被刪掉、或 index 越界時 slide 是 `undefined`：維持原本選取，
+    // 不可寫入 `undefined`——那會讓 `selected` 退回 `slides[0]`，等於無故跳到第一頁。
+    const presentedId =
+      presentationIndex === null ? undefined : project?.slides[presentationIndex]?.id;
+    if (presentedId) setSelectedId(presentedId);
+    setPresentationIndex(null);
+    // 走 fullscreenchange 進來時全螢幕已經退掉了，`fullscreenElement` 是 null，這段自動跳過。
+    if (document.fullscreenElement && document.exitFullscreen)
+      void document.exitFullscreen().catch(() => undefined);
+  }, [presentationIndex, project]);
+  /**
+   * 離開這個專案（換專案、按瀏覽器上一頁回專案列表、切到模型庫／風格庫路由）就結束放映。
+   * 少了這條，`presentationIndex` 會跨越專案存活：放映 A 到第 3 頁 → 瀏覽器上一頁回列表
+   * （keydown handler 遇 metaKey／altKey 直接 return，瀏覽器照常導航）→ 再點 A，
+   * `found.id !== project?.id` 為 false，什麼都不重設，簡報覆蓋層直接彈回第 3 頁；
+   * 點別的專案 B 更糟，B 會以簡報模式開在 `B.slides[2]`。
+   *
+   * 純清狀態，**不要**改成呼叫 `exitPresentation()`：那會連帶把選取改寫成放映頁，
+   * 而離開專案時同步選取沒有意義（換到 B 時甚至會用 A 的 index 去污染 B 的選取）。
+   */
+  useEffect(() => {
+    setPresentationIndex(null);
+  }, [project?.id, route]);
+  /**
+   * 正在放映的那一頁消失（自己刪掉、或別的分頁刪掉後輪詢回來、index 越界）就結束放映。
+   * 少了這條會留下「隱形簡報模式」：`presentationSlide` 是 undefined，覆蓋層連同關閉鈕
+   * 一起 unmount，但 `presentationIndex` 仍非 null——`canvasIsActiveSurface` 為 false，
+   * 畫布上的 Delete／⌘Z／方向鍵全部靜默失效，方向鍵反而落進上面那條簡報分支，
+   * 把覆蓋層叫回來。唯一出路是盲按 Esc。
+   *
+   * 同樣純清狀態、不走 `exitPresentation()`：那個 index 指向的頁已經不存在，沒有「放映
+   * 到哪一頁」可以同步過去，選取必須原封不動留在使用者原本選的那一頁。
+   */
+  useEffect(() => {
+    if (presentationIndex === null) return;
+    if (project?.slides[presentationIndex]) return;
+    setPresentationIndex(null);
+  }, [presentationIndex, project]);
   useEffect(() => {
     if (!project || project.workflowStage !== "editing") return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2883,9 +2953,7 @@ export function Editor() {
           nextIndex = nextVisibleIndex(slides, slides.length, -1) ?? nextIndex;
         else if (event.key === "Escape") {
           event.preventDefault();
-          setPresentationIndex(null);
-          if (document.fullscreenElement && document.exitFullscreen)
-            void document.exitFullscreen().catch(() => undefined);
+          exitPresentation();
           return;
         } else return;
         event.preventDefault();
@@ -2913,6 +2981,7 @@ export function Editor() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     canvasIsActiveSurface,
+    exitPresentation,
     imageEditBusy,
     presentationIndex,
     project,
@@ -2923,11 +2992,14 @@ export function Editor() {
   useEffect(() => {
     if (presentationIndex === null) return;
     const onFullscreenChange = () => {
-      if (!document.fullscreenElement) setPresentationIndex(null);
+      if (!document.fullscreenElement) exitPresentation();
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
-  }, [presentationIndex]);
+    // 依賴 `exitPresentation` 而不是只綁 `presentationIndex`：換頁本來就會重掛（它已經
+    // 在依賴裡），會過期的是 `exitPresentation` 閉包捕住的 **`project`**——輪詢或另一個
+    // 分頁刪掉某頁之後，舊的那份會拿過期的 slides 去換算「剛剛放映的是哪一頁」。
+  }, [presentationIndex, exitPresentation]);
   // 簡報模式滾輪換頁：向下／向右一頁，向上／向左一頁，到頭到尾就停住不迴圈。
   // listener 只在簡報模式期間存在（依賴 presentationIndex），離開後編輯畫面的滾輪完全不受影響。
   useEffect(() => {
@@ -3226,6 +3298,21 @@ export function Editor() {
   const visibleSlideCount = project.slides.filter((slide) => !slide.hidden).length;
   const hiddenCount = project.slides.length - visibleSlideCount;
   /**
+   * 縮圖列 PAGES 的清點文字。有隱藏頁才寫「可見數/總數」：縮圖列列出的是**全部**頁面，
+   * 單一個總數會讓「為什麼放映與 pptx／pdf 只有 14 頁」在這裡完全沒有線索。沒有隱藏頁
+   * 就維持單一數字，不寫成 `17/17`——那個分母不帶任何資訊，只是多一個要解讀的符號。
+   *
+   * 這是 rail 的清點，**不是**頁碼，所以刻意不呼叫 `pageNumberSlideLabel()`：那份帶
+   * `startAt`／`skipFirstSlide`，是印在成品上的 chrome，關掉頁碼時它根本不該消失。
+   *
+   * 句子要把**可見頁數**講出來，不能只說「4 頁，其中 1 頁隱藏」讓人自己減：眼睛看到的
+   * 是分子 `3`，閱讀器卻只聽得到 4 與 1，兩者對不起來。
+   */
+  const slideCountTitle =
+    hiddenCount > 0
+      ? `${project.slides.length} 頁，其中 ${hiddenCount} 頁隱藏，${visibleSlideCount} 頁會放映`
+      : `${project.slides.length} 頁`;
+  /**
    * 控制列的「第幾頁 / 共幾頁」。與頁碼疊層**只**共用「隱藏頁不算」這一條，刻意不套
    * `startAt`／`skipFirstSlide`：那兩個是印在成品上的 chrome 設定（`skipFirstSlide` 開、
    * `startAt: 10` 時，色塊寫「第 10 頁」而這裡寫「1 / 4」，兩者都對），控制列則是放映進度，
@@ -3273,7 +3360,7 @@ export function Editor() {
       setError(reason instanceof Error ? reason.message : "批次生成失敗");
     }
   };
-  const textLayerHint = `${textBoxes.length} 個文字框 · ⌘/Ctrl+C 複製 · ⌘/Ctrl+V 貼上 · Delete 刪除 · 單擊選取 · 雙擊編輯文字`;
+  const textLayerHint = `${textBoxes.length} 個文字框`;
   // 面板與預覽一律讀樂觀值；只有它才會在滑桿還沒 debounce 出去時就跟著動。
   const pageNumber = pageNumberDraft ?? project.pageNumber;
   const pageNumberProject = pageNumberDraft ? { ...project, pageNumber: pageNumberDraft } : project;
@@ -3343,11 +3430,6 @@ export function Editor() {
     setPresentationIndex(index);
     const request = document.documentElement.requestFullscreen?.();
     if (request) void request.catch(() => undefined);
-  };
-  const stopPresentation = () => {
-    setPresentationIndex(null);
-    if (document.fullscreenElement && document.exitFullscreen)
-      void document.exitFullscreen().catch(() => undefined);
   };
   const addCurrentImageToStyle = async (styleId?: string) => {
     if (!stylePickerVersion) return;
@@ -3568,7 +3650,20 @@ export function Editor() {
         <div className="rail-heading">
           <span>PAGES</span>
           <span className="rail-heading-count">
-            <b>{project.slides.length}</b>
+            <b title={slideCountTitle}>
+              {/* 「14/17」被螢幕閱讀器念成「十四斜線十七」，等於沒有資訊：數字給眼睛，
+                  完整句子給閱讀器，兩者互斥地各出現一次，不會被重複播報。
+                  已知缺口：`title` 只有滑鼠 hover 讀得到（`<b>` 不可聚焦，而原生 tooltip
+                  本來也不在鍵盤焦點上顯示），所以「不用滑鼠、也不用閱讀器」的人看不到
+                  這句話。刻意不為它加 `tabIndex`（憑空多一個沒有動作的 Tab 停點）或改寫
+                  成自製 tooltip 元件——閱讀器那條路已經完整，剩下的缺口不值那個成本。 */}
+              <span aria-hidden="true">
+                {hiddenCount > 0
+                  ? `${visibleSlideCount}/${project.slides.length}`
+                  : project.slides.length}
+              </span>
+              <span className="visually-hidden">{slideCountTitle}</span>
+            </b>
             <button
               className="add-page"
               aria-label="新增頁面"
@@ -3678,14 +3773,16 @@ export function Editor() {
             >
               ＋ 將圖片加入風格庫
             </button>
-            {/* 文字圖層的操作說明放在這條既有的狀態列，不另闢一行：快捷鍵只在這裡寫著，是
-                這個功能唯一的發現途徑（圖示工具列只有 tooltip），但它不值得再吃掉畫布高度。
+            {/* 文字圖層只在這條既有的狀態列報框數，不另闢一行吃掉畫布高度。快捷鍵說明依
+                使用者要求拿掉（維持移除），但要誠實記下放棄了什麼：那串字除了 Delete／
+                ⌘Z／⇧⌘Z／⌘C／⌘V 這些通用鍵位，還帶著「單擊選取」「雙擊編輯文字」兩個
+                **本 app 專屬**、別處學不到的手勢，現在畫面上沒有任何地方寫。工具列的
+                tooltip 只補得到新增／刪除／復原／重做四顆按鈕，複製、貼上與那兩個滑鼠
+                手勢沒有替代出口。這是拿發現性換整條標題列的空間，不是「反正都寫在別處」。
+                內文短到不會被截斷，因此也不再掛 `title`（與內文一字不差的 tooltip 只是多
+                一次滑鼠停留）。
                 進行中的工作**不**擠進來——那是畫布下方 `.text-layer-progress` 的事。 */}
-            {activeTextLayer && (
-              <span className="text-layer-status" title={textLayerHint}>
-                {textLayerHint}
-              </span>
-            )}
+            {activeTextLayer && <span className="text-layer-status">{textLayerHint}</span>}
             <span>
               {activeJob
                 ? `● ${PHASE_LABELS[activeJob.phase ?? activeJob.status] ?? activeJob.status}`
@@ -4286,157 +4383,153 @@ export function Editor() {
                 )}
               </div>
             </div>
-            {textEditing && (
+            {/* 沒有選取文字框時整塊不出現：只剩一個 TEXT BOX 標題與一句「去選一個」
+                的區塊，本身沒有任何可操作的東西，卻在面板上佔著一段高度並讓人以為
+                這裡壞了。標題與內容一起出現、一起消失。 */}
+            {textEditing && selectedText && (
               <div className="text-properties fields">
                 <div className="section-label">TEXT BOX</div>
-                {!selectedText && <small>在畫布選擇一個文字框以調整格式。</small>}
-                {selectedText && (
-                  <>
-                    <div className="text-property-grid font-row">
-                      <label>
-                        字體
-                        <input
-                          value={selectedText.fontFamily}
-                          onChange={(event) =>
-                            patchSelectedText({ fontFamily: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        大小
-                        <input
-                          type="number"
-                          min="6"
-                          max="300"
-                          value={selectedText.fontSize}
-                          onChange={(event) =>
-                            patchSelectedText({ fontSize: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        字重
-                        <select
-                          value={selectedText.fontWeight}
-                          onChange={(event) =>
-                            patchSelectedText({ fontWeight: Number(event.target.value) })
-                          }
-                        >
-                          <option value="400">一般</option>
-                          <option value="600">半粗</option>
-                          <option value="700">粗體</option>
-                          <option value="900">黑體</option>
-                        </select>
-                      </label>
-                    </div>
-                    <div className="text-property-grid detail-row">
-                      <label>
-                        顏色
-                        <input
-                          type="color"
-                          value={selectedText.color}
-                          onChange={(event) => patchSelectedText({ color: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        對齊
-                        <select
-                          value={selectedText.align}
-                          onChange={(event) =>
-                            patchSelectedText({
-                              align: event.target.value as EditableTextBox["align"],
-                            })
-                          }
-                        >
-                          <option value="left">靠左</option>
-                          <option value="center">置中</option>
-                          <option value="right">靠右</option>
-                        </select>
-                      </label>
-                      <label>
-                        行高
-                        <input
-                          type="number"
-                          min="0.8"
-                          max="3"
-                          step="0.1"
-                          value={selectedText.lineHeight}
-                          onChange={(event) =>
-                            patchSelectedText({ lineHeight: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        字距
-                        <input
-                          type="number"
-                          min="-10"
-                          max="30"
-                          step="0.5"
-                          value={selectedText.letterSpacing}
-                          onChange={(event) =>
-                            patchSelectedText({ letterSpacing: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                    </div>
-                    <div className="text-property-grid background-row">
-                      <label className="background-toggle">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(selectedText.backgroundColor)}
-                          onChange={(event) => {
-                            if (!event.target.checked) {
-                              clearSelectedTextBackground();
-                              return;
-                            }
-                            patchSelectedText({
-                              backgroundColor: TEXT_BACKGROUND_DEFAULT_COLOR,
-                              backgroundOpacity: 1,
-                            });
-                          }}
-                        />
-                        底色
-                      </label>
-                      <label>
-                        色票
-                        <input
-                          type="color"
-                          aria-label="文字框底色"
-                          disabled={!selectedText.backgroundColor}
-                          value={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
-                          onChange={(event) =>
-                            patchSelectedText({ backgroundColor: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        底色不透明度
-                        <input
-                          type="number"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          disabled={!selectedText.backgroundColor}
-                          value={selectedText.backgroundOpacity ?? 1}
-                          onChange={(event) => {
-                            // 數字框可以被清空或打進超界值；schema 只收 0–1，
-                            // 這裡先夾好再寫入，否則存檔時整批文字框會被伺服器擋下。
-                            // 清空／非數字一律保留原值：`Number("")` 是 0（而且是有限數），
-                            // 照寫回去等於底色無聲消失，勾選框卻還是勾的。
-                            const raw = event.target.value.trim();
-                            if (!raw) return;
-                            const next = Number(raw);
-                            if (!Number.isFinite(next)) return;
-                            patchSelectedText({
-                              backgroundOpacity: Math.min(1, Math.max(0, next)),
-                            });
-                          }}
-                        />
-                      </label>
-                    </div>
-                  </>
-                )}
+                <div className="text-property-grid font-row">
+                  <label>
+                    字體
+                    <input
+                      value={selectedText.fontFamily}
+                      onChange={(event) => patchSelectedText({ fontFamily: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    大小
+                    <input
+                      type="number"
+                      min="6"
+                      max="300"
+                      value={selectedText.fontSize}
+                      onChange={(event) =>
+                        patchSelectedText({ fontSize: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    字重
+                    <select
+                      value={selectedText.fontWeight}
+                      onChange={(event) =>
+                        patchSelectedText({ fontWeight: Number(event.target.value) })
+                      }
+                    >
+                      <option value="400">一般</option>
+                      <option value="600">半粗</option>
+                      <option value="700">粗體</option>
+                      <option value="900">黑體</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="text-property-grid detail-row">
+                  <label>
+                    顏色
+                    <input
+                      type="color"
+                      value={selectedText.color}
+                      onChange={(event) => patchSelectedText({ color: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    對齊
+                    <select
+                      value={selectedText.align}
+                      onChange={(event) =>
+                        patchSelectedText({
+                          align: event.target.value as EditableTextBox["align"],
+                        })
+                      }
+                    >
+                      <option value="left">靠左</option>
+                      <option value="center">置中</option>
+                      <option value="right">靠右</option>
+                    </select>
+                  </label>
+                  <label>
+                    行高
+                    <input
+                      type="number"
+                      min="0.8"
+                      max="3"
+                      step="0.1"
+                      value={selectedText.lineHeight}
+                      onChange={(event) =>
+                        patchSelectedText({ lineHeight: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    字距
+                    <input
+                      type="number"
+                      min="-10"
+                      max="30"
+                      step="0.5"
+                      value={selectedText.letterSpacing}
+                      onChange={(event) =>
+                        patchSelectedText({ letterSpacing: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="text-property-grid background-row">
+                  <label className="background-toggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedText.backgroundColor)}
+                      onChange={(event) => {
+                        if (!event.target.checked) {
+                          clearSelectedTextBackground();
+                          return;
+                        }
+                        patchSelectedText({
+                          backgroundColor: TEXT_BACKGROUND_DEFAULT_COLOR,
+                          backgroundOpacity: 1,
+                        });
+                      }}
+                    />
+                    底色
+                  </label>
+                  <label>
+                    色票
+                    <input
+                      type="color"
+                      aria-label="文字框底色"
+                      disabled={!selectedText.backgroundColor}
+                      value={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
+                      onChange={(event) =>
+                        patchSelectedText({ backgroundColor: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    底色不透明度
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      disabled={!selectedText.backgroundColor}
+                      value={selectedText.backgroundOpacity ?? 1}
+                      onChange={(event) => {
+                        // 數字框可以被清空或打進超界值；schema 只收 0–1，
+                        // 這裡先夾好再寫入，否則存檔時整批文字框會被伺服器擋下。
+                        // 清空／非數字一律保留原值：`Number("")` 是 0（而且是有限數），
+                        // 照寫回去等於底色無聲消失，勾選框卻還是勾的。
+                        const raw = event.target.value.trim();
+                        if (!raw) return;
+                        const next = Number(raw);
+                        if (!Number.isFinite(next)) return;
+                        patchSelectedText({
+                          backgroundOpacity: Math.min(1, Math.max(0, next)),
+                        });
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
             )}
           </>
@@ -4932,7 +5025,7 @@ export function Editor() {
             <button
               className="presentation-close"
               aria-label="離開簡報模式"
-              onClick={stopPresentation}
+              onClick={exitPresentation}
             >
               ×
             </button>

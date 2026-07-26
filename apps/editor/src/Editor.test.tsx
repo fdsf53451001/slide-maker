@@ -4117,10 +4117,12 @@ describe("簡報模式滾輪換頁", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
     fireEvent.click(screen.getByText("▶ 簡報模式"));
     expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
-    expect(screen.getByText("1 / 3")).toBeTruthy();
+    // 離開簡報會把選取同步成剛剛放映的那一頁，所以重新進場是停在第 2 頁而不是回到第 1 頁
+    // （見 PresentationExit.test.tsx）；這一則要釘的是手勢冷卻歸零，不是進場落點。
+    expect(screen.getByText("2 / 3")).toBeTruthy();
 
     fireEvent.wheel(window, { deltaY: 200 });
-    expect(await screen.findByText("2 / 3")).toBeTruthy();
+    expect(await screen.findByText("3 / 3")).toBeTruthy();
   });
 });
 
