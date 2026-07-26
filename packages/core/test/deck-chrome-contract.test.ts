@@ -18,6 +18,7 @@ function request(overrides: Partial<ImageGenerationRequest> = {}): ImageGenerati
       sourceIds: [],
       pinnedSourceIds: [],
       outlineDirty: false,
+      hidden: false,
       versions: [],
     },
     style: {

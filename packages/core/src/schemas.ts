@@ -270,6 +270,13 @@ export const slideSpecFieldsSchema = z.object({
    */
   pinnedSourceIds: z.array(z.string()).default([]),
   outlineDirty: z.boolean().default(false),
+  /**
+   * 隱藏頁：不放映、不進 `pptx`／`pdf` 成品、不佔頁碼。**仍可正常選取、編輯、生成**，
+   * `png.zip` 與 `slide-project` 也照常收錄它——隱藏是「這一頁不上場」，不是刪除，
+   * 也不是「不要這張圖」。
+   * `.default(false)` 讓舊專案檔載入後行為與加入這個欄位前完全相同。
+   */
+  hidden: z.boolean().default(false),
   versions: z.array(slideVersionSchema).default([]),
   currentVersionId: z.string().optional(),
 });

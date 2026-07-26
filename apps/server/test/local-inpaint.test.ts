@@ -64,6 +64,7 @@ function maskedEditRequest(basePath: string, maskPath: string): ImageGenerationR
       pinnedSourceIds: [],
       dataBasis: [],
       outlineDirty: false,
+      hidden: false,
       versions: [],
     },
     style: createDefaultStyle(),
