@@ -179,6 +179,9 @@ const PDF_MESSAGES: Record<string, string> = {
   PDF_PAGE_NOT_FOUND: "這一頁不在 PDF 裡。",
   PDF_IMPORT_TIMEOUT: "這份 PDF 處理太久已中止。請減少選取的頁數再試一次。",
   PDF_RENDER_WORKER_FAILED: "PDF 轉檔程序中途結束，沒有完成匯入。請再試一次。",
+  // 匯出連結是裸 `<a href>`：這條路上的錯誤碼會直接出現在瀏覽器分頁裡，沒有前端能翻譯它。
+  EXPORT_NO_VISIBLE_SLIDES:
+    "所有頁面都已隱藏，pptx／pdf 沒有可以匯出的頁面。請先取消隱藏至少一頁，或改用「下載每頁 PNG」／「備份完整專案」（兩者都會收錄隱藏頁）。",
   // `.slide-project.zip` 匯入與 PDF 匯入是同一個畫面上的兩顆按鈕，兩邊都不能只回錯誤碼。
   PROJECT_BUNDLE_INVALID:
     "這個檔案不是有效的專案封存。請選擇從「備份完整專案」下載的 .slide-project.zip。",
@@ -2124,6 +2127,7 @@ export async function createApp(
         sourceIds: true,
         pinnedSourceIds: true,
         styleOverride: true,
+        hidden: true,
       })
       .partial()
       .parse(request.body);
@@ -2132,6 +2136,7 @@ export async function createApp(
       if (!slide) throw new Error("Slide not found");
       // pinnedSourceIds 不列入：它只影響下次重生成大綱的優先序，不改變已生成的圖，
       // 單獨改它不該讓這一頁被標成「與圖不同步」。
+      // hidden 同理且更明確：隱藏只決定這一頁上不上場，一個像素都沒動到圖。
       const outlineFields = [
         "purpose",
         "content",

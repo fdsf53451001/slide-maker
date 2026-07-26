@@ -1070,6 +1070,14 @@ button {
   opacity: 0.55;
   cursor: default;
 }
+/* 三選一的確認框（批次生成遇到隱藏頁）：420px 一行放不下三顆中文按鈕，
+   放寬並允許換行，免得標籤被壓成兩行或溢出。 */
+.confirm-dialog.choices {
+  width: min(560px, calc(100vw - 56px));
+}
+.confirm-dialog.choices .confirm-actions {
+  flex-wrap: wrap;
+}
 .confirm-actions button.danger {
   border-color: var(--danger);
   background: var(--danger);
@@ -1318,6 +1326,33 @@ header {
   font-size: 10px;
   font-style: normal;
   padding: 12px;
+}
+/* 隱藏頁：淡化＋標記，但仍然選得到也編得動（隱藏只決定放映與 pptx／pdf 匯出）。
+   淡化只套在縮圖畫面本身，不套整個 .thumbnail——選取外框與操作按鈕跟著淡掉會讓人
+   以為這一頁被停用了，而隱藏頁的操作按鈕正是取消隱藏的唯一入口。 */
+.thumbnail.hidden-slide .thumb-canvas {
+  opacity: 0.32;
+  filter: grayscale(1);
+}
+.thumbnail.hidden-slide .slide-number {
+  text-decoration: line-through;
+  color: #4c586c;
+}
+/* 標記是 .thumbnail 的子節點而不是 .thumb-canvas 的：父層 opacity 會連帶作用在所有子孫上，
+   z-index 也救不回來，放進被淡化的縮圖裡等於「已隱藏」三個字也一起糊掉。
+   定位偏移對齊 .thumbnail 的 padding（左 25px、下 7px），剛好貼在縮圖畫面的左下角。 */
+.thumb-hidden-badge {
+  position: absolute;
+  left: 25px;
+  bottom: 7px;
+  padding: 2px 5px;
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  color: #e7ecf5;
+  background: rgba(8, 12, 20, 0.82);
+  border-top-right-radius: 4px;
+  pointer-events: none;
 }
 .stage {
   min-width: 0;
@@ -1978,7 +2013,10 @@ header {
   display: none;
   gap: 3px;
 }
-.thumbnail:hover .thumb-actions {
+/* 隱藏中的頁面一律顯示操作列：這排按鈕裡的「取消隱藏」是唯一的復原入口，
+   只在 hover 才出現的話，使用者會找不到怎麼把頁面放回簡報。 */
+.thumbnail:hover .thumb-actions,
+.thumbnail.hidden-slide .thumb-actions {
   display: flex;
 }
 .thumb-actions button {
@@ -1988,6 +2026,10 @@ header {
   width: 23px;
   height: 23px;
   cursor: pointer;
+}
+/* 隱藏中的那顆用強調色標出來，跟旁邊兩顆常駐的操作按鈕區分開。 */
+.thumbnail.hidden-slide .thumb-hide {
+  color: var(--accent);
 }
 .inspector-tabs {
   height: 44px;
@@ -2884,6 +2926,18 @@ header {
 .export-panel a:hover {
   border-color: var(--accent);
   color: var(--accent-soft);
+}
+/* pptx／pdf 沒有可匯出頁面時取代那兩個連結的說明；長得像被停用的連結，
+   但刻意不是 `<a>`——沒有 href 的連結對鍵盤與螢幕閱讀器都是死節點。 */
+.export-panel .export-blocked {
+  border: 1px dashed var(--border-3);
+  border-radius: 6px;
+  padding: 13px;
+  margin: 8px 0;
+  color: #93a0b5;
+}
+.export-panel .export-blocked strong {
+  color: var(--text-bright);
 }
 .actions {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

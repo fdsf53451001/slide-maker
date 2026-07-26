@@ -36,7 +36,7 @@ describe("PageNumberOverlay 何時該畫、何時不該畫", () => {
   it("關閉時任何一頁都不渲染任何節點", () => {
     const deck = project(4, { enabled: false });
     for (const index of [0, 1, 3]) {
-      const { container } = render(<PageNumberOverlay project={deck} index={index} />);
+      const { container } = render(<PageNumberOverlay project={deck} order={index} />);
       expect(container.firstChild).toBeNull();
       cleanup();
     }
@@ -44,11 +44,11 @@ describe("PageNumberOverlay 何時該畫、何時不該畫", () => {
 
   it("跳過封面時第一頁不渲染，第二頁起才有", () => {
     const deck = project(3, { enabled: true, skipFirstSlide: true });
-    render(<PageNumberOverlay project={deck} index={0} />);
+    render(<PageNumberOverlay project={deck} order={0} />);
     expect(layer()).toBeNull();
     cleanup();
 
-    render(<PageNumberOverlay project={deck} index={1} />);
+    render(<PageNumberOverlay project={deck} order={1} />);
     expect(text()?.textContent).toBe("1");
   });
 
@@ -56,7 +56,7 @@ describe("PageNumberOverlay 何時該畫、何時不該畫", () => {
     render(
       <PageNumberOverlay
         project={project(3, { enabled: true, skipFirstSlide: false })}
-        index={0}
+        order={0}
       />,
     );
     expect(text()?.textContent).toBe("1");
@@ -64,7 +64,7 @@ describe("PageNumberOverlay 何時該畫、何時不該畫", () => {
 
   it("只有一頁又跳過封面時，整份簡報不渲染頁碼", () => {
     render(
-      <PageNumberOverlay project={project(1, { enabled: true, skipFirstSlide: true })} index={0} />,
+      <PageNumberOverlay project={project(1, { enabled: true, skipFirstSlide: true })} order={0} />,
     );
     expect(layer()).toBeNull();
   });
@@ -73,11 +73,11 @@ describe("PageNumberOverlay 何時該畫、何時不該畫", () => {
 describe("PageNumberOverlay 的內容與匯出用的同一份計算", () => {
   it("number-total 的分母是最後一頁的數字，末頁分子等於分母", () => {
     const deck = project(3, { enabled: true, format: "number-total", skipFirstSlide: true });
-    render(<PageNumberOverlay project={deck} index={1} />);
+    render(<PageNumberOverlay project={deck} order={1} />);
     expect(text()?.textContent).toBe("1 / 2");
     cleanup();
 
-    render(<PageNumberOverlay project={deck} index={2} />);
+    render(<PageNumberOverlay project={deck} order={2} />);
     expect(text()?.textContent).toBe("2 / 2");
   });
 
@@ -88,18 +88,18 @@ describe("PageNumberOverlay 的內容與匯出用的同一份計算", () => {
       startAt: 10,
       skipFirstSlide: true,
     });
-    render(<PageNumberOverlay project={deck} index={1} />);
+    render(<PageNumberOverlay project={deck} order={1} />);
     expect(text()?.textContent).toBe("第 10 頁");
     cleanup();
 
-    render(<PageNumberOverlay project={deck} index={3} />);
+    render(<PageNumberOverlay project={deck} order={3} />);
     expect(text()?.textContent).toBe("第 12 頁");
   });
 
   it("幾何是 pageNumberLayout 的百分比換算，預覽才會與匯出落點一致", () => {
     const deck = project(3, { enabled: true, position: "bottom-center", fontSize: 48 });
     const expected = pageNumberLayout(deck.pageNumber, deck.canvas, "1");
-    render(<PageNumberOverlay project={deck} index={1} />);
+    render(<PageNumberOverlay project={deck} order={1} />);
 
     const style = text()!.style;
     expect(style.left).toBe(`${(expected.text.x / deck.canvas.width) * 100}%`);
@@ -114,7 +114,7 @@ describe("PageNumberOverlay 的內容與匯出用的同一份計算", () => {
       ["bottom-center", "center"],
       ["bottom-right", "flex-end"],
     ] as const) {
-      render(<PageNumberOverlay project={project(3, { enabled: true, position })} index={1} />);
+      render(<PageNumberOverlay project={project(3, { enabled: true, position })} order={1} />);
       expect(text()!.style.justifyContent, position).toBe(justify);
       cleanup();
     }
@@ -126,7 +126,7 @@ describe("PageNumberOverlay 的色塊", () => {
     render(
       <PageNumberOverlay
         project={project(3, { enabled: true, background: { enabled: false } })}
-        index={1}
+        order={1}
       />,
     );
     expect(text()).not.toBeNull();
@@ -139,7 +139,7 @@ describe("PageNumberOverlay 的色塊", () => {
       background: { enabled: true, color: "#123456", opacity: 0.5 },
     });
     const expected = pageNumberLayout(deck.pageNumber, deck.canvas, "1").chip!;
-    render(<PageNumberOverlay project={deck} index={1} />);
+    render(<PageNumberOverlay project={deck} order={1} />);
 
     const style = chip()!.style;
     expect(style.left).toBe(`${(expected.x / deck.canvas.width) * 100}%`);

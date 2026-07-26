@@ -10,9 +10,9 @@ import {
 } from "react";
 import {
   pageNumberFormatSchema,
-  pageNumberLabel,
   pageNumberLayout,
   pageNumberPositionSchema,
+  pageNumberSlideLabel,
   type EditableTextBox,
   type PageNumberSettings,
   type PresentationBrief,
@@ -749,6 +749,115 @@ export function TextLayerCanvas({
   );
 }
 
+/**
+ * 從 `from`（不含）往 `direction` 找下一張可見頁，沒有就回 `undefined`。
+ *
+ * 簡報模式有四條換頁路徑（鍵盤、滾輪、點擊舞台、控制列按鈕），邊界邏輯只能有這一份：
+ * 各寫一份 `Math.min(lastIndex, …)` 正是「某一條路會停在隱藏頁」的來源。回 `undefined`
+ * 而不是「夾回原地」是刻意的——呼叫端要區分的正是「還有下一頁」與「已經到底」
+ * （控制列的 `disabled`、鍵盤的不迴圈），夾回原地會把這兩件事混成同一個值。
+ *
+ * `from` 允許落在陣列外：`-1` 配 `+1` 得到第一張可見頁（Home、進場），
+ * `slides.length` 配 `-1` 得到最後一張（End）。
+ */
+export function nextVisibleIndex(
+  slides: readonly { hidden?: boolean }[],
+  from: number,
+  direction: 1 | -1,
+): number | undefined {
+  for (let index = from + direction; index >= 0 && index < slides.length; index += direction)
+    if (!slides[index]?.hidden) return index;
+  return undefined;
+}
+
+/**
+ * 進場用的起始頁：選取的那頁若被隱藏就落到最近的可見頁（先往後、再往前）。
+ * 全部頁面都被隱藏時回 `undefined`，呼叫端據此拒絕進入簡報模式。
+ */
+export function firstPresentableIndex(
+  slides: readonly { hidden?: boolean }[],
+  preferred: number,
+): number | undefined {
+  const current = slides[preferred];
+  if (current && !current.hidden) return preferred;
+  return nextVisibleIndex(slides, preferred, 1) ?? nextVisibleIndex(slides, preferred, -1);
+}
+
+/** 可見頁的 id，依現有順序；`api.generateAll` 的 `slideIds` 就吃這個。 */
+export function visibleSlideIds(slides: readonly { id: string; hidden?: boolean }[]): string[] {
+  return slides.filter((slide) => !slide.hidden).map((slide) => slide.id);
+}
+
+/** 隱藏頁的張數；0 代表批次生成完全不必多問一次。 */
+export function hiddenSlideCount(slides: readonly { hidden?: boolean }[]): number {
+  return slides.reduce((count, slide) => (slide.hidden ? count + 1 : count), 0);
+}
+
+/**
+ * 批次生成遇到隱藏頁時，使用者選了什麼。
+ *
+ * `"all"` 刻意對應「不傳 `slideIds`」而不是「傳全部 id」：那是加入這個對話框之前的行為，
+ * 沒有隱藏頁的專案完全不會走到這裡，兩條路才會逐位元相同。
+ */
+type BatchGenerateChoice = "all" | "visible-only";
+
+/**
+ * 有隱藏頁時，「批次生成全部頁面」按下去要先問清楚要不要連隱藏頁一起生成。
+ *
+ * 為什麼要問而不是只告知：隱藏頁不進 `pptx`／`pdf`、也不放映，但生成它一樣消耗影像模型
+ * 配額——「全部頁面」這個字面承諾與「隱藏」這個意圖在這裡直接衝突，兩種答案都合理，
+ * 所以是使用者的決定。`confirm()` 只有兩個答案，裝不下三選一。
+ *
+ * 兩個呼叫點（inspector 的批次生成、精靈的確認生成）共用這一份，不各寫一個。
+ */
+function BatchGenerateDialog({
+  total,
+  hiddenCount,
+  busy,
+  onChoose,
+  onCancel,
+}: {
+  total: number;
+  hiddenCount: number;
+  busy: boolean;
+  onChoose: (choice: BatchGenerateChoice) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="confirm-backdrop"
+      onClick={() => {
+        if (!busy) onCancel();
+      }}
+    >
+      <div
+        className="confirm-dialog choices"
+        role="dialog"
+        aria-modal="true"
+        aria-label="批次生成與隱藏頁"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2>要連隱藏頁一起生成嗎？</h2>
+        <p>
+          這份簡報共 <strong>{total}</strong> 頁，其中 <strong>{hiddenCount}</strong> 頁已隱藏。
+          隱藏頁不會進 pptx／pdf 匯出，也不會出現在簡報放映中，但生成它一樣會消耗影像模型配額。
+        </p>
+        <div className="confirm-actions">
+          <button type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button type="button" disabled={busy} onClick={() => onChoose("visible-only")}>
+            只生成可見頁（{total - hiddenCount} 頁）
+          </button>
+          <button type="button" className="primary" disabled={busy} onClick={() => onChoose("all")}>
+            含隱藏頁一起生成（{total} 頁）
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** 頁碼設定的部分更新；`background` 是巢狀 partial，與伺服器端的 PATCH schema 同形。 */
 type PageNumberPatch = Partial<Omit<PageNumberSettings, "background">> & {
   background?: Partial<PageNumberSettings["background"]>;
@@ -771,15 +880,18 @@ function mergePageNumber(current: PageNumberSettings, patch: PageNumberPatch): P
  * 幾何與文字都來自 core 的 `pageNumberLayout`，與匯出端是同一份計算，預覽才會與匯出落點一致。
  * 尺寸一律用容器查詢單位（外層是 `container-type: size` 的畫布）——畫布是縮放顯示的，
  * 寫死 px 會讓頁碼在小視窗變得比匯出結果大得多。
+ *
+ * 收的是 `order` 而不是「第幾個」：可見序號由 `pageNumberSlideLabel` 從整份 `slides` 算，
+ * 這一端不得自行扣掉隱藏頁（那會變成第五份規則）。
  */
 export function PageNumberOverlay({
   project,
-  index,
+  order,
 }: {
   project: PresentationProject;
-  index: number;
+  order: number;
 }) {
-  const label = pageNumberLabel(project.pageNumber, index, project.slides.length);
+  const label = pageNumberSlideLabel(project.pageNumber, project.slides, order);
   if (!label) return null;
   const { width, height } = project.canvas;
   const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, label);
@@ -1413,6 +1525,10 @@ function SetupFlow({
   const [brief, setBrief] = useState(() => structuredClone(project.brief));
   const [outline, setOutline] = useState(() => structuredClone(project.slides));
   const [busy, setBusy] = useState(false);
+  // 隱藏頁只有「返回修改需求」回到精靈時才可能存在（大綱是在編輯器裡才隱藏得了頁面的）。
+  // 數的是 project.slides 而不是 outline 草稿：`generateAll` 作用的是伺服器上那一份。
+  const hiddenCount = hiddenSlideCount(project.slides);
+  const [askBatchChoice, setAskBatchChoice] = useState(false);
   const [showRequirements, setShowRequirements] = useState(
     project.workflowStage === "requirements",
   );
@@ -1526,7 +1642,7 @@ function SetupFlow({
     }
   };
 
-  const confirmAndGenerate = async () => {
+  const confirmAndGenerate = async (choice: BatchGenerateChoice = "all") => {
     setBusy(true);
     onError("");
     try {
@@ -1552,7 +1668,13 @@ function SetupFlow({
         throw new Error(currentReadiness.message);
       }
       // 不傳 providerId：server 依專案組合（或預設組合）解析影像模型。
-      await api.generateAll(project.id, undefined, acceptUnknownReadiness);
+      // slideIds 同理只在「只生成可見頁」時才傳，"all" 走的是加入隱藏頁之前的同一條路。
+      await api.generateAll(
+        project.id,
+        undefined,
+        acceptUnknownReadiness,
+        choice === "visible-only" ? visibleSlideIds(updated.slides) : undefined,
+      );
       onProject(await api.getProject(project.id));
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : "生成簡報失敗");
@@ -2060,7 +2182,13 @@ function SetupFlow({
             </button>
             <button
               className="primary"
-              onClick={() => void confirmAndGenerate()}
+              // 有隱藏頁就先問，而且是在整條 async 鏈**開始之前**問掉：鏈中途彈窗會讓
+              // 「已經寫回去的大綱」與「還沒決定要不要生成」兩件事同時懸在半空。
+              // 沒有隱藏頁時完全不多一次點擊，與加入這個對話框之前一致。
+              onClick={() => {
+                if (hiddenCount > 0) setAskBatchChoice(true);
+                else void confirmAndGenerate("all");
+              }}
               disabled={
                 busy ||
                 outline.length === 0 ||
@@ -2077,6 +2205,18 @@ function SetupFlow({
             </button>
           </div>
         </section>
+      )}
+      {askBatchChoice && (
+        <BatchGenerateDialog
+          total={project.slides.length}
+          hiddenCount={hiddenCount}
+          busy={busy}
+          onCancel={() => setAskBatchChoice(false)}
+          onChoose={(choice) => {
+            setAskBatchChoice(false);
+            void confirmAndGenerate(choice);
+          }}
+        />
       )}
     </main>
   );
@@ -2174,6 +2314,8 @@ export function Editor() {
   const [newSlideBusy, setNewSlideBusy] = useState(false);
   const [showImageEdit, setShowImageEdit] = useState(false);
   const [imageEditBusy, setImageEditBusy] = useState(false);
+  // 批次生成遇到隱藏頁時的三選一確認框；沒有隱藏頁時永遠不會被打開。
+  const [askBatchChoice, setAskBatchChoice] = useState(false);
   const [previewVersionId, setPreviewVersionId] = useState<string>();
   // 正在刪除中的版本 id：刪除鈕不 disable 的話，連點第二下會對已刪掉的版本再送一次
   // DELETE，使用者看到的是刪除成功後跳出 NOT_FOUND 錯誤。
@@ -2728,14 +2870,17 @@ export function Editor() {
       }
       if (presentationIndex !== null) {
         if (isFormControl && event.key === " ") return;
-        const lastIndex = project.slides.length - 1;
+        const slides = project.slides;
+        // 四條換頁路徑共用 nextVisibleIndex：隱藏頁一律跳過，到頭到尾停在原地不迴圈。
+        // Home／End 也走它（`-1` / `length` 當起點），否則會停在被隱藏的首／末頁。
         let nextIndex = presentationIndex;
         if (["ArrowDown", "ArrowRight", "PageDown", " "].includes(event.key))
-          nextIndex = Math.min(lastIndex, presentationIndex + 1);
+          nextIndex = nextVisibleIndex(slides, presentationIndex, 1) ?? presentationIndex;
         else if (["ArrowUp", "ArrowLeft", "PageUp"].includes(event.key))
-          nextIndex = Math.max(0, presentationIndex - 1);
-        else if (event.key === "Home") nextIndex = 0;
-        else if (event.key === "End") nextIndex = lastIndex;
+          nextIndex = nextVisibleIndex(slides, presentationIndex, -1) ?? presentationIndex;
+        else if (event.key === "Home") nextIndex = nextVisibleIndex(slides, -1, 1) ?? nextIndex;
+        else if (event.key === "End")
+          nextIndex = nextVisibleIndex(slides, slides.length, -1) ?? nextIndex;
         else if (event.key === "Escape") {
           event.preventDefault();
           setPresentationIndex(null);
@@ -2787,7 +2932,7 @@ export function Editor() {
   // listener 只在簡報模式期間存在（依賴 presentationIndex），離開後編輯畫面的滾輪完全不受影響。
   useEffect(() => {
     if (presentationIndex === null || !project) return;
-    const lastIndex = project.slides.length - 1;
+    const slides = project.slides;
     const onWheel = (event: WheelEvent) => {
       // Ctrl／⌘＋滾輪是瀏覽器的縮放手勢，不是換頁；連它一起擋掉會讓簡報模式無法縮放。
       if (event.ctrlKey || event.metaKey) return;
@@ -2815,15 +2960,19 @@ export function Editor() {
       gesture.accumulated = 0;
       gesture.lockUntil = nowMs + WHEEL_PAGE_LOCK_MS;
       gesture.lockCap = nowMs + WHEEL_MAX_LOCK_MS;
-      // 邊界夾住的做法與鍵盤換頁一致；到頭到尾時 nextIndex 不變，不迴圈。
-      const nextIndex = forward
-        ? Math.min(lastIndex, presentationIndex + 1)
-        : Math.max(0, presentationIndex - 1);
-      if (nextIndex !== presentationIndex) setPresentationIndex(nextIndex);
+      // 邊界與跳過隱藏頁的規則與鍵盤換頁共用同一支 nextVisibleIndex；
+      // 沒有下一張可見頁時 nextIndex 不變，不迴圈。
+      const nextIndex = nextVisibleIndex(slides, presentationIndex, forward ? 1 : -1);
+      if (nextIndex !== undefined && nextIndex !== presentationIndex)
+        setPresentationIndex(nextIndex);
     };
     window.addEventListener("wheel", onWheel, { passive: false });
     return () => window.removeEventListener("wheel", onWheel);
-  }, [presentationIndex, project?.slides.length]);
+    // 直接依賴整個 `project`（與上面那條 keydown effect 相同）而不是挑幾個欄位：listener
+    // 是閉包，捕住的是掛載當下那份 slides，只看 `slides.length` 會讓它拿著過期的可見頁
+    // 清單換頁。手寫的逐頁 key 修得了「現在讀到的欄位」，但下一個讀 slide 欄位的人不會
+    // 記得回來加，編譯器也不會提醒。重掛 listener 是免費的：手勢狀態放在 ref 裡。
+  }, [presentationIndex, project]);
   // 選取的縮圖若超出縮圖列可視範圍（例如以方向鍵切換），自動捲入視野。
   useEffect(() => {
     if (!selectedId) return;
@@ -3067,6 +3216,33 @@ export function Editor() {
       ? imageUrl(project.id, previewVersion.imagePath)
       : currentImage(project, presentationSlide)
     : undefined;
+  // 點擊舞台與控制列兩條路徑同樣走 nextVisibleIndex；`undefined` 直接就是按鈕的 disabled 條件。
+  const presentationPrev =
+    presentationIndex === null
+      ? undefined
+      : nextVisibleIndex(project.slides, presentationIndex, -1);
+  const presentationNext =
+    presentationIndex === null ? undefined : nextVisibleIndex(project.slides, presentationIndex, 1);
+  const visibleSlideCount = project.slides.filter((slide) => !slide.hidden).length;
+  const hiddenCount = project.slides.length - visibleSlideCount;
+  /**
+   * 控制列的「第幾頁 / 共幾頁」。與頁碼疊層**只**共用「隱藏頁不算」這一條，刻意不套
+   * `startAt`／`skipFirstSlide`：那兩個是印在成品上的 chrome 設定（`skipFirstSlide` 開、
+   * `startAt: 10` 時，色塊寫「第 10 頁」而這裡寫「1 / 4」，兩者都對），控制列則是放映進度，
+   * 必須從 1 數到可見頁數。不要「統一」成呼叫 `pageNumberSlideLabel()`——那會讓進度指示
+   * 在關閉頁碼時整個消失、開啟 skipFirstSlide 時第一頁變成空白。
+   *
+   * 夾到至少 1：放映中的那頁若在別的分頁被改成隱藏、而它又正好是 index 0，未夾制時
+   * 這裡會算出 `0 / 3`（`alt` 也會變成「簡報第 0 頁」）。落差只在顯示上，不值得為它在
+   * 簡報途中強制跳頁，但「第 0 頁」是明顯錯的字。
+   */
+  const presentationPosition =
+    presentationIndex === null
+      ? 0
+      : Math.max(
+          1,
+          project.slides.slice(0, presentationIndex + 1).filter((slide) => !slide.hidden).length,
+        );
   const run = async (operation: () => Promise<PresentationProject>) => {
     setError(undefined);
     try {
@@ -3076,6 +3252,25 @@ export function Editor() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "操作失敗");
       return undefined;
+    }
+  };
+  /**
+   * 批次生成：先存下編輯中的大綱，再依使用者的選擇決定要不要把隱藏頁也排進去。
+   * `"all"` 不傳 `slideIds`，與加入隱藏頁之前完全同一條路。
+   */
+  const runBatchGenerate = async (choice: BatchGenerateChoice) => {
+    const saved = await save();
+    if (!saved) return;
+    try {
+      await api.generateAll(
+        project.id,
+        undefined,
+        acceptUnknownReadiness,
+        choice === "visible-only" ? visibleSlideIds(project.slides) : undefined,
+      );
+      setProject(await api.getProject(project.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "批次生成失敗");
     }
   };
   const textLayerHint = `${textBoxes.length} 個文字框 · ⌘/Ctrl+C 複製 · ⌘/Ctrl+V 貼上 · Delete 刪除 · 單擊選取 · 雙擊編輯文字`;
@@ -3132,10 +3327,17 @@ export function Editor() {
     }, PAGE_NUMBER_DEBOUNCE_MS);
   };
   const startPresentation = () => {
-    const index = Math.max(
+    const preferred = Math.max(
       0,
       project.slides.findIndex((slide) => slide.id === selected?.id),
     );
+    // 選取的那頁被隱藏時落到最近的可見頁；一張可見頁都沒有就不進場——空的簡報模式
+    // 只會是一片黑幕加上「0 / 0」，離開的唯一辦法還是 Esc。
+    const index = firstPresentableIndex(project.slides, preferred);
+    if (index === undefined) {
+      setError("所有頁面都已隱藏，無法開始簡報。請先取消隱藏至少一頁。");
+      return;
+    }
     // 手勢狀態跟著這次簡報從零開始：上一輪留下的冷卻會把進場後第一下滾輪吃掉。
     presentationWheel.current = { accumulated: 0, lastEventAt: 0, lockUntil: 0, lockCap: 0 };
     setPresentationIndex(index);
@@ -3384,7 +3586,7 @@ export function Editor() {
             return (
               <div
                 key={slide.id}
-                className={`thumbnail ${slide.id === selected?.id ? "selected" : ""}`}
+                className={`thumbnail ${slide.id === selected?.id ? "selected" : ""} ${slide.hidden ? "hidden-slide" : ""}`}
                 draggable
                 onDragStart={() => setDraggedId(slide.id)}
                 onDragOver={(event) => event.preventDefault()}
@@ -3411,7 +3613,29 @@ export function Editor() {
                 >
                   {!thumb && <em>{slide.purpose}</em>}
                 </span>
+                {/* 淡化本身不夠：縮圖本來就有深有淺，只靠透明度看不出是「被隱藏」還是
+                    「這張圖比較暗」，所以再補一個明講的標記。它刻意是 .thumb-canvas 的
+                    兄弟而不是子節點——父層的 opacity 會把標記一起淡掉。 */}
+                {slide.hidden && <i className="thumb-hidden-badge">已隱藏</i>}
                 <span className="thumb-actions">
+                  <button
+                    /* 隱藏中的頁面，這顆按鈕是唯一的復原途徑，因此 `.hidden-slide` 讓
+                       `.thumb-actions` 永遠可見（見 styles.css）；只在 hover 顯示會讓使用者
+                       找不到怎麼取消隱藏。
+                       名稱跟著狀態翻（「取消隱藏此頁」已經蘊含「這一頁現在是隱藏的」），
+                       所以**不加** `aria-pressed`：兩者併用時螢幕閱讀器會念出
+                       「取消隱藏此頁, 已按下」——雙重否定，比沒有狀態資訊更糟。
+                       視覺上的狀態由「已隱藏」標記與淡化的縮圖承擔。 */
+                    className="thumb-hide"
+                    title={slide.hidden ? "取消隱藏此頁" : "隱藏此頁（不放映、不匯出 pptx／pdf）"}
+                    aria-label={slide.hidden ? "取消隱藏此頁" : "隱藏此頁"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void run(() => api.setSlideHidden(project.id, slide.id, !slide.hidden));
+                    }}
+                  >
+                    {slide.hidden ? "⊘" : "◎"}
+                  </button>
                   <button
                     title="複製頁面"
                     onClick={(event) => {
@@ -3505,7 +3729,7 @@ export function Editor() {
                 </div>
               )}
               {(activeTextLayer || image) && selected && (
-                <PageNumberOverlay project={pageNumberProject} index={selected.order} />
+                <PageNumberOverlay project={pageNumberProject} order={selected.order} />
               )}
             </div>
             {/*
@@ -4450,16 +4674,10 @@ export function Editor() {
               </button>
               <button
                 className="batch-generate"
+                // 有隱藏頁就先問要不要連它們一起生成；沒有就完全不多一次點擊。
                 onClick={() => {
-                  void save().then(async (saved) => {
-                    if (!saved) return;
-                    try {
-                      await api.generateAll(project.id, undefined, acceptUnknownReadiness);
-                      setProject(await api.getProject(project.id));
-                    } catch (reason) {
-                      setError(reason instanceof Error ? reason.message : "批次生成失敗");
-                    }
-                  });
+                  if (hiddenCount > 0) setAskBatchChoice(true);
+                  else void runBatchGenerate("all");
                 }}
                 disabled={
                   project.jobs.some((job) => ["queued", "running"].includes(job.status)) ||
@@ -4487,13 +4705,45 @@ export function Editor() {
             <div className="inspector-heading">
               <span>EXPORT</span>
             </div>
-            <p>匯出會依目前頁面順序使用每頁的目前版本；缺少圖片的頁面會阻止匯出。</p>
-            <a href={`/api/projects/${encodeURIComponent(project.id)}/export/pptx`}>
-              下載 PowerPoint (.pptx)
-            </a>
-            <a href={`/api/projects/${encodeURIComponent(project.id)}/export/pdf`}>
-              下載 PDF (.pdf)
-            </a>
+            {/*
+              「哪些頁面會進成品」必須寫在下載點旁邊。在這之前唯一講這件事的地方是縮圖列
+              那顆 23px 按鈕的 tooltip——使用者按下「下載 PowerPoint」時看不到它。
+              「缺少圖片會阻止匯出」也依格式而異了：可見頁缺圖擋住全部四種，隱藏頁缺圖
+              誰都不擋（它沒有位元組可輸出）。
+            */}
+            <p>
+              匯出會依目前頁面順序使用每頁的目前版本；缺少圖片的<strong>可見</strong>
+              頁面會阻止匯出。
+              {hiddenCount > 0 ? (
+                <>
+                  {" "}
+                  這份簡報有 <strong>{hiddenCount}</strong> 頁隱藏：pptx／pdf 只含可見頁（目前{" "}
+                  <strong>
+                    {visibleSlideCount} / {project.slides.length}
+                  </strong>{" "}
+                  頁），PNG 與專案備份收錄全部頁面。
+                </>
+              ) : (
+                " pptx／pdf 只含可見頁，PNG 與專案備份收錄全部頁面。"
+              )}
+            </p>
+            {visibleSlideCount === 0 ? (
+              // 全部隱藏時伺服器會回 400；匯出連結是裸 `<a href>`，讓它按下去等於把一段
+              // JSON 丟進瀏覽器分頁。這裡先擋住並就地說明。
+              <p className="export-blocked" role="status">
+                所有頁面都已隱藏，pptx／pdf 沒有可以匯出的頁面。請先取消隱藏至少一頁；
+                下方兩種格式仍會收錄全部頁面。
+              </p>
+            ) : (
+              <>
+                <a href={`/api/projects/${encodeURIComponent(project.id)}/export/pptx`}>
+                  下載 PowerPoint (.pptx)
+                </a>
+                <a href={`/api/projects/${encodeURIComponent(project.id)}/export/pdf`}>
+                  下載 PDF (.pdf)
+                </a>
+              </>
+            )}
             <a href={`/api/projects/${encodeURIComponent(project.id)}/export/png.zip`}>
               下載每頁 PNG (.zip)
             </a>
@@ -4624,9 +4874,9 @@ export function Editor() {
           role="dialog"
           aria-modal="true"
           aria-label="全螢幕簡報"
-          onClick={() =>
-            setPresentationIndex(Math.min(project.slides.length - 1, presentationIndex + 1))
-          }
+          onClick={() => {
+            if (presentationNext !== undefined) setPresentationIndex(presentationNext);
+          }}
         >
           <div className="presentation-surface">
             {presentationImage ? (
@@ -4645,10 +4895,10 @@ export function Editor() {
               >
                 <img
                   src={presentationImage}
-                  alt={`簡報第 ${presentationIndex + 1} 頁`}
+                  alt={`簡報第 ${presentationPosition} 頁`}
                   draggable={false}
                 />
-                <PageNumberOverlay project={pageNumberProject} index={presentationSlide.order} />
+                <PageNumberOverlay project={pageNumberProject} order={presentationSlide.order} />
               </div>
             ) : (
               <div className="presentation-empty">
@@ -4660,20 +4910,22 @@ export function Editor() {
           <div className="presentation-controls" onClick={(event) => event.stopPropagation()}>
             <button
               aria-label="上一頁"
-              disabled={presentationIndex === 0}
-              onClick={() => setPresentationIndex(Math.max(0, presentationIndex - 1))}
+              disabled={presentationPrev === undefined}
+              onClick={() => {
+                if (presentationPrev !== undefined) setPresentationIndex(presentationPrev);
+              }}
             >
               ←
             </button>
             <span>
-              {presentationIndex + 1} / {project.slides.length}
+              {presentationPosition} / {visibleSlideCount}
             </span>
             <button
               aria-label="下一頁"
-              disabled={presentationIndex === project.slides.length - 1}
-              onClick={() =>
-                setPresentationIndex(Math.min(project.slides.length - 1, presentationIndex + 1))
-              }
+              disabled={presentationNext === undefined}
+              onClick={() => {
+                if (presentationNext !== undefined) setPresentationIndex(presentationNext);
+              }}
             >
               →
             </button>
@@ -4686,6 +4938,18 @@ export function Editor() {
             </button>
           </div>
         </div>
+      )}
+      {askBatchChoice && (
+        <BatchGenerateDialog
+          total={project.slides.length}
+          hiddenCount={hiddenCount}
+          busy={saving}
+          onCancel={() => setAskBatchChoice(false)}
+          onChoose={(choice) => {
+            setAskBatchChoice(false);
+            void runBatchGenerate(choice);
+          }}
+        />
       )}
       {importNoticeToast}
       {error && (

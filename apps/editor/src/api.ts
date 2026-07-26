@@ -220,6 +220,15 @@ export const api = {
         body: JSON.stringify(patch),
       },
     ),
+  /**
+   * 與 `updateSlide` 同一個 PATCH 端點，但獨立一支：`updateSlide` 的 patch 型別是非 partial
+   * 的 `Pick<…>`（大綱欄位一次全送），把 `hidden` 併進去會逼所有既有呼叫端一起改。
+   */
+  setSlideHidden: (projectId: string, slideId: string, hidden: boolean) =>
+    request<PresentationProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}`,
+      { method: "PATCH", body: JSON.stringify({ hidden }) },
+    ),
   // providerId 省略時，server 依專案組合（或預設組合）解析影像模型。
   generate: (
     projectId: string,
@@ -237,16 +246,23 @@ export const api = {
         }),
       },
     ),
+  /**
+   * `slideIds` 省略時 server 對**全部**頁面排隊（含隱藏頁）；要只生成一部分（例如跳過
+   * 隱藏頁）就把那些 id 傳進來。傳空陣列會被 server 以 `INVALID_SLIDE_SELECTION` 擋掉，
+   * 所以呼叫端要自己確保清單非空。
+   */
   generateAll: (
     projectId: string,
     providerId: string | undefined,
     acceptUnknownReadiness = false,
+    slideIds?: string[],
   ) =>
     request<GenerationJob[]>(`/api/projects/${encodeURIComponent(projectId)}/generate`, {
       method: "POST",
       body: JSON.stringify({
         ...(providerId ? { providerId } : {}),
         acceptUnknownReadiness,
+        ...(slideIds ? { slideIds } : {}),
       }),
     }),
   editSlideImage: (

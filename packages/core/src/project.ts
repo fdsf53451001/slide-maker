@@ -44,6 +44,7 @@ function slide(order: number, purpose: string, content: string, layoutHint: stri
     sourceIds: [],
     pinnedSourceIds: [],
     outlineDirty: false,
+    hidden: false,
     versions: [],
   };
 }

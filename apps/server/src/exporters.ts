@@ -6,10 +6,11 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { Resvg } from "@resvg/resvg-js";
 import sharp, { type Sharp } from "sharp";
 import {
-  pageNumberLabel,
   pageNumberLayout,
+  pageNumberSlideLabel,
   parseProject,
   type PresentationProject,
+  type SlideVersion,
 } from "@slide-maker/core";
 import { textElements } from "./text-layers.js";
 import type { FileProjectRepository } from "./repository.js";
@@ -28,14 +29,46 @@ export function resolvePptxConstructor(candidate: unknown): PptxGenJSConstructor
   throw new Error("PPTX_EXPORTER_UNAVAILABLE");
 }
 
-function currentVersions(project: PresentationProject) {
-  return [...project.slides]
-    .sort((a, b) => a.order - b.order)
-    .map((slide) => {
-      const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
-      if (!version) throw new Error(`SLIDE_VERSION_MISSING:${slide.order + 1}`);
-      return { slide, version };
-    });
+/**
+ * 依序排好的「頁面＋目前版本」。
+ *
+ * `includeHidden` 為 false（`pptx`／`pdf`，成品不含隱藏頁）時隱藏頁完全不列入；為 true
+ * （`png.zip`，收錄全部頁面）時隱藏頁照常輸出。
+ *
+ * 兩種模式共用一條規則：**隱藏頁永遠不會讓整份匯出失敗**。沒有目前版本的隱藏頁在
+ * `png.zip` 也一樣略過——它沒有任何位元組可以輸出，卻會讓四種格式裡只有 `png.zip` 丟
+ * `SLIDE_VERSION_MISSING`／HTTP 400，而匯出連結是裸 `<a href>`，使用者會在瀏覽器分頁看到
+ * 一段 JSON。觀察得到的行為上這沒有違反「png.zip 收錄全部頁面」：那一頁本來就沒有圖。
+ * 可見頁缺圖仍然是錯誤（那是使用者真的漏生成了一頁，四種格式該一起說同一個故事）。
+ */
+function currentVersions(project: PresentationProject, options: { includeHidden?: boolean } = {}) {
+  const includeHidden = options.includeHidden ?? true;
+  const entries: { slide: PresentationProject["slides"][number]; version: SlideVersion }[] = [];
+  for (const slide of [...project.slides].sort((a, b) => a.order - b.order)) {
+    if (slide.hidden && !includeHidden) continue;
+    const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
+    if (!version) {
+      if (slide.hidden) continue;
+      throw new Error(`SLIDE_VERSION_MISSING:${slide.order + 1}`);
+    }
+    entries.push({ slide, version });
+  }
+  return entries;
+}
+
+/**
+ * `pptx`／`pdf` 用的可見頁清單；一張可見頁都沒有時拒絕匯出。
+ *
+ * 兩種格式在這個狀態下都會產出「合法但退化」的檔案而不是報錯：pptx 是零張投影片的封裝，
+ * pdf 更糟——`PDFDocument.save()` 對沒有頁面的文件會補一張空白 A4 直式頁（595×842），
+ * 使用者拿到的是一張與 16:9 簡報毫無關係的白紙。簡報模式對「全部隱藏」已經明確拒絕並說明
+ * 原因，匯出這條路必須有同一條防線。`png.zip`／`slide-project` 不受影響：它們收錄全部頁面，
+ * 全部隱藏時仍是完整的檔案。
+ */
+function visibleVersions(project: PresentationProject) {
+  const entries = currentVersions(project, { includeHidden: false });
+  if (!entries.length) throw new Error("EXPORT_NO_VISIBLE_SLIDES");
+  return entries;
 }
 
 async function pngFor(
@@ -59,10 +92,10 @@ async function pngFor(
  * 系統合成頁碼的疊圖（PNG zip 與 PDF 共用）。
  *
  * 幾何與文字都來自 core 的 `pageNumberLayout`，與編輯器預覽及 PPTX 用的是同一份計算；
- * 這裡只負責把它翻成 SVG。這一頁不編號時回傳 `undefined`，呼叫端據此完全跳過 sharp。
+ * 這裡只負責把它翻成 SVG。這一頁不編號時（含隱藏頁）回傳 `undefined`，呼叫端據此完全跳過 sharp。
  */
 export function pageNumberSvg(project: PresentationProject, order: number): Buffer | undefined {
-  const label = pageNumberLabel(project.pageNumber, order, project.slides.length);
+  const label = pageNumberSlideLabel(project.pageNumber, project.slides, order);
   if (!label) return undefined;
   const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, label);
   const rect = chip
@@ -122,7 +155,7 @@ async function exportPdf(
   project: PresentationProject,
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
-  for (const { slide, version } of currentVersions(project)) {
+  for (const { slide, version } of visibleVersions(project)) {
     // 這裡刻意用 version.imagePath 而非 PPTX 的 textLayer.backgroundPath：PDF 沒有可編輯
     // 文字物件，頁面要的是含文字的合成圖，不是抹字後的背景。
     const bytes = await pngFor(repository, project, version.imagePath);
@@ -173,7 +206,7 @@ async function exportPptx(
   pptx.author = "Slide Maker";
   pptx.subject = project.brief.topic;
   pptx.title = project.name;
-  for (const { slide: spec, version } of currentVersions(project)) {
+  for (const { slide: spec, version } of visibleVersions(project)) {
     const backgroundPath = version.textLayer?.backgroundPath ?? version.imagePath;
     const bytes = await pngFor(repository, project, backgroundPath);
     const compressed = await compressSlideImage(bytes);
@@ -254,7 +287,7 @@ async function exportPptx(
       }
     }
     // 頁碼是專案級的系統合成物，與這一頁有沒有可編輯文字層無關，因此獨立於上面的迴圈。
-    const pageLabel = pageNumberLabel(project.pageNumber, spec.order, project.slides.length);
+    const pageLabel = pageNumberSlideLabel(project.pageNumber, project.slides, spec.order);
     if (pageLabel) {
       const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, pageLabel);
       const fontSizePt = text.fontSize * scaleY * 72;

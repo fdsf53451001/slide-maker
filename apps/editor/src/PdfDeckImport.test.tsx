@@ -24,6 +24,7 @@ const slide = (id: string, content: string, order: number): SlideSpec => ({
   sourceIds: [],
   pinnedSourceIds: [],
   outlineDirty: false,
+  hidden: false,
   versions: [],
 });
 

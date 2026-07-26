@@ -35,6 +35,7 @@ function baseRequest(): ImageGenerationRequest {
       sourceIds: [],
       pinnedSourceIds: [],
       outlineDirty: false,
+      hidden: false,
       versions: [],
     },
     style: {

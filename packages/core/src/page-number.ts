@@ -1,7 +1,11 @@
 import type { EditableTextBox, PageNumberSettings } from "./schemas.js";
 
 /**
- * 這一頁要顯示的數字；不編號時回 undefined。`index` 是 0-based 的 `slide.order`。
+ * 這一頁要顯示的數字；不編號時回 undefined。
+ *
+ * @internal 底層規則，`index` 是**可見頁裡的 0-based 序**而不是 `slide.order`——隱藏頁
+ * 不佔序號，兩者在有隱藏頁時不相等。渲染端一律走 {@link pageNumberSlideLabel}；直接呼叫
+ * 這一支等於自己維護第二套可見序規則，而它必然會與其他三端漂開。
  */
 export function pageNumberValue(settings: PageNumberSettings, index: number): number | undefined {
   if (!settings.enabled) return undefined;
@@ -11,12 +15,19 @@ export function pageNumberValue(settings: PageNumberSettings, index: number): nu
 
 /**
  * `n / N` 的 N：最後一頁顯示的數字，而不是投影片張數——跳過封面時兩者差 1。
+ *
+ * @internal 見 {@link pageNumberValue}；`slideCount` 是**可見頁**張數。
  */
 export function pageNumberTotal(settings: PageNumberSettings, slideCount: number): number {
   const last = slideCount - 1 - (settings.skipFirstSlide ? 1 : 0) + settings.startAt;
   return Math.max(settings.startAt, last);
 }
 
+/**
+ * @internal 索引式的底層標籤組裝。**渲染端請用 {@link pageNumberSlideLabel}**——伺服器 SVG
+ * 合成、PPTX、編輯器畫布與簡報模式四端都只走那一支，`index`／`slideCount` 這一對參數在
+ * 有隱藏頁時很容易被錯著餵成 `slide.order` 與 `slides.length`（那正是「四端各差 1」的來源）。
+ */
 export function pageNumberLabel(
   settings: PageNumberSettings,
   index: number,
@@ -28,6 +39,43 @@ export function pageNumberLabel(
     return `${value} / ${pageNumberTotal(settings, slideCount)}`;
   if (settings.format === "zh-page") return `第 ${value} 頁`;
   return String(value);
+}
+
+/**
+ * 頁碼只認得可見頁。刻意只要求 `order` 與 `hidden`，讓四個渲染端（伺服器 SVG 合成、
+ * PPTX、編輯器畫布、簡報模式）都能直接餵 `project.slides`。
+ */
+export type PageNumberSlide = { order: number; hidden?: boolean };
+
+/**
+ * 依 `order` 排序後的可見頁；`order` 不連續（隱藏頁在中間）也不影響結果。
+ *
+ * `filter` 已經產生新陣列，`sort` 不會動到呼叫端的 `project.slides`。
+ */
+function visibleSlides(slides: readonly PageNumberSlide[]): PageNumberSlide[] {
+  return slides.filter((slide) => !slide.hidden).sort((a, b) => a.order - b.order);
+}
+
+/**
+ * 這一頁要顯示的標籤，**以整份簡報的可見頁為基準**：隱藏頁本身不編號（回 undefined），
+ * 可見頁則以「可見頁裡的 0-based 序」與「可見頁總數」轉呼叫 {@link pageNumberLabel}。
+ * 五頁而第 3 頁隱藏時，其餘四頁依序是 1、2、3、4，`n / N` 的 N 也只算可見頁。
+ *
+ * 四個渲染端一律走這個入口，不得各自算可見序號——`skipFirstSlide` 的語意因此自動變成
+ * 「跳過第一張**可見**頁」（封面被隱藏時，下一張可見頁就是新的封面）。
+ *
+ * `order` 不在 `slides` 裡（呼叫端拿著已被刪除的頁）同樣回 undefined：畫不出頁碼，
+ * 但比丟例外讓整份匯出失敗合理。
+ */
+export function pageNumberSlideLabel(
+  settings: PageNumberSettings,
+  slides: readonly PageNumberSlide[],
+  order: number,
+): string | undefined {
+  const visible = visibleSlides(slides);
+  const index = visible.findIndex((slide) => slide.order === order);
+  if (index < 0) return undefined;
+  return pageNumberLabel(settings, index, visible.length);
 }
 
 /**

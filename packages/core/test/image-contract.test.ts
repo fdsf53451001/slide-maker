@@ -30,6 +30,7 @@ function request(): ImageGenerationRequest {
       sourceIds: ["source-1"],
       pinnedSourceIds: [],
       outlineDirty: false,
+      hidden: false,
       versions: [],
     },
     style: {
