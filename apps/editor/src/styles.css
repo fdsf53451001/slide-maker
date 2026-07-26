@@ -1397,10 +1397,10 @@ header {
   align-items: center;
   gap: 12px;
 }
-/* 文字圖層操作說明／重繪狀態：一行寫不完就截斷，完整內容留在 title。
+/* 文字圖層的框數：一行寫不完就截斷（現在的內容短到不會發生，留著是為了不假設字數）。
    選擇器要含父層，否則下面那條 `.stage-meta-actions > span` 的顏色會蓋掉它。 */
 .stage-meta-actions .text-layer-status {
-  /* 保留 8ch，讓「N 個文字框」那截在最窄的視窗也讀得到，不然提示等於消失。 */
+  /* 保留 8ch，讓「N 個文字框」在最窄的視窗也讀得到，不然這段等於消失。 */
   flex: 0 1 auto;
   min-width: 8ch;
   overflow: hidden;
@@ -3820,12 +3820,8 @@ header {
   border-radius: 7px;
   background: #101a29;
 }
-.text-properties > small {
-  display: block;
-  margin-top: 6px;
-  color: #718098;
-  line-height: 1.5;
-}
+/* `.text-properties > small` 隨「沒選取文字框就整塊不顯示」一起移除：那句提示是這個
+   選擇器唯一的使用者，留著會讓人以為區塊裡還有一段說明文字。 */
 .text-properties .section-label {
   margin-bottom: 8px;
 }

@@ -48,8 +48,8 @@ describe("換頁的可見頁邊界只有一份", () => {
   });
 });
 
-function hiddenDeck(topic: string, hiddenOrders: number[] = []) {
-  const project = createProject({ topic, brief: { desiredSlideCount: 4 } });
+function hiddenDeck(topic: string, hiddenOrders: number[] = [], slideCount = 4) {
+  const project = createProject({ topic, brief: { desiredSlideCount: slideCount } });
   project.workflowStage = "editing";
   const now = new Date().toISOString();
   for (const slide of project.slides) {
@@ -266,6 +266,92 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
       expect(screen.queryByRole("dialog", { name: "批次生成與隱藏頁" })).toBeNull(),
     );
     expect(generateBodies(fetchMock)).toHaveLength(0);
+  });
+});
+
+describe("縮圖列 PAGES 的清點反映隱藏頁", () => {
+  /** 給眼睛看的那一段（另一段是只給螢幕閱讀器的完整句子）。 */
+  const countText = () =>
+    document.querySelector(".rail-heading-count b span[aria-hidden='true']")!.textContent;
+  const countTitle = () => document.querySelector(".rail-heading-count b")!.getAttribute("title");
+  const countSpoken = () =>
+    document.querySelector(".rail-heading-count b .visually-hidden")!.textContent;
+
+  it("有隱藏頁時寫「可見數/總數」，並用一句完整的話說明", async () => {
+    const state = { project: hiddenDeck("清點有隱藏", [1]) };
+    stubApi(state);
+    await enter("清點有隱藏");
+
+    expect(countText()).toBe("3/4");
+    expect(countTitle()).toBe("4 頁，其中 1 頁隱藏，3 頁會放映");
+    // 「3/4」念出來是「三斜線四」，等於沒有資訊；閱讀器讀到的必須是那句話。
+    expect(countSpoken()).toBe("4 頁，其中 1 頁隱藏，3 頁會放映");
+  });
+
+  it("沒有隱藏頁時維持單一數字，不寫成 4/4（那個分母不帶任何資訊）", async () => {
+    const state = { project: hiddenDeck("清點無隱藏") };
+    stubApi(state);
+    await enter("清點無隱藏");
+
+    expect(countText()).toBe("4");
+    expect(countTitle()).toBe("4 頁");
+    expect(countSpoken()).toBe("4 頁");
+  });
+
+  it("按下隱藏鈕後就地改成 3/4，取消隱藏再變回 4", async () => {
+    const state = { project: hiddenDeck("清點跟著切換") };
+    stubApi(state);
+    await enter("清點跟著切換");
+    expect(countText()).toBe("4");
+
+    fireEvent.click(screen.getAllByLabelText("隱藏此頁")[2]!);
+    await waitFor(() => expect(countText()).toBe("3/4"));
+
+    fireEvent.click(screen.getByLabelText("取消隱藏此頁"));
+    await waitFor(() => expect(countText()).toBe("4"));
+    expect(countTitle()).toBe("4 頁");
+  });
+
+  it("全部頁面都隱藏時是 0/4，不是空字串也不是退回單一數字", async () => {
+    // 0 是**最需要**分子的那一格：這個狀態下簡報模式與 pptx／pdf 都會被拒絕，
+    // 縮圖列還是列出四張，單一個「4」等於完全沒有線索。
+    const state = { project: hiddenDeck("全部隱藏", [0, 1, 2, 3]) };
+    stubApi(state);
+    await enter("全部隱藏");
+
+    expect(countText()).toBe("0/4");
+    expect(countTitle()).toBe("4 頁，其中 4 頁隱藏，0 頁會放映");
+    expect(countSpoken()).toBe("4 頁，其中 4 頁隱藏，0 頁會放映");
+  });
+
+  it("只有一頁且未隱藏：單一個 1（分母同樣不帶資訊）", async () => {
+    const state = { project: hiddenDeck("單頁未隱藏", [], 1) };
+    stubApi(state);
+    await enter("單頁未隱藏");
+
+    expect(countText()).toBe("1");
+    expect(countTitle()).toBe("1 頁");
+  });
+
+  it("只有一頁且被隱藏：0/1", async () => {
+    const state = { project: hiddenDeck("單頁被隱藏", [0], 1) };
+    stubApi(state);
+    await enter("單頁被隱藏");
+
+    expect(countText()).toBe("0/1");
+    expect(countTitle()).toBe("1 頁，其中 1 頁隱藏，0 頁會放映");
+  });
+
+  it("隱藏兩頁再取消其中一頁，分子逐步回升而不是一次跳回單一數字", async () => {
+    const state = { project: hiddenDeck("逐步取消隱藏", [1, 2]) };
+    stubApi(state);
+    await enter("逐步取消隱藏");
+    expect(countText()).toBe("2/4");
+
+    fireEvent.click(screen.getAllByLabelText("取消隱藏此頁")[0]!);
+
+    await waitFor(() => expect(countText()).toBe("3/4"));
+    expect(countTitle()).toBe("4 頁，其中 1 頁隱藏，3 頁會放映");
   });
 });
 
