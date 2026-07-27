@@ -283,8 +283,8 @@ describe("背景描述完成後畫面自己更新", () => {
 
     render(<Editor />);
     fireEvent.click(await screen.findByText("圖片描述"));
-    // 「來源」在左側導覽與右側 inspector 各有一個入口，開哪一個都會掛上同一個 SourcePanel。
-    fireEvent.click(screen.getAllByRole("button", { name: /來源/ })[0]!);
+    // 「來源」的唯一入口是右側 inspector 的分頁，標籤帶著來源筆數（「來源 N」）。
+    fireEvent.click(screen.getByRole("button", { name: /^來源 \d+$/ }));
     expect(await screen.findByText(/AI 分析圖片內容中…/)).toBeTruthy();
 
     // 沒有任何使用者操作，畫面就要自己換掉——這正是輪詢在做的事。

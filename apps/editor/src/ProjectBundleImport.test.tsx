@@ -324,7 +324,7 @@ describe("匯出面板的備份檔名標示", () => {
     );
     render(<Editor />);
     fireEvent.click(await screen.findByText("備份用簡報"));
-    fireEvent.click((await screen.findAllByRole("button", { name: "匯出" }))[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: "匯出" }));
     const link = (await screen.findByText(/備份完整專案/)) as HTMLAnchorElement;
     expect(link.textContent).toContain(".slide-project.zip");
     expect(new URL(link.href).pathname.endsWith(`/export/slide-project`)).toBe(true);

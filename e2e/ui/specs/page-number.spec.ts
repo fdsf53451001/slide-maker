@@ -136,12 +136,15 @@ test.describe("page number overlay geometry", () => {
     expectWithin(textRect, canvas);
   });
 
-  test("the 設定 tab toggle turns the overlay on", async ({ page, request }) => {
+  test("the 專案 tab toggle turns the overlay on", async ({ page, request }) => {
     const seeded = await seedGeneratedProject(request, { topic: "頁碼開關", slideCount: 3 });
     await openEditor(page, seeded.id);
 
     await expect(page.locator(".page-number-text")).toHaveCount(0);
-    await page.getByRole("button", { name: "設定", exact: true }).first().click();
+    await page
+      .locator(".inspector-tabs")
+      .getByRole("button", { name: "專案", exact: true })
+      .click();
     await page.getByLabel("顯示頁碼").check();
     // Default skipFirstSlide:true hides it on the cover — uncheck to see it here.
     await page.getByLabel("封面不編號").uncheck();

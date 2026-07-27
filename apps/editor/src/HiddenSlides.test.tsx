@@ -195,7 +195,7 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
       .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>);
 
   const openProjectPanel = async () => {
-    fireEvent.click(screen.getByText("專案"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     return screen.findByText("批次生成全部頁面");
   };
 
@@ -382,9 +382,9 @@ describe("隱藏頁不佔頁碼", () => {
 
 describe("匯出面板講清楚哪些頁面會進成品", () => {
   const openExportPanel = async () => {
-    // 「匯出」在頁面上不只一處（導覽按鈕以外還有別的文案），限定在 workspace 導覽列裡取。
-    const nav = document.querySelector<HTMLElement>(".workspace-nav")!;
-    fireEvent.click(within(nav).getByText("匯出"));
+    // 「匯出」在頁面上不只一處（分頁按鈕以外還有別的文案），限定在 inspector 分頁列裡取。
+    const tabs = document.querySelector<HTMLElement>(".inspector-tabs")!;
+    fireEvent.click(within(tabs).getByText("匯出"));
     return screen.findByText(/匯出會依目前頁面順序/);
   };
   const links = () =>
