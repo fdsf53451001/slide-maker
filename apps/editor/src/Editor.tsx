@@ -3627,7 +3627,8 @@ export function Editor() {
               className="title-name"
               role="button"
               tabIndex={0}
-              title="點一下重新命名"
+              // 長名字在 header 會被 ellipsis 截斷，tooltip 是看到全名的唯一途徑。
+              title={`${project.name}\n點一下重新命名`}
               onClick={() => {
                 setNameDraft(project.name);
                 setEditingName(true);
