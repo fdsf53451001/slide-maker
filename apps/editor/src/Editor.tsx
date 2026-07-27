@@ -3648,12 +3648,8 @@ export function Editor() {
             {project.canvas.width} × {project.canvas.height} · {project.styleSnapshot.name}
           </small>
         </div>
+        {/* 專案／來源／匯出三個面板的唯一入口是右側 inspector 的分頁；header 只留簡報模式。 */}
         <nav className="workspace-nav">
-          <button onClick={() => setPanel("project")}>專案</button>
-          <button onClick={() => setPanel("sources")}>
-            來源 <b>{project.sources.length}</b>
-          </button>
-          <button onClick={() => setPanel("export")}>匯出</button>
           <button className="present-button" onClick={startPresentation}>
             ▶ 簡報模式
           </button>
@@ -4180,13 +4176,14 @@ export function Editor() {
             className={panel === "project" ? "active" : ""}
             onClick={() => setPanel("project")}
           >
-            設定
+            專案
           </button>
+          {/* 來源筆數原本掛在 header 的導覽列上，導覽列收掉後改由這個分頁承接（accessible name 仍是「來源 N」）。 */}
           <button
             className={panel === "sources" ? "active" : ""}
             onClick={() => setPanel("sources")}
           >
-            來源
+            來源 <b>{project.sources.length}</b>
           </button>
           <button className={panel === "export" ? "active" : ""} onClick={() => setPanel("export")}>
             匯出

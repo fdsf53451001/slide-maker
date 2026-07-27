@@ -1883,6 +1883,11 @@ header {
     padding: 20px 12px 20px 20px;
   }
 }
+/*
+ * 只剩「簡報模式」一顆按鈕。margin-left 維持 34px：`.title-block` 是 header 裡唯一會被
+ * 壓縮的項目（超長專案名以 ellipsis 截斷），這段間距是截斷後的文字與按鈕之間的緩衝，
+ * 且讓按鈕框落在原本第一顆按鈕的位置。gap 對單一子項是 no-op，留著以免之後加回按鈕。
+ */
 .workspace-nav {
   display: flex;
   gap: 5px;
@@ -1903,15 +1908,11 @@ header {
   color: var(--accent-strong);
   background: #171e2c;
 }
-.workspace-nav b {
-  font-size: 9px;
-  color: var(--accent-strong);
-}
+/* 左邊已經沒有相鄰按鈕了，額外的 margin 只會讓它離標題更遠。 */
 .workspace-nav .present-button {
   color: #dfe6f2;
   border: 1px solid var(--border-3);
   border-radius: 5px;
-  margin-left: 8px;
 }
 .presentation-mode {
   position: fixed;
@@ -2068,11 +2069,18 @@ header {
 .inspector-tabs {
   height: 44px;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 按鈕是 nowrap，軌道用裸 1fr（＝minmax(auto, 1fr)）就縮不到 min-content 以下；
+     「來源 100」這種加長標籤會把分頁列撐出面板，故與本檔其他 grid 一致用 minmax(0, 1fr)。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-bottom: 1px solid var(--surface-5);
 }
 .inspector-tabs button {
   font-size: 11px;
+}
+/* 來源筆數的小字：原本在 header 導覽列，現在只出現在「來源」分頁。 */
+.inspector-tabs b {
+  font-size: 9px;
+  color: var(--accent-strong);
 }
 .panel-content {
   overflow-y: auto;

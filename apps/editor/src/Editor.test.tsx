@@ -2171,15 +2171,15 @@ describe("Editor MVP navigation", () => {
     fireEvent.click(await screen.findByText("UI 測試專案"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     expect(screen.queryByText("批次生成全部頁面")).toBeNull();
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("批次生成全部頁面")).toBeTruthy();
 
-    fireEvent.click(screen.getAllByText("來源")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: /^來源 \d+$/ }));
     expect(await screen.findByText("＋ 上傳來源檔案")).toBeTruthy();
-    fireEvent.click(screen.getAllByText("專案")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PROJECT BRIEF")).toBeTruthy();
     expect(screen.getByDisplayValue("工程團隊")).toBeTruthy();
-    fireEvent.click(screen.getAllByText("匯出")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "匯出" }));
     expect(await screen.findByText(/PowerPoint/)).toBeTruthy();
     expect(screen.getByText(/完整專案/)).toBeTruthy();
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -2269,6 +2269,191 @@ describe("Editor MVP navigation", () => {
       ),
     );
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+  });
+});
+
+/*
+ * header 的「專案／來源 N／匯出」收掉之後，這三個面板的唯一入口是右側 inspector 的分頁列。
+ * 既有測試只是「剛好」因為選擇器唯一而通過（getByRole 撞到兩顆就會炸），那是側面證據不是
+ * 釘子：header 若把按鈕加回來，那些測試會壞在「找到兩顆」這種讀不懂的訊息上，而不是壞在
+ * 「header 不該有這些按鈕」。以下四條把新的樣子正面釘住。
+ */
+describe("header 導覽收斂到 inspector 分頁", () => {
+  const now = new Date().toISOString();
+
+  /** 沿用本檔既有的 stub 慣例：列表／providers／styles／readiness 之外一律回目前的專案。 */
+  const stubEditorFetch = (
+    read: () => PresentationProject,
+    handle?: (url: URL, init?: RequestInit) => Response | undefined,
+  ) => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(raw, "http://local.test");
+      if (url.pathname === "/api/projects" && !url.search) return Response.json([read()]);
+      if (url.pathname === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (url.pathname === "/api/styles") return Response.json([createDefaultStyle(now)]);
+      if (url.pathname.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      return handle?.(url, init) ?? Response.json(read());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  const openProject = async (topic: string) => {
+    render(<Editor />);
+    fireEvent.click(await screen.findByText(topic));
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+  };
+
+  const oneSource = (): PresentationProject["sources"] => [
+    {
+      id: "text-source",
+      name: "研究摘要.md",
+      mediaType: "text/markdown",
+      usage: "content",
+      allowModelAccess: true,
+      status: "indexed",
+      assetPath: "assets/sources/text-source/研究摘要.md",
+      sizeBytes: 2048,
+      extractedText: "已經有素材了。",
+      chunks: [{ id: "chunk-1", text: "已經有素材了。" }],
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+
+  const tabLabels = () =>
+    within(document.querySelector<HTMLElement>(".inspector-tabs")!)
+      .getAllByRole("button")
+      .map((button) => button.textContent);
+
+  it("header 只留「▶ 簡報模式」，三個面板入口整個畫面上各只剩分頁那一顆", async () => {
+    const project = createProject({ topic: "導覽收斂", brief: { desiredSlideCount: 2 } });
+    project.workflowStage = "editing";
+    project.sources = oneSource();
+    stubEditorFetch(() => project);
+    await openProject("導覽收斂");
+
+    const nav = document.querySelector<HTMLElement>(".workspace-nav")!;
+    expect(
+      within(nav)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["▶ 簡報模式"]);
+
+    // 「只剩一顆」才是重點：header 把任何一顆加回來，這三條就會抓到兩顆。
+    expect(screen.getAllByRole("button", { name: "專案" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^來源 \d+$/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "匯出" })).toHaveLength(1);
+    // 而且那一顆都在 inspector 分頁列裡，不是散落在別處。
+    const tabs = document.querySelector<HTMLElement>(".inspector-tabs")!;
+    for (const name of ["專案", /^來源 \d+$/, "匯出"] as const)
+      expect(within(tabs).getByRole("button", { name })).toBeTruthy();
+  });
+
+  it("分頁列依序是 頁面／專案／來源 N／匯出，四顆各自開對應的面板", async () => {
+    const project = createProject({ topic: "四個分頁", brief: { desiredSlideCount: 2 } });
+    project.workflowStage = "editing";
+    project.sources = oneSource();
+    stubEditorFetch(() => project);
+    await openProject("四個分頁");
+
+    // 「設定」改名成「專案」，來源分頁帶上筆數。
+    expect(tabLabels()).toEqual(["頁面", "專案", "來源 1", "匯出"]);
+    expect(screen.queryByRole("button", { name: "設定" })).toBeNull();
+
+    const tabs = document.querySelector<HTMLElement>(".inspector-tabs")!;
+    const clickTab = (name: string | RegExp) =>
+      fireEvent.click(within(tabs).getByRole("button", { name }));
+
+    clickTab("專案");
+    expect(await screen.findByText("PROJECT BRIEF")).toBeTruthy();
+    clickTab(/^來源 \d+$/);
+    expect(await screen.findByText("＋ 上傳來源檔案")).toBeTruthy();
+    clickTab("匯出");
+    expect(await screen.findByText(/PowerPoint/)).toBeTruthy();
+    clickTab("頁面");
+    expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
+  });
+
+  it("來源筆數跟著 project.sources 走：上傳 +1、刪除 -1", async () => {
+    let project = createProject({ topic: "來源筆數", brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    stubEditorFetch(
+      () => project,
+      (url, init) => {
+        if (url.pathname.endsWith("/sources") && init?.method === "POST") {
+          project = structuredClone(project);
+          project.sources.push({
+            id: "uploaded-1",
+            name: url.searchParams.get("name") ?? "素材.md",
+            mediaType: "text/markdown",
+            usage: "content",
+            allowModelAccess: true,
+            status: "indexed",
+            assetPath: "assets/sources/uploaded-1/素材.md",
+            sizeBytes: 10,
+            extractedText: "內容",
+            chunks: [{ id: "chunk-1", text: "內容" }],
+            metadata: {},
+            createdAt: now,
+            updatedAt: now,
+          });
+          return Response.json(project, { status: 201 });
+        }
+        if (/\/sources\/[^/]+$/.test(url.pathname) && init?.method === "DELETE") {
+          project = structuredClone(project);
+          project.sources = [];
+          return Response.json(project);
+        }
+        return undefined;
+      },
+    );
+    await openProject("來源筆數");
+
+    fireEvent.click(screen.getByRole("button", { name: "來源 0" }));
+    fireEvent.change(screen.getByLabelText("上傳來源檔案") as HTMLInputElement, {
+      target: { files: [new File(["one"], "one.md", { type: "text/markdown" })] },
+    });
+    expect(await screen.findByRole("button", { name: "來源 1" })).toBeTruthy();
+
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "刪除來源" }));
+    expect(await screen.findByRole("button", { name: "來源 0" })).toBeTruthy();
+  });
+
+  it("header 的簡報模式按鈕仍然打得開全螢幕簡報", async () => {
+    const project = createProject({ topic: "簡報入口", brief: { desiredSlideCount: 3 } });
+    project.workflowStage = "editing";
+    stubEditorFetch(() => project);
+    await openProject("簡報入口");
+
+    fireEvent.click(screen.getByText("▶ 簡報模式"));
+    expect(await screen.findByRole("dialog", { name: "全螢幕簡報" })).toBeTruthy();
+    expect(screen.getByText("1 / 3")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "全螢幕簡報" })).toBeNull());
   });
 });
 
@@ -2393,7 +2578,7 @@ describe("簡報級頁碼", () => {
     fireEvent.click(await screen.findByText("頁碼設定面板"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowDown" });
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
     // 關閉時只有啟用開關，其餘設定不佔面板空間。
     expect(screen.queryByLabelText("位置")).toBeNull();
@@ -2452,7 +2637,7 @@ describe("簡報級頁碼", () => {
     fireEvent.click(await screen.findByText("頁碼逐欄更新"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowDown" });
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
 
     const expectPatch = async (body: unknown) =>
@@ -2507,7 +2692,7 @@ describe("簡報級頁碼", () => {
     expect(await screen.findByDisplayValue(state.project.slides[0]!.purpose)).toBeTruthy();
     expect(document.querySelector(".page-number-layer")).toBeNull();
 
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("封面不編號"));
 
@@ -2604,7 +2789,7 @@ describe("簡報級頁碼", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("字級鍵盤輸入"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
 
     const fontSize = screen.getByLabelText("字級") as HTMLInputElement;
@@ -2635,7 +2820,7 @@ describe("簡報級頁碼", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("字級邊界輸入"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
     const patches = () =>
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
@@ -2666,7 +2851,7 @@ describe("簡報級頁碼", () => {
     fireEvent.click(await screen.findByText("透明度拖曳"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowDown" });
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
     const patches = () =>
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
@@ -2700,7 +2885,7 @@ describe("簡報級頁碼", () => {
     fireEvent.click(await screen.findByText("色塊連續調整"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowDown" });
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
     const patches = () =>
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/page-number"));
@@ -2735,7 +2920,7 @@ describe("簡報級頁碼", () => {
     fireEvent.click(await screen.findByText("亂序回應"));
     expect(await screen.findByText("SLIDE SPEC")).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowDown" });
-    fireEvent.click(screen.getByText("設定"));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
     expect(await screen.findByText("PAGE NUMBER")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("位置"), { target: { value: "bottom-left" } });
