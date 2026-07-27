@@ -1179,7 +1179,13 @@ header {
   background: rgba(9, 13, 22, 0.9);
   padding: 0 20px;
 }
+/*
+ * header 是單行 flex：可壓縮的只有 `.title-block`（標題以 ellipsis 截斷），
+ * 其餘每一項都 `flex: none` 且 nowrap。少了這條，超長專案名（例如整段含網址的
+ * prompt）會把 nav 與狀態列一起壓扁，按鈕內的文字被折成兩行。
+ */
 .brand {
+  flex: none;
   width: 38px;
   height: 30px;
   border: 0;
@@ -1198,6 +1204,8 @@ header {
   align-items: baseline;
   gap: 10px;
   margin-left: 16px;
+  /* header 裡唯一允許被壓縮的項目；min-width: 0 讓內層的 ellipsis 真的生效。 */
+  flex: 0 1 auto;
   min-width: 0;
 }
 .title-block strong {
@@ -1233,15 +1241,18 @@ header {
   border-color: #7aa2ff;
 }
 .title-block small {
+  flex: none;
   color: #707c91;
   font-size: 11px;
   white-space: nowrap;
 }
 .header-status {
+  flex: none;
   margin-left: auto;
   color: #7d899c;
   font-family: "DM Mono", monospace;
   font-size: 11px;
+  white-space: nowrap;
 }
 .status-dot {
   display: inline-block;
@@ -1876,6 +1887,7 @@ header {
   display: flex;
   gap: 5px;
   margin-left: 34px;
+  flex: none;
 }
 .workspace-nav button,
 .inspector-tabs button {
@@ -1884,6 +1896,7 @@ header {
   color: #8b97aa;
   padding: 8px 10px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .workspace-nav button:hover,
 .inspector-tabs button.active {
