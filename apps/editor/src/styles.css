@@ -1359,8 +1359,10 @@ header {
   min-height: 0;
   /* 左右留白刻意比視覺舒適值再緊一些：畫布在寬度受限的視窗（全螢幕 1920×1080／2560×1440）
      下，這裡每省下的寬度都直接變成更大的畫布；高度受限的視窗則不受影響。見 .text-layer-rail。
-     右邊可以再更緊：貼著這條邊的是垂直的文字工具列（圖示按鈕），不是畫布本身，
-     所以那 28px 全額變成畫布寬度，而工具列離 inspector 太近並不會讓人看不懂。 */
+     右邊可以再更緊：側排時貼著這條邊的是垂直的文字工具列（圖示按鈕），不是畫布本身，
+     所以那 28px 全額變成畫布寬度，而工具列離 inspector 太近並不會讓人看不懂。
+     工具列改成橫排（見 .canvas-row-stacked）時貼著右邊的就是畫布了，但那正好是**寬度受限**
+     才會發生的情形——省下的每一個 px 都直接變成更大的畫布，所以照樣維持這個緊的值。 */
   padding: 20px 12px 20px clamp(20px, 2.4vw, 40px);
   overflow: hidden;
   display: flex;
@@ -1435,14 +1437,32 @@ header {
   white-space: nowrap;
   color: var(--text-dim-2);
 }
-/* 畫布 + 右側垂直工具列。垂直空間由 .canvas-fit 吃滿，工具列只佔水平方向。 */
+/* 畫布 + 文字工具列。方向由 JS 依「哪一種佈局的畫布比較大」決定（見 .canvas-row-stacked
+   與 canvasRowLayout.ts）：預設側排，工具列只佔水平方向。
+
+   兩個尺寸由自訂屬性單點定義，橫排的高度算式與 JS 的退路常數都指回這裡：
+   ・--text-rail-thickness：工具列厚度（.text-layer-rail 的 28px 按鈕 + 6px×2 padding
+     + 1px×2 border），同 canvasRowLayout.ts 的 TEXT_RAIL_THICKNESS_PX；
+   ・--canvas-row-gap：畫布與工具列的間距，同 CANVAS_ROW_GAP_PX。
+   JS 正常路徑是量 DOM（厚度）與 computed style（gap），那兩個常數只在量不到時使用；
+   數值一致由 canvasRowLayout.test.ts 的「CSS 幾何地基」直接比對本檔案釘住。
+
+   **這一列不可以有 padding 或 border**：JS 用 clientWidth/clientHeight（padding box）當作
+   可用空間，加了 padding 就會高估、決策偏向橫排（同樣由那組測試擋著）。 */
 .canvas-row {
+  --text-rail-thickness: 42px;
+  --canvas-row-gap: 10px;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--canvas-row-gap);
   margin-bottom: 12px;
+  /* 橫排時 .canvas-fit 要用**整列**的兩軸算自己的高度，所以這一層也必須是「兩軸都可查詢」的
+     容器；--ar 由 Editor.tsx 掛在這裡，再繼承給 .canvas-fit 與 .canvas。
+     順帶讓這一列的尺寸與內容無關（contain: size），JS 的量測輸入因此不受工具列方向影響。
+     巢狀容器不影響 .canvas：cq 單位一律解析到**最近**的容器，也就是 .canvas-fit。 */
+  container-type: size;
 }
 .canvas-fit {
   /* `.text-layer-progress` 的定位容器。**必須顯式寫 relative**：下面的 `container-type: size`
@@ -1461,7 +1481,8 @@ header {
 }
 .canvas {
   /*
-   * 畫布比例由 Editor.tsx 以 inline style 的 `--ar`（= 寬/高）提供，這裡不寫死。
+   * 畫布比例由 Editor.tsx 以 inline style 的 `--ar`（= 寬/高）掛在 `.canvas-row` 上、
+   * 繼承下來，這裡不寫死。
    *
    * 刻意不用 `aspect-ratio` + `height: 100%` + `max-width: 100%`：高度一旦是定值，
    * aspect-ratio 就只能決定寬度，被 max-width 夾住之後比例直接失效（實測 500×588 的
@@ -1847,7 +1868,7 @@ header {
     grid-template-columns: 190px minmax(540px, 1fr) 330px;
   }
   .stage {
-    /* 與上面同一套不對稱：右邊貼的是文字工具列。 */
+    /* 與上面同一套不對稱，理由同 .stage 的 padding 註解（右邊貼的是文字工具列或畫布本身）。 */
     padding: 20px 12px 20px 20px;
   }
 }
@@ -3636,14 +3657,19 @@ header {
   cursor: nw-resize;
 }
 /*
- * 文字圖層工具列：畫布右側的垂直側欄，**只有圖示**、名稱走 aria-label + title。
+ * 文字圖層工具列：**只有圖示**、名稱走 aria-label + title。
  *
- * 側欄佔的是水平方向，而畫布受限於哪一軸要看視窗（實測 16:9 畫布）：
+ * 方向是自適應的，不是固定的側欄——畫布受限於哪一軸要看視窗與畫布比例的關係（實測 16:9 畫布）：
  * ・最大化的瀏覽器（1920×940、2560×1300 這種被 chrome 吃掉高度的視窗）＝**高度**受限，
- *   側欄的寬度不影響畫布大小；
- * ・全螢幕／無 chrome 的 1920×1080、2560×1440 ＝**寬度**受限，下方反而有 130–190px 空白，
- *   這時側欄每一個 px 都是從畫布身上拿的。
- * 圖示化就是為了在後者也幾乎不從畫布身上拿寬度（一排文字標籤要 88px，單欄圖示只要 42px）。
+ *   水平方向本來就有空白，直排側欄的寬度不影響畫布大小 → 維持側排（預設）；
+ * ・全螢幕／無 chrome 的 1920×1080、2560×1440 ＝**寬度**受限，畫布下方反而有 130–190px 空白，
+ *   側欄每一個 px 都是從畫布身上拿的 → 改成畫布下方的橫排（`.canvas-row-stacked`），
+ *   那條空白拿來放工具列，畫布寬度一分不讓。
+ * 兩種佈局的畫布尺寸由 canvasRowLayout.ts 各算一次取大者，刻意不是 media query（斷點只看得到
+ * 視窗寬度，看不到「畫布被哪一軸夾住」）。
+ * 不論哪個方向，圖示化都讓工具列只有 42px 厚（一排文字標籤要 88px）；那 42px
+ * （28px 按鈕 ＋ 6px×2 padding ＋ 1px×2 border）也是 canvasRowLayout.ts 的
+ * TEXT_RAIL_THICKNESS_PX 退路常數，改這裡的尺寸要一起改那邊。
  */
 .text-layer-rail {
   flex: none;
@@ -3661,6 +3687,42 @@ header {
   max-height: 100%;
   min-height: 0;
   overflow-y: auto;
+}
+/* 橫排：工具列移到畫布下方那條空白裡。類別名由 canvasRowLayout.ts 的
+   CANVAS_ROW_STACKED_CLASS 提供（JS 掛、這裡寫同一個字面值，由測試比對）。 */
+.canvas-row-stacked {
+  flex-direction: column;
+  /* 「畫布＋工具列」是一個緊湊的組，剩下的空白**上下對半**放。
+     少了這行（並搭配下面 .canvas-fit 的顯式高度），.canvas-fit 會以 flex: 1 1 auto 吃掉整條
+     剩餘高度、畫布又貼在它頂端，工具列於是被推到整列的最底緣：實測 1440×900 下畫布底緣與
+     工具列相隔 180px（工具列自己厚度的四倍多）、1920×1080 相隔 93px，工具列與它操作的畫布
+     視覺上完全脫節，換來的畫布寬度就白換了。 */
+  justify-content: center;
+}
+.canvas-row-stacked .canvas-fit {
+  /*
+   * 畫布欄的高度改成「畫布本身該有的高度」，不再吞掉整條剩餘空間。
+   * ・`100cqw / var(--ar)`：整列的寬度換算成畫布高度（橫排就是為寬度受限而生的佈局）；
+   * ・`100cqh − 厚度 − gap`：列太矮時的上限，否則工具列會被擠出列外。
+   * cq 單位解析到 `.canvas-row`（最近的容器）；`.canvas` 內部的 cq 仍然解析到 `.canvas-fit`
+   * 自己，畫布因此照樣是精確比例的內接矩形（比例一偏，頁碼就會落進 letterbox 邊條）。
+   * 保留 `shrink`（`0 1 auto`）：萬一工具列實際厚度與 --text-rail-thickness 對不上，
+   * 寧可畫布欄縮一點，也不要整列溢出把工具列推出畫面。
+   */
+  flex: 0 1 auto;
+  height: min(100cqh - var(--text-rail-thickness) - var(--canvas-row-gap), 100cqw / var(--ar));
+}
+.canvas-row-stacked .text-layer-rail {
+  flex-direction: row;
+  /* 對齊畫布中線；直排那套「貼齊頂端＋自己捲」換軸之後要一起解掉，
+     否則 max-height: 100% 會在 column 版面裡把工具列壓成一條。
+     刻意**不寫** `overflow-y: visible`：規範規定兩軸只要有一軸不是 visible，另一軸的 visible
+     就會被計算成 auto，寫了也不會成立（實測 computed 值仍是 auto）。橫排時 max-height 已經
+     解除，垂直方向本來就沒有東西可捲。 */
+  align-self: center;
+  max-height: none;
+  max-width: 100%;
+  overflow-x: auto;
 }
 .text-layer-rail button {
   flex: none;

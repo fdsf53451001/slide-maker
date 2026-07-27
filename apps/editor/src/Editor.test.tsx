@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   createProject,
   createDefaultStyle,
@@ -2585,7 +2585,11 @@ describe("簡報級頁碼", () => {
       return element;
     });
     expect(canvas.style.aspectRatio).toBe("");
-    expect(canvas.style.getPropertyValue("--ar")).toBe(String(1920 / 1080));
+    // `--ar` 掛在 `.canvas-row` 上、由 CSS 繼承下來給 `.canvas`（橫排時 `.canvas-fit` 也要拿它
+    // 算高度，而自訂屬性只往下繼承）。畫布仍然是它的後代，所以拿得到同一個值。
+    const row = canvas.closest(".canvas-row") as HTMLElement;
+    expect(row.style.getPropertyValue("--ar")).toBe(String(1920 / 1080));
+    expect(canvas.style.getPropertyValue("--ar")).toBe("");
     // 頁碼疊層必須掛在同一個 `.canvas` 上，兩者的座標系才是同一個。
     expect(canvas.querySelector(".page-number-layer")).not.toBeNull();
   });
@@ -4731,5 +4735,289 @@ describe("手動文字層", () => {
       fireEvent.click(await screen.findByText("PDF 原生文字層"));
       await waitFor(() => expect(notice()).toBeTruthy());
     });
+  });
+
+  /**
+   * 工具列方向的接線（決策本身在 canvasRowLayout.test.ts 逐條釘住）。
+   *
+   * jsdom 沒有版面也沒有 ResizeObserver，所以尺寸與觀察者都要自己造：重點是驗證
+   * 「ref 有掛上、量到的尺寸真的會變成 `.canvas-row` 上的修飾類別」，以及**同一組尺寸
+   * 重複量不會改變結果**（工具列換方向會改變它自己的兩軸，讀錯軸就會來回抖動）。
+   */
+  it("寬度受限時工具列改到畫布下方，同一組尺寸重複量不會抖動", async () => {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        callback: () => void;
+        constructor(callback: () => void) {
+          this.callback = callback;
+        }
+        observe() {
+          observers.push(this.callback);
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    stubApi(manualProject("自適應工具列", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("自適應工具列"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+
+    const row = document.querySelector(".canvas-row") as HTMLElement;
+    const setRowSize = (width: number, height: number) => {
+      Object.defineProperty(row, "clientWidth", { configurable: true, value: width });
+      Object.defineProperty(row, "clientHeight", { configurable: true, value: height });
+    };
+    // 工具列的兩軸跟著自己的方向對調，與真實 DOM 一致：直排 42×144、橫排 144×42。
+    const stacked = () => row.classList.contains("canvas-row-stacked");
+    for (const [axis, thick] of [
+      ["offsetWidth", false],
+      ["offsetHeight", true],
+    ] as const)
+      Object.defineProperty(rail()!, axis, {
+        configurable: true,
+        get: () => (stacked() === thick ? 42 : 144),
+      });
+    const remeasure = async () => {
+      await act(async () => {
+        for (const notify of observers) notify();
+      });
+    };
+
+    // 全螢幕 1920×1080 的近似值：1280/900 < 16:9，畫布被寬度夾住，下方空著兩百多 px。
+    setRowSize(1280, 900);
+    await remeasure();
+    expect(stacked()).toBe(true);
+    // 換了方向之後再量幾次都必須停在原地（輸入是 .canvas-row 自己的尺寸，不受方向影響）。
+    await remeasure();
+    await remeasure();
+    expect(stacked()).toBe(true);
+
+    // 被 chrome 吃掉高度的視窗：1280/620 > 16:9，水平方向本來就有空白，回到側排。
+    setRowSize(1280, 620);
+    await remeasure();
+    expect(stacked()).toBe(false);
+    await remeasure();
+    expect(stacked()).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 上面那條在最後才 `vi.unstubAllGlobals()`：它一旦在中途斷言失敗，假的 ResizeObserver 就會
+   * 留給後面每一個測試用（同一支檔案共用同一個全域）。這條 afterEach 把它收乾淨，順便讓下面
+   * 新增的測試不必各自收尾。
+   */
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** 讓 jsdom 的元素「有版面」：offset/client 兩組都要，量測讀的不是同一組。 */
+  const setBox = (element: HTMLElement, width: number, height: number) => {
+    for (const [property, value] of [
+      ["offsetWidth", width],
+      ["clientWidth", width],
+      ["offsetHeight", height],
+      ["clientHeight", height],
+    ] as const)
+      Object.defineProperty(element, property, { configurable: true, value });
+  };
+
+  /**
+   * ResizeObserver 的替身（jsdom 沒有這個 API）。
+   *
+   * 除了手動觸發回呼之外，**還記下每一次 `observe()` 的目標元素**：手動觸發的測試分辨不出
+   * 觀察的是誰，而「觀察錯元素」正是這個功能最貴的一種退化（觀察畫布欄或工具列＝把決策的
+   * 產物餵回決策的輸入，真瀏覽器裡就是每次 resize 都來回翻）。`disconnect()` 也真的把目標
+   * 移掉，這樣「元素卸載後有沒有解除觀察」才驗得出來。
+   */
+  const stubResizeObserver = () => {
+    const watched: { target: Element; notify: () => void }[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly callback: () => void;
+        constructor(callback: () => void) {
+          this.callback = callback;
+        }
+        observe(target: Element) {
+          watched.push({ target, notify: this.callback });
+        }
+        unobserve() {}
+        disconnect() {
+          for (let index = watched.length - 1; index >= 0; index -= 1)
+            if (watched[index]!.notify === this.callback) watched.splice(index, 1);
+        }
+      },
+    );
+    return {
+      targets: () => watched.map((entry) => entry.target),
+      remeasure: async () => {
+        await act(async () => {
+          for (const entry of [...watched]) entry.notify();
+        });
+      },
+    };
+  };
+
+  const canvasRow = () => document.querySelector<HTMLElement>(".canvas-row");
+  const isStacked = () => canvasRow()!.classList.contains("canvas-row-stacked");
+
+  it("觀察的是 `.canvas-row` 本身，不是畫布欄也不是工具列", async () => {
+    // 決策的產物（工具列方向）會改變畫布欄與工具列的尺寸；觀察它們等於把輸出接回輸入，
+    // 在真瀏覽器裡就是觀察者迴圈。手動觸發回呼的測試看不出目標是誰，所以這條單獨釘目標身分。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("觀察目標", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("觀察目標"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+
+    expect(observer.targets()).toContain(canvasRow());
+    expect(observer.targets()).not.toContain(document.querySelector(".canvas-fit"));
+    expect(observer.targets()).not.toContain(rail());
+  });
+
+  it("回專案列表再進來時，觀察者跟著換到新的 `.canvas-row`（不是留在已卸載的那個）", async () => {
+    // 畫布列會隨著離開／回到專案整個換人。若用 `useRef` 而不是 callback ref，effect 不會知道
+    // 元素換了，ResizeObserver 會留在一個脫離文件的節點上——之後 resize 再也不會更新版面，
+    // 而且因為舊節點量到的是 0，決策會永遠停在側排。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("換元素", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("換元素"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    const first = canvasRow()!;
+
+    // 回專案列表：畫布列卸載，觀察也要一起解除（否則每進出一次就多留一個觀察者）。
+    fireEvent.click(document.querySelector<HTMLElement>("button.brand")!);
+    await waitFor(() => expect(canvasRow()).toBeNull());
+    expect(observer.targets()).not.toContain(first);
+
+    // 再進來一次：是**新的**節點，而且它真的在被觀察、量到的尺寸真的會生效。
+    fireEvent.click(await screen.findByText("換元素"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    const second = canvasRow()!;
+    expect(second).not.toBe(first);
+    expect(observer.targets()).toContain(second);
+    setBox(second, 1280, 900);
+    setBox(rail()!, 42, 144);
+    await observer.remeasure();
+    expect(isStacked()).toBe(true);
+  });
+
+  it("工具列的實際厚度真的有被量到，不是一路吃常數", async () => {
+    // 厚度的退路常數（42）剛好等於真實厚度，所以「ref 沒掛上」「工具列沒被量」這類退化在
+    // 常見尺寸下完全看不出來。這條把工具列撐厚到足以翻轉決策：1000×600 配 42px 的工具列
+    // 判橫排，配 200px 的判側排。量不到厚度的實作會停在橫排。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("量厚度", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("量厚度"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+
+    setBox(canvasRow()!, 1000, 600);
+    setBox(rail()!, 42, 144);
+    await observer.remeasure();
+    expect(isStacked()).toBe(true);
+
+    // 同一組列尺寸，只把工具列變厚（例如日後多加一排按鈕）：那條空白塞不下它了，回到側排。
+    setBox(rail()!, 200, 200);
+    await observer.remeasure();
+    expect(isStacked()).toBe(false);
+  });
+
+  it("臨界尺寸下重複量測不抖動（工具列換軸不會把決策翻回去）", async () => {
+    // 1280×900 離邊界太遠，讀錯軸也照樣收斂，用它驗「不抖動」等於沒驗。1000×600 才是臨界：
+    // 正確地量到 42 判橫排，錯讀成工具列的長邊（144）就會判側排——兩者交替就是 2-cycle。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("臨界尺寸", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("臨界尺寸"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+
+    setBox(canvasRow()!, 1000, 600);
+    // 工具列的兩軸跟著自己的方向對調，與真實 DOM 一致：直排 42×144、橫排 144×42。
+    for (const [axis, thickAxis] of [
+      ["offsetWidth", false],
+      ["offsetHeight", true],
+    ] as const)
+      Object.defineProperty(rail()!, axis, {
+        configurable: true,
+        get: () => (isStacked() === thickAxis ? 42 : 144),
+      });
+
+    const seen: boolean[] = [];
+    for (let round = 0; round < 6; round += 1) {
+      await observer.remeasure();
+      seen.push(isStacked());
+    }
+    expect(seen).toEqual([true, true, true, true, true, true]);
+  });
+
+  it("列還沒有版面（首次掛載、尺寸全是 0）時維持側排", async () => {
+    // jsdom 預設所有尺寸都是 0，這就是真實瀏覽器第一幀的樣子。此時兩種佈局的畫布都是 0，
+    // 沒有任何理由換版面；若決策在這裡就把類別掛上去，使用者會看到版面在第一幀之後跳一下。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("零尺寸", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("零尺寸"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+
+    expect(isStacked()).toBe(false);
+    await observer.remeasure();
+    expect(isStacked()).toBe(false);
+  });
+
+  it("這一頁還沒有圖（工具列未掛載）時照樣做決策，不會炸掉", async () => {
+    // 沒有圖就沒有工具列，`textRailElement` 是 null。量測必須退回常數厚度而不是 0，
+    // 也不能因為少了元素就整個 effect 掛掉——那會讓之後生成出圖的那一頁再也不換方向。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("沒有圖", []));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("沒有圖"));
+    await waitFor(() => expect(canvasRow()).toBeTruthy());
+    expect(rail()).toBeNull();
+
+    setBox(canvasRow()!, 1280, 900);
+    await observer.remeasure();
+    expect(isStacked()).toBe(true);
+  });
+
+  it("換方向不影響四顆按鈕的語意：aria-label 與 disabled 兩種佈局下完全相同", async () => {
+    // 方向是純視覺的。這條防的是「為了排版把工具列改成另一組 JSX」那種重構——一旦分岔，
+    // 橫排底下的 disabled 條件就會與側排漂移，而 disabled 正是這條工具列唯一的安全機制
+    // （預覽歷史版本、生成中都靠它擋住寫入）。
+    const observer = stubResizeObserver();
+    stubApi(manualProject("按鈕語意", [plainVersion("base-version")]));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("按鈕語意"));
+    await waitFor(() => expect(rail()).toBeTruthy());
+    const snapshot = () =>
+      within(rail()!)
+        .getAllByRole("button")
+        .map((button) => [
+          button.getAttribute("aria-label"),
+          button.getAttribute("title"),
+          (button as HTMLButtonElement).disabled,
+        ]);
+
+    setBox(canvasRow()!, 1280, 620);
+    setBox(rail()!, 42, 144);
+    await observer.remeasure();
+    expect(isStacked()).toBe(false);
+    const side = snapshot();
+    // 這一版沒有文字層：只有「新增文字框」按得下去，其餘三顆是灰的（有混合狀態才驗得出漂移）。
+    expect(side).toEqual([
+      ["新增文字框", "新增文字框（會先建立可編輯文字的新版本）", false],
+      ["刪除文字框", "刪除文字框（Delete）", true],
+      ["復原", "復原（⌘/Ctrl+Z）", true],
+      ["重做", "重做（⇧⌘/Ctrl+Shift+Z）", true],
+    ]);
+
+    setBox(canvasRow()!, 1280, 900);
+    await observer.remeasure();
+    expect(isStacked()).toBe(true);
+    expect(snapshot()).toEqual(side);
   });
 });

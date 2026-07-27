@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -49,6 +50,18 @@ import {
   SOURCE_SELECTION_LABEL,
   type SlideSourceSelection,
 } from "./sourceSelection.js";
+import {
+  measureCanvasRowLayout,
+  shouldStackTextRail,
+  CANVAS_ROW_STACKED_CLASS,
+} from "./canvasRowLayout.js";
+
+/**
+ * 量版面的 effect 要在繪製前跑（見 `Editor` 裡的用處），但 `useLayoutEffect` 在沒有 DOM 的
+ * 環境會警告。`apps/editor` 另外有 library build，可能被別人放進 SSR 的頁面裡，所以在那邊
+ * 退回 passive effect——反正沒有 DOM 時本來也量不到東西。
+ */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 type CombinationSummary = { id: string; name: string; isDefault: boolean; imageModelRef?: string };
 
@@ -2388,6 +2401,48 @@ export function Editor() {
   const textClipboard = useRef<EditableTextBox>(undefined);
   // 縮圖列容器：切換投影片時把選取項捲進可視範圍。
   const railRef = useRef<HTMLDivElement>(null);
+  /**
+   * 文字工具列要不要改成畫布下方的橫排（決策見 canvasRowLayout.ts）。
+   *
+   * 元素本身走 callback ref 存進 state 而不是 `useRef`：畫布列會隨著離開專案回到列表
+   * （`!project`）、切到精靈或 PDF 分析頁（`workflowStage !== "editing"`）而整個卸載再換一個
+   * 新節點回來，工具列則跟著「這一頁有沒有圖」進出。用 ref 的話 effect 不會知道元素換了人，
+   * ResizeObserver 會留在一個已經脫離文件的節點上，之後永遠不再更新。
+   * （簡報模式不在此列：它是 `position: fixed` 的 overlay，`.canvas-row` 全程掛著。）
+   */
+  const [canvasRowElement, setCanvasRowElement] = useState<HTMLDivElement | null>(null);
+  const [textRailElement, setTextRailElement] = useState<HTMLDivElement | null>(null);
+  const [stackTextRail, setStackTextRail] = useState(false);
+  const canvasAspect = project ? project.canvas.width / project.canvas.height : undefined;
+  /**
+   * 刻意是 layout effect 而不是 passive effect：passive effect 在瀏覽器繪製之後才跑，
+   * 開專案、從專案列表返回、換一個不同比例的專案時，第一幀會先用上一次的方向畫出來、
+   * 下一幀才翻正，使用者看到的就是畫布寬度跳一下——正是工具列改成常駐佔位時花力氣消掉的
+   * 那個現象（見下方 `.text-layer-rail` 的註解）。量測本來就要在 commit 之後、繪製之前做。
+   */
+  useIsomorphicLayoutEffect(() => {
+    if (!canvasRowElement || canvasAspect === undefined) return;
+    const measure = () => {
+      setStackTextRail(
+        shouldStackTextRail(
+          measureCanvasRowLayout(canvasRowElement, textRailElement, canvasAspect),
+        ),
+      );
+    };
+    measure();
+    // jsdom 沒有 ResizeObserver。測試環境本來就沒有版面（量到的全是 0），量一次就停手。
+    if (typeof ResizeObserver === "undefined") return;
+    /**
+     * 只觀察 `.canvas-row` 一個節點。
+     *
+     * **不可以改成觀察畫布欄或工具列**：那兩者的尺寸正是這個決策的產物，決策一改它們就變，
+     * 變了又餵回決策，切換之後條件翻轉就會來回抖動（觀察者迴圈）。`.canvas-row` 是
+     * `flex: 1 1 auto` 撐滿舞台，尺寸不受內部工具列方向影響，所以它是唯一穩定的輸入。
+     */
+    const observer = new ResizeObserver(measure);
+    observer.observe(canvasRowElement);
+    return () => observer.disconnect();
+  }, [canvasRowElement, textRailElement, canvasAspect]);
   // 編輯區滾輪切換頁面的冷卻時間戳，避免慣性滾動一次跳好幾頁。
   const wheelCooldown = useRef(0);
   /**
@@ -3793,18 +3848,24 @@ export function Editor() {
           </span>
         </div>
         {/*
-          畫布與文字工具列同一列：工具列是**垂直**的側欄，放在畫布右側而不是畫布下方，
-          舞台的垂直空間全部留給畫布本身。
+          畫布與文字工具列同一列。工具列的方向**自適應**：預設是畫布右側的垂直側欄，但當
+          畫布是寬度受限（畫布下方本來就空著一大條）時，改成畫布下方的水平橫排，那條空白
+          才不會白留、側欄也就不用從畫布寬度身上拿。兩種佈局的畫布尺寸各算一次取大者，
+          決策與不震盪的理由都在 canvasRowLayout.ts；這裡不用 media query（斷點只看得到
+          視窗寬度，看不到「畫布被哪一軸夾住」）。
         */}
-        <div className="canvas-row">
+        <div
+          ref={setCanvasRowElement}
+          className={`canvas-row${stackTextRail ? ` ${CANVAS_ROW_STACKED_CLASS}` : ""}`}
+          // `--ar` 是純數字（寬÷高）餵給 styles.css 算 letterbox 尺寸——`calc()` 要拿它當
+          // 除數，寫成 "1920 / 1080" 會展開成 `100cqw / 1920 / 1080`。
+          // 用 aspect-ratio 則會被 max-width 夾掉而失效，見 styles.css 的 `.canvas`。
+          // 掛在**這一層**（而不是 `.canvas` 上）是因為橫排時 `.canvas-fit` 也要拿它算高度，
+          // 而 CSS 自訂屬性只往下繼承；`.canvas` 照樣繼承得到同一個值。
+          style={{ "--ar": project.canvas.width / project.canvas.height } as CSSProperties}
+        >
           <div className="canvas-fit" onWheel={handleStageWheel}>
-            <div
-              className={`canvas ${activeJob ? "generating" : ""}`}
-              // `--ar` 是純數字（寬÷高）餵給 styles.css 算 letterbox 尺寸——`calc()` 要拿它當
-              // 除數，寫成 "1920 / 1080" 會展開成 `100cqw / 1920 / 1080`。
-              // 用 aspect-ratio 則會被 max-width 夾掉而失效，見 styles.css 的 `.canvas`。
-              style={{ "--ar": project.canvas.width / project.canvas.height } as CSSProperties}
-            >
+            <div className={`canvas ${activeJob ? "generating" : ""}`}>
               {activeTextLayer ? (
                 <TextLayerCanvas
                   background={imageUrl(project.id, activeTextLayer.backgroundPath)}
@@ -3849,7 +3910,8 @@ export function Editor() {
           </div>
           {/*
             工具列**只要這一頁有圖就佔位**，按不按得下去交給每一顆自己的 disabled。
-            它是畫布右側的一欄，掛載與卸載會直接改變畫布可用寬度：實測 1440×900 下畫布在
+            它與畫布分食同一列（側排時是右邊一欄、橫排時是下方一條），掛載與卸載會直接改變
+            畫布的可用空間：實測 1440×900（側排）下畫布在
             597px ↔ 649px 之間跳約 9%，而預覽歷史版本、生成中、剛建立文字層都會觸發，
             使用者眼中就是圖自己忽大忽小。語意沒有放寬——預覽與生成中依然不能加字，
             只是按鈕變灰而不是整條消失。
@@ -3857,7 +3919,12 @@ export function Editor() {
             使用者也沒有東西可編輯，跳一次可以接受，不值得為它留一條空工具列。
           */}
           {image && (
-            <div className="text-layer-rail" role="group" aria-label="文字工具">
+            <div
+              ref={setTextRailElement}
+              className="text-layer-rail"
+              role="group"
+              aria-label="文字工具"
+            >
               <button
                 onClick={addTextBox}
                 /*
