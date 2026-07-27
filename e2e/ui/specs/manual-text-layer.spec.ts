@@ -155,11 +155,16 @@ test("手動新增文字框：建立版本、打字自動儲存、版本切換�
 /**
  * 文字工具列「有圖就佔位」。
  *
- * 它是畫布右側的一欄，掛載／卸載會直接改變畫布可用寬度：改成常駐之前，1440×900 下畫布在
- * 597px ↔ 649px 之間跳約 9%，而預覽歷史版本、生成中、剛建立文字層都會觸發，使用者眼中就是
- * 圖自己忽大忽小。這條只有真瀏覽器量得出來（jsdom 沒有版面）。
+ * 工具列與畫布分食同一列，掛載／卸載會直接改變畫布的可用空間：改成常駐之前，1440×900 下
+ * 畫布在 597px ↔ 649px 之間跳約 9%，而預覽歷史版本、生成中、剛建立文字層都會觸發，
+ * 使用者眼中就是圖自己忽大忽小。這條只有真瀏覽器量得出來（jsdom 沒有版面）。
+ *
+ * 方向自適應之後，這支的 viewport（1440×900）實測**落在橫排**（工具列在畫布下方），
+ * 所以工具列吃的是畫布的**高度**不是寬度——單看寬度會變成恆真的斷言。改成兩軸都比，
+ * 並額外釘住「畫布底緣到工具列頂緣」的距離不變：工具列若在預覽期間卸載，畫布會長高、
+ * 這段距離會跟著變，寬度卻可能一個 px 都沒動。
  */
-test("預覽歷史版本時工具列照樣佔位：畫布寬度不變，按鈕全灰", async ({ page, request }) => {
+test("預覽歷史版本時工具列照樣佔位：畫布幾何不變，按鈕全灰", async ({ page, request }) => {
   const seeded = await seedGeneratedProject(request, { topic: "工具列佔位", slideCount: 1 });
   const slideId = seeded.slides[0]!.id;
   // 第二版才有東西可以預覽（預覽的是「不是目前版本」的那一版）。
@@ -176,7 +181,20 @@ test("預覽歷史版本時工具列照樣佔位：畫布寬度不變，按鈕�
   const canvas = page.locator(".canvas");
   const rail = page.locator(RAIL);
   await expect(rail).toBeVisible();
-  const before = (await canvas.boundingBox())!;
+  /** 畫布尺寸，外加畫布與工具列之間的距離（橫排量垂直、側排量水平）。 */
+  const geometry = async () => {
+    const [canvasBox, railBox] = [(await canvas.boundingBox())!, (await rail.boundingBox())!];
+    const stacked = railBox.y >= canvasBox.y + canvasBox.height;
+    return {
+      width: canvasBox.width,
+      height: canvasBox.height,
+      stacked,
+      distance: stacked
+        ? railBox.y - (canvasBox.y + canvasBox.height)
+        : railBox.x - (canvasBox.x + canvasBox.width),
+    };
+  };
+  const before = await geometry();
 
   // 進入歷史版本預覽：工具列必須還在原位，畫布一個 px 都不許動。
   await page
@@ -185,9 +203,12 @@ test("預覽歷史版本時工具列照樣佔位：畫布寬度不變，按鈕�
     .click();
   await expect(page.locator(".version-preview-actions")).toBeVisible();
   await expect(rail).toBeVisible();
-  const during = (await canvas.boundingBox())!;
+  const during = await geometry();
   expect(Math.abs(during.width - before.width)).toBeLessThan(0.5);
   expect(Math.abs(during.height - before.height)).toBeLessThan(0.5);
+  // 方向與間距都不許變：工具列卸載時畫布會往它那一軸長出去，這一條抓的就是那件事。
+  expect(during.stacked).toBe(before.stacked);
+  expect(Math.abs(during.distance - before.distance)).toBeLessThan(0.5);
   // 語意不變：預覽中不能加字也不能改字，所以四顆全灰。
   for (const name of ["新增文字框", "刪除文字框", "復原", "重做"]) {
     await expect(rail.getByRole("button", { name })).toBeDisabled();
@@ -200,6 +221,8 @@ test("預覽歷史版本時工具列照樣佔位：畫布寬度不變，按鈕�
     .click();
   await expect(page.locator(".version-preview-actions")).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "新增文字框" })).toBeEnabled();
-  const after = (await canvas.boundingBox())!;
+  const after = await geometry();
   expect(Math.abs(after.width - before.width)).toBeLessThan(0.5);
+  expect(Math.abs(after.height - before.height)).toBeLessThan(0.5);
+  expect(Math.abs(after.distance - before.distance)).toBeLessThan(0.5);
 });

@@ -64,6 +64,17 @@ function png(width: number, height: number): Uint8Array {
 
 // ---- resvg 像素工具（遮罩攤平測試用） -----------------------------------------
 
+/**
+ * 會真的光柵化影像的測試專用上限。
+ *
+ * 這一檔有十條測試會經過 resvg（畫測試素材、解 PNG 像素）與 provider 的 canvas PNG 正規化，
+ * 暖跑是 167–724ms，但**冷跑會慢一個數量級**：實測最慢的兩條各要 6.4 秒，越過 vitest 預設的
+ * 5000ms 而變紅，再跑一次又全綠。原生模組初始化與檔案快取都冷的時候（CI、剛開機、久沒跑
+ * 這個套件）就會踩到。放寬的只有這十條，其餘測試維持預設上限——它們全都是 0–3ms 的純邏輯，
+ * 一旦真的卡住，5 秒就該讓它紅。
+ */
+const RASTER_TIMEOUT_MS = 30_000;
+
 /** 以 resvg 畫出測試用 PNG（不畫底色就是透明底）。 */
 function renderSvgPng(inner: string, width: number, height: number): Uint8Array {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${inner}</svg>`;
@@ -255,288 +266,316 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(provider.availability.status).toBe("unavailable");
   });
 
-  it("generates via chat completions (Gemini) and normalizes message.images to canvas PNG", async () => {
-    // real 8x8 PNG so resvg can decode + re-render to the canvas size
-    const realPng =
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
-    active = await startFake(() => ({
-      status: 200,
-      json: {
-        choices: [
-          {
-            message: {
-              images: [
-                { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
-              ],
+  it(
+    "generates via chat completions (Gemini) and normalizes message.images to canvas PNG",
+    async () => {
+      // real 8x8 PNG so resvg can decode + re-render to the canvas size
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      active = await startFake(() => ({
+        status: 200,
+        json: {
+          choices: [
+            {
+              message: {
+                images: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+                ],
+              },
             },
-          },
-        ],
-      },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gemini-3.1-flash-image",
-      apiShape: "chat",
-    });
-    const image = await provider.generate(imageRequest());
-    expect(image.mediaType).toBe("image/png");
-    expect(image.parameters.transport).toBe("openai-chat");
-    expect(image.bytes.byteLength).toBeGreaterThan(0);
-    expect(active.requests[0]!.path).toBe("/v1/chat/completions");
-  });
-
-  it("chat shape sends the Codex-baseline contract and labelled references", async () => {
-    const realPng =
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
-    const refPath = join(tmpdir(), `openai-ref-${process.pid}.png`);
-    await writeFile(refPath, Buffer.from(realPng, "base64"));
-    active = await startFake(() => ({
-      status: 200,
-      json: {
-        choices: [
-          {
-            message: {
-              images: [
-                { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
-              ],
-            },
-          },
-        ],
-      },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gemini-3.1-flash-image",
-      apiShape: "chat",
-    });
-    expect(provider.capabilities.referenceImages).toBe(true);
-    expect(provider.capabilities.multipleReferenceImages).toBe(true);
-    const request = {
-      ...imageRequest(),
-      references: [
-        { path: refPath, mediaType: "image/png", role: "style" as const, name: "Style A" },
-        {
-          path: refPath,
-          mediaType: "image/png",
-          role: "direct-asset" as const,
-          name: "Source panel",
+          ],
         },
-      ],
-    };
-    await provider.generate(request);
-    const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
-    const parts = body.messages[0]!.content as { type: string; text?: string }[];
-    expect(parts.filter((part) => part.type === "image_url")).toHaveLength(2);
-    const prompt = parts[0]!.text ?? "";
-    expect(prompt).toContain("slide.content field is the authoritative visible copy");
-    expect(prompt).toContain('role=style; name="Style A"');
-    expect(prompt).toContain('role=direct-asset; name="Source panel"');
-    expect(prompt).toContain("DIRECT-ASSET FIDELITY CONTRACT");
-    expect(prompt).toContain('"layoutHint": "左文右圖"');
-    expect(prompt).toContain('"description": "明亮留白"');
-    expect(prompt).toContain('"promptTemplate": "以 {subject} 為主體"');
-  });
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gemini-3.1-flash-image",
+        apiShape: "chat",
+      });
+      const image = await provider.generate(imageRequest());
+      expect(image.mediaType).toBe("image/png");
+      expect(image.parameters.transport).toBe("openai-chat");
+      expect(image.bytes.byteLength).toBeGreaterThan(0);
+      expect(active.requests[0]!.path).toBe("/v1/chat/completions");
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
-  it("chat edits attach base, mask, and supplemental references in manifest order", async () => {
-    const realPng =
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
-    const refPath = join(tmpdir(), `openai-edit-ref-${process.pid}.png`);
-    await writeFile(refPath, Buffer.from(realPng, "base64"));
-    active = await startFake(() => ({
-      status: 200,
-      json: {
-        choices: [
-          {
-            message: {
-              images: [
-                { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
-              ],
+  it(
+    "chat shape sends the Codex-baseline contract and labelled references",
+    async () => {
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      const refPath = join(tmpdir(), `openai-ref-${process.pid}.png`);
+      await writeFile(refPath, Buffer.from(realPng, "base64"));
+      active = await startFake(() => ({
+        status: 200,
+        json: {
+          choices: [
+            {
+              message: {
+                images: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+                ],
+              },
             },
+          ],
+        },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gemini-3.1-flash-image",
+        apiShape: "chat",
+      });
+      expect(provider.capabilities.referenceImages).toBe(true);
+      expect(provider.capabilities.multipleReferenceImages).toBe(true);
+      const request = {
+        ...imageRequest(),
+        references: [
+          { path: refPath, mediaType: "image/png", role: "style" as const, name: "Style A" },
+          {
+            path: refPath,
+            mediaType: "image/png",
+            role: "direct-asset" as const,
+            name: "Source panel",
           },
         ],
-      },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gpt-5.6-terra",
-      apiShape: "chat",
-    });
-    await provider.generate({
-      ...imageRequest(),
-      references: [
-        { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
-        { path: refPath, mediaType: "image/png", role: "mask", name: "Mask" },
-        { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
-      ],
-      edit: {
-        instruction: "Remove text",
-        baseImageIndex: 0,
-        maskImageIndex: 1,
-        purpose: "text-removal",
-      },
-    });
-    const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
-    const parts = body.messages[0]!.content as { type: string; text?: string }[];
-    expect(parts.filter((part) => part.type === "image_url")).toHaveLength(3);
-    expect(parts[0]!.text).toContain("TEXT REMOVAL CONTRACT");
-    expect(parts[0]!.text).toContain('role=style; name="Style A"');
-    expect(parts[0]!.text).toContain("Do not re-render text from slide.content");
-  });
+      };
+      await provider.generate(request);
+      const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
+      const parts = body.messages[0]!.content as { type: string; text?: string }[];
+      expect(parts.filter((part) => part.type === "image_url")).toHaveLength(2);
+      const prompt = parts[0]!.text ?? "";
+      expect(prompt).toContain("slide.content field is the authoritative visible copy");
+      expect(prompt).toContain('role=style; name="Style A"');
+      expect(prompt).toContain('role=direct-asset; name="Source panel"');
+      expect(prompt).toContain("DIRECT-ASSET FIDELITY CONTRACT");
+      expect(prompt).toContain('"layoutHint": "左文右圖"');
+      expect(prompt).toContain('"description": "明亮留白"');
+      expect(prompt).toContain('"promptTemplate": "以 {subject} 為主體"');
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
-  it("chat masked edits flatten the transparent mask; the base image stays as-is", async () => {
-    const realPng =
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
-    const basePath = join(tmpdir(), `openai-flat-base-${process.pid}.png`);
-    await writeFile(basePath, Buffer.from(realPng, "base64"));
-    // 遮罩：白色矩形＋全透明底（textMask() 的形狀），直接送會被視覺模型攤成全白而隱形。
-    const maskBytes = renderSvgPng(
-      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
-      1920,
-      1080,
-    );
-    const maskPath = join(tmpdir(), `openai-flat-mask-${process.pid}.png`);
-    await writeFile(maskPath, Buffer.from(maskBytes));
-    active = await startFake(() => ({
-      status: 200,
-      json: {
-        choices: [
-          {
-            message: {
-              images: [
-                { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
-              ],
+  it(
+    "chat edits attach base, mask, and supplemental references in manifest order",
+    async () => {
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      const refPath = join(tmpdir(), `openai-edit-ref-${process.pid}.png`);
+      await writeFile(refPath, Buffer.from(realPng, "base64"));
+      active = await startFake(() => ({
+        status: 200,
+        json: {
+          choices: [
+            {
+              message: {
+                images: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+                ],
+              },
             },
-          },
+          ],
+        },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gpt-5.6-terra",
+        apiShape: "chat",
+      });
+      await provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
+          { path: refPath, mediaType: "image/png", role: "mask", name: "Mask" },
+          { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
         ],
-      },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gemini-3.1-flash-image",
-      apiShape: "chat",
-    });
-    await provider.generate({
-      ...imageRequest(),
-      references: [
-        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
-      ],
-      edit: {
-        instruction: "Remove text",
-        baseImageIndex: 0,
-        maskImageIndex: 1,
-        purpose: "text-removal",
-      },
-    });
-    const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
-    const parts = body.messages[0]!.content as { type: string; image_url?: { url: string } }[];
-    const images = parts.filter((part) => part.type === "image_url");
-    // base 圖不受影響：仍是原檔 bytes。
-    expect(images[0]!.image_url!.url).toBe(`data:image/png;base64,${realPng}`);
-    // 遮罩那張已攤平：非原檔 bytes，且透明處變不透明黑、白框仍是白。
-    const maskUrl = images[1]!.image_url!.url;
-    expect(maskUrl).toMatch(/^data:image\/png;base64,/);
-    expect(maskUrl).not.toBe(`data:image/png;base64,${Buffer.from(maskBytes).toString("base64")}`);
-    const flattened = new Uint8Array(
-      Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
-    );
-    const image = decodePixels(flattened);
-    expect(image.width).toBe(1920);
-    expect(image.height).toBe(1080);
-    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
-  });
+        edit: {
+          instruction: "Remove text",
+          baseImageIndex: 0,
+          maskImageIndex: 1,
+          purpose: "text-removal",
+        },
+      });
+      const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
+      const parts = body.messages[0]!.content as { type: string; text?: string }[];
+      expect(parts.filter((part) => part.type === "image_url")).toHaveLength(3);
+      expect(parts[0]!.text).toContain("TEXT REMOVAL CONTRACT");
+      expect(parts[0]!.text).toContain('role=style; name="Style A"');
+      expect(parts[0]!.text).toContain("Do not re-render text from slide.content");
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
-  it("images shape sends base and a flattened mask through image[], not the mask field", async () => {
-    // gpt 走 /images/edits 時，官方 `mask` 欄位模型讀不到（實測對這條 gateway 也無約束
-    // 力），合約的「Image 2 is a locator ... Read it」因此形同虛設。base 與攤平後的 mask
-    // 都放進 image[]（模型可讀），順序對齊合約 Image 1 / Image 2；不再送 `mask` 欄位。
-    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
-    const basePath = join(tmpdir(), `openai-native-edit-base-${process.pid}.png`);
-    await writeFile(basePath, Buffer.from(b64, "base64"));
-    // 遮罩：白框＋透明底（textMask 的形狀），送出前必須攤成不透明黑底白框。
-    const maskBytes = renderSvgPng(
-      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
-      1920,
-      1080,
-    );
-    const maskPath = join(tmpdir(), `openai-native-edit-mask-${process.pid}.png`);
-    await writeFile(maskPath, Buffer.from(maskBytes));
-    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gpt-image-2",
-      apiShape: "images",
-    });
-    await provider.generate({
-      ...imageRequest(),
-      references: [
-        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
-      ],
-      edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
-    });
-    const captured = active.requests[0]!;
-    expect(captured.path).toBe("/v1/images/edits");
-    expect(String(captured.body)).toContain("This is an image editing task");
-    const { files, order, fieldNames } = parseMultipart(captured.rawBuffer);
-    // 順序即合約的 Image 1 / Image 2；沒有獨立的 mask 欄位。
-    expect(order).toEqual(["image[]::image.png", "image[]::mask.png"]);
-    expect(fieldNames).not.toContain("mask");
-    const baseSent = files.get("image[]::image.png")!;
-    const maskSent = files.get("image[]::mask.png")!;
-    // base 原樣送出。
-    expect(Buffer.from(baseSent).equals(Buffer.from(b64, "base64"))).toBe(true);
-    // 遮罩已攤平：非原檔 bytes，透明處變不透明黑、白框仍是白，尺寸為 canvas。
-    expect(Buffer.from(maskSent).equals(Buffer.from(maskBytes))).toBe(false);
-    const image = decodePixels(new Uint8Array(maskSent));
-    expect(image.width).toBe(1920);
-    expect(image.height).toBe(1080);
-    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
-  });
+  it(
+    "chat masked edits flatten the transparent mask; the base image stays as-is",
+    async () => {
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      const basePath = join(tmpdir(), `openai-flat-base-${process.pid}.png`);
+      await writeFile(basePath, Buffer.from(realPng, "base64"));
+      // 遮罩：白色矩形＋全透明底（textMask() 的形狀），直接送會被視覺模型攤成全白而隱形。
+      const maskBytes = renderSvgPng(
+        '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+        1920,
+        1080,
+      );
+      const maskPath = join(tmpdir(), `openai-flat-mask-${process.pid}.png`);
+      await writeFile(maskPath, Buffer.from(maskBytes));
+      active = await startFake(() => ({
+        status: 200,
+        json: {
+          choices: [
+            {
+              message: {
+                images: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+                ],
+              },
+            },
+          ],
+        },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gemini-3.1-flash-image",
+        apiShape: "chat",
+      });
+      await provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+          { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
+        ],
+        edit: {
+          instruction: "Remove text",
+          baseImageIndex: 0,
+          maskImageIndex: 1,
+          purpose: "text-removal",
+        },
+      });
+      const body = active.requests[0]!.body as { messages: { content: unknown[] }[] };
+      const parts = body.messages[0]!.content as { type: string; image_url?: { url: string } }[];
+      const images = parts.filter((part) => part.type === "image_url");
+      // base 圖不受影響：仍是原檔 bytes。
+      expect(images[0]!.image_url!.url).toBe(`data:image/png;base64,${realPng}`);
+      // 遮罩那張已攤平：非原檔 bytes，且透明處變不透明黑、白框仍是白。
+      const maskUrl = images[1]!.image_url!.url;
+      expect(maskUrl).toMatch(/^data:image\/png;base64,/);
+      expect(maskUrl).not.toBe(
+        `data:image/png;base64,${Buffer.from(maskBytes).toString("base64")}`,
+      );
+      const flattened = new Uint8Array(
+        Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
+      );
+      const image = decodePixels(flattened);
+      expect(image.width).toBe(1920);
+      expect(image.height).toBe(1080);
+      expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+      expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
-  it("images shape attaches every reference in manifest order, so Image N stays aligned", async () => {
-    // 合約會把 request.references 逐筆列成 Image N。只送 base+mask 的話，有風格參考圖的
-    // 專案 prompt 會說「Image 3: role=style」卻沒有第三張圖，編號從那裡起全部錯位。
-    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
-    const refPath = join(tmpdir(), `openai-edit-order-${process.pid}.png`);
-    await writeFile(refPath, Buffer.from(b64, "base64"));
-    const maskBytes = renderSvgPng(
-      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
-      1920,
-      1080,
-    );
-    const maskPath = join(tmpdir(), `openai-edit-order-mask-${process.pid}.png`);
-    await writeFile(maskPath, Buffer.from(maskBytes));
-    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gpt-image-2",
-      apiShape: "images",
-    });
-    await provider.generate({
-      ...imageRequest(),
-      // jobs.ts 實際組出的形狀：base、mask，接著才是補充參考圖。
-      references: [
-        { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
-        { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
-        { path: refPath, mediaType: "image/png", role: "direct-asset", name: "Panel" },
-      ],
-      edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
-    });
-    const { order, fieldNames } = parseMultipart(active.requests[0]!.rawBuffer);
-    expect(order).toEqual([
-      "image[]::image.png",
-      "image[]::mask.png",
-      "image[]::reference-2.png",
-      "image[]::reference-3.png",
-    ]);
-    expect(fieldNames.filter((name) => name === "image[]")).toHaveLength(4);
-    // 合約列到 Image 4，附圖就必須有 4 張。
-    expect(String(active.requests[0]!.body)).toContain('Image 4: role=direct-asset; name="Panel"');
-  });
+  it(
+    "images shape sends base and a flattened mask through image[], not the mask field",
+    async () => {
+      // gpt 走 /images/edits 時，官方 `mask` 欄位模型讀不到（實測對這條 gateway 也無約束
+      // 力），合約的「Image 2 is a locator ... Read it」因此形同虛設。base 與攤平後的 mask
+      // 都放進 image[]（模型可讀），順序對齊合約 Image 1 / Image 2；不再送 `mask` 欄位。
+      const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+      const basePath = join(tmpdir(), `openai-native-edit-base-${process.pid}.png`);
+      await writeFile(basePath, Buffer.from(b64, "base64"));
+      // 遮罩：白框＋透明底（textMask 的形狀），送出前必須攤成不透明黑底白框。
+      const maskBytes = renderSvgPng(
+        '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+        1920,
+        1080,
+      );
+      const maskPath = join(tmpdir(), `openai-native-edit-mask-${process.pid}.png`);
+      await writeFile(maskPath, Buffer.from(maskBytes));
+      active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gpt-image-2",
+        apiShape: "images",
+      });
+      await provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+          { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
+        ],
+        edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
+      });
+      const captured = active.requests[0]!;
+      expect(captured.path).toBe("/v1/images/edits");
+      expect(String(captured.body)).toContain("This is an image editing task");
+      const { files, order, fieldNames } = parseMultipart(captured.rawBuffer);
+      // 順序即合約的 Image 1 / Image 2；沒有獨立的 mask 欄位。
+      expect(order).toEqual(["image[]::image.png", "image[]::mask.png"]);
+      expect(fieldNames).not.toContain("mask");
+      const baseSent = files.get("image[]::image.png")!;
+      const maskSent = files.get("image[]::mask.png")!;
+      // base 原樣送出。
+      expect(Buffer.from(baseSent).equals(Buffer.from(b64, "base64"))).toBe(true);
+      // 遮罩已攤平：非原檔 bytes，透明處變不透明黑、白框仍是白，尺寸為 canvas。
+      expect(Buffer.from(maskSent).equals(Buffer.from(maskBytes))).toBe(false);
+      const image = decodePixels(new Uint8Array(maskSent));
+      expect(image.width).toBe(1920);
+      expect(image.height).toBe(1080);
+      expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+      expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+    },
+    RASTER_TIMEOUT_MS,
+  );
+
+  it(
+    "images shape attaches every reference in manifest order, so Image N stays aligned",
+    async () => {
+      // 合約會把 request.references 逐筆列成 Image N。只送 base+mask 的話，有風格參考圖的
+      // 專案 prompt 會說「Image 3: role=style」卻沒有第三張圖，編號從那裡起全部錯位。
+      const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+      const refPath = join(tmpdir(), `openai-edit-order-${process.pid}.png`);
+      await writeFile(refPath, Buffer.from(b64, "base64"));
+      const maskBytes = renderSvgPng(
+        '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+        1920,
+        1080,
+      );
+      const maskPath = join(tmpdir(), `openai-edit-order-mask-${process.pid}.png`);
+      await writeFile(maskPath, Buffer.from(maskBytes));
+      active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gpt-image-2",
+        apiShape: "images",
+      });
+      await provider.generate({
+        ...imageRequest(),
+        // jobs.ts 實際組出的形狀：base、mask，接著才是補充參考圖。
+        references: [
+          { path: refPath, mediaType: "image/png", role: "base", name: "Current slide" },
+          { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
+          { path: refPath, mediaType: "image/png", role: "style", name: "Style A" },
+          { path: refPath, mediaType: "image/png", role: "direct-asset", name: "Panel" },
+        ],
+        edit: { instruction: "Change the circle to green", baseImageIndex: 0, maskImageIndex: 1 },
+      });
+      const { order, fieldNames } = parseMultipart(active.requests[0]!.rawBuffer);
+      expect(order).toEqual([
+        "image[]::image.png",
+        "image[]::mask.png",
+        "image[]::reference-2.png",
+        "image[]::reference-3.png",
+      ]);
+      expect(fieldNames.filter((name) => name === "image[]")).toHaveLength(4);
+      // 合約列到 Image 4，附圖就必須有 4 張。
+      expect(String(active.requests[0]!.body)).toContain(
+        'Image 4: role=direct-asset; name="Panel"',
+      );
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
   it("images shape rejects more references than the endpoint's image[] limit", async () => {
     const refPath = join(tmpdir(), `openai-edit-limit-${process.pid}.png`);
@@ -606,24 +645,28 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(active.requests[0]!.path).toBe("/v1/images/generations");
   });
 
-  it("images shape normalizes a non-PNG (jpeg) gateway response to a canvas PNG", async () => {
-    // gpt-image gateway 不保證回 PNG；回 jpeg 時應比照 chat／openrouter 走 rasterToCanvasPng
-    // 轉成 canvas 尺寸 PNG，而非丟出標著「Codex」的裸 PNG 結構驗證錯誤。
-    const jpegB64 =
-      "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
-    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: jpegB64 }] } }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: active.config,
-      model: "gpt-image-2",
-      apiShape: "images",
-    });
-    const image = await provider.generate(imageRequest());
-    expect(image.mediaType).toBe("image/png");
-    expect(image.parameters.transport).toBe("openai-images");
-    // 轉出來的確實是 canvas 尺寸的 PNG（IHDR 寬高 = 1920×1080），而非原封 jpeg。
-    expect(pngSize(image.bytes)).toEqual({ width: 1920, height: 1080 });
-    expect(active.requests[0]!.path).toBe("/v1/images/generations");
-  });
+  it(
+    "images shape normalizes a non-PNG (jpeg) gateway response to a canvas PNG",
+    async () => {
+      // gpt-image gateway 不保證回 PNG；回 jpeg 時應比照 chat／openrouter 走 rasterToCanvasPng
+      // 轉成 canvas 尺寸 PNG，而非丟出標著「Codex」的裸 PNG 結構驗證錯誤。
+      const jpegB64 =
+        "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+      active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: jpegB64 }] } }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gpt-image-2",
+        apiShape: "images",
+      });
+      const image = await provider.generate(imageRequest());
+      expect(image.mediaType).toBe("image/png");
+      expect(image.parameters.transport).toBe("openai-images");
+      // 轉出來的確實是 canvas 尺寸的 PNG（IHDR 寬高 = 1920×1080），而非原封 jpeg。
+      expect(pngSize(image.bytes)).toEqual({ width: 1920, height: 1080 });
+      expect(active.requests[0]!.path).toBe("/v1/images/generations");
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
   it("images shape rejects an unrecognizable output format with a named SafeProviderError", async () => {
     // 認不得的 magic bytes（非 png/jpeg/webp）：丟具名、可分類的 SafeProviderError，
@@ -687,32 +730,36 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(active.requests).toHaveLength(0);
   });
 
-  it("openrouter shape posts to /images with data[].b64_json and normalizes to canvas PNG", async () => {
-    // OpenRouter 影像端點回 jpeg；provider 應轉成 canvas 尺寸 PNG。
-    const jpegB64 =
-      "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
-    active = await startFake(() => ({
-      status: 200,
-      json: { data: [{ b64_json: jpegB64, media_type: "image/jpeg" }] },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
-      model: "x-ai/grok-imagine-image-quality",
-      apiShape: "openrouter-image",
-    });
-    const image = await provider.generate(imageRequest());
-    expect(image.mediaType).toBe("image/png");
-    expect(image.parameters.transport).toBe("openrouter-image");
-    expect(image.parameters.size).toBeUndefined();
-    expect(image.bytes.byteLength).toBeGreaterThan(0);
-    const call = active.requests[0]!;
-    expect(call.path).toBe("/v1/images");
-    expect((call.body as { model?: string }).model).toBe("x-ai/grok-imagine-image-quality");
-    // 無參考圖時不帶 input_references。
-    expect(call.body).not.toHaveProperty("input_references");
-    const prompt = (call.body as { prompt?: string }).prompt ?? "";
-    expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
-  });
+  it(
+    "openrouter shape posts to /images with data[].b64_json and normalizes to canvas PNG",
+    async () => {
+      // OpenRouter 影像端點回 jpeg；provider 應轉成 canvas 尺寸 PNG。
+      const jpegB64 =
+        "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+      active = await startFake(() => ({
+        status: 200,
+        json: { data: [{ b64_json: jpegB64, media_type: "image/jpeg" }] },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
+        model: "x-ai/grok-imagine-image-quality",
+        apiShape: "openrouter-image",
+      });
+      const image = await provider.generate(imageRequest());
+      expect(image.mediaType).toBe("image/png");
+      expect(image.parameters.transport).toBe("openrouter-image");
+      expect(image.parameters.size).toBeUndefined();
+      expect(image.bytes.byteLength).toBeGreaterThan(0);
+      const call = active.requests[0]!;
+      expect(call.path).toBe("/v1/images");
+      expect((call.body as { model?: string }).model).toBe("x-ai/grok-imagine-image-quality");
+      // 無參考圖時不帶 input_references。
+      expect(call.body).not.toHaveProperty("input_references");
+      const prompt = (call.body as { prompt?: string }).prompt ?? "";
+      expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
   it("openrouter shape sends references through input_references (image_url data URLs)", async () => {
     const realPng =
@@ -745,57 +792,61 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body.input_references![0]!.image_url.url).toMatch(/^data:image\/png;base64,/);
   });
 
-  it("openrouter masked edits flatten the transparent mask in input_references", async () => {
-    const realPng =
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
-    const basePath = join(tmpdir(), `openrouter-flat-base-${process.pid}.png`);
-    await writeFile(basePath, Buffer.from(realPng, "base64"));
-    const maskBytes = renderSvgPng(
-      '<rect x="480" y="270" width="960" height="540" fill="white"/>',
-      1920,
-      1080,
-    );
-    const maskPath = join(tmpdir(), `openrouter-flat-mask-${process.pid}.png`);
-    await writeFile(maskPath, Buffer.from(maskBytes));
-    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
-    active = await startFake(() => ({
-      status: 200,
-      json: { data: [{ b64_json: b64, media_type: "image/png" }] },
-    }));
-    const provider = new OpenAiCompatibleImageProvider({
-      config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
-      model: "x-ai/grok-imagine-image-quality",
-      apiShape: "openrouter-image",
-    });
-    await provider.generate({
-      ...imageRequest(),
-      references: [
-        { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
-        { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
-      ],
-      edit: {
-        instruction: "Remove text",
-        baseImageIndex: 0,
-        maskImageIndex: 1,
-        purpose: "text-removal",
-      },
-    });
-    const body = active.requests[0]!.body as {
-      input_references?: { image_url: { url: string } }[];
-    };
-    // base 圖原樣；遮罩（input_references 是給模型「看」的視覺通道）攤平成黑底。
-    expect(body.input_references![0]!.image_url.url).toBe(`data:image/png;base64,${realPng}`);
-    const maskUrl = body.input_references![1]!.image_url.url;
-    expect(maskUrl).toMatch(/^data:image\/png;base64,/);
-    const flattened = new Uint8Array(
-      Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
-    );
-    const image = decodePixels(flattened);
-    expect(image.width).toBe(1920);
-    expect(image.height).toBe(1080);
-    expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
-  });
+  it(
+    "openrouter masked edits flatten the transparent mask in input_references",
+    async () => {
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      const basePath = join(tmpdir(), `openrouter-flat-base-${process.pid}.png`);
+      await writeFile(basePath, Buffer.from(realPng, "base64"));
+      const maskBytes = renderSvgPng(
+        '<rect x="480" y="270" width="960" height="540" fill="white"/>',
+        1920,
+        1080,
+      );
+      const maskPath = join(tmpdir(), `openrouter-flat-mask-${process.pid}.png`);
+      await writeFile(maskPath, Buffer.from(maskBytes));
+      const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+      active = await startFake(() => ({
+        status: 200,
+        json: { data: [{ b64_json: b64, media_type: "image/png" }] },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
+        model: "x-ai/grok-imagine-image-quality",
+        apiShape: "openrouter-image",
+      });
+      await provider.generate({
+        ...imageRequest(),
+        references: [
+          { path: basePath, mediaType: "image/png", role: "base", name: "Current slide" },
+          { path: maskPath, mediaType: "image/png", role: "mask", name: "Mask" },
+        ],
+        edit: {
+          instruction: "Remove text",
+          baseImageIndex: 0,
+          maskImageIndex: 1,
+          purpose: "text-removal",
+        },
+      });
+      const body = active.requests[0]!.body as {
+        input_references?: { image_url: { url: string } }[];
+      };
+      // base 圖原樣；遮罩（input_references 是給模型「看」的視覺通道）攤平成黑底。
+      expect(body.input_references![0]!.image_url.url).toBe(`data:image/png;base64,${realPng}`);
+      const maskUrl = body.input_references![1]!.image_url.url;
+      expect(maskUrl).toMatch(/^data:image\/png;base64,/);
+      const flattened = new Uint8Array(
+        Buffer.from(maskUrl.slice("data:image/png;base64,".length), "base64"),
+      );
+      const image = decodePixels(flattened);
+      expect(image.width).toBe(1920);
+      expect(image.height).toBe(1080);
+      expect(pixelAt(image, 5, 5)).toEqual([0, 0, 0, 255]);
+      expect(pixelAt(image, 960, 540)).toEqual([255, 255, 255, 255]);
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
   it("openrouter shape maps HTTP 429 to a usage-limit SafeProviderError", async () => {
     active = await startFake(() => ({ status: 429, json: { error: "rate limited" } }));
@@ -832,25 +883,29 @@ describe("OpenAiCompatibleImageProvider", () => {
 });
 
 describe("flattenMaskToBlack", () => {
-  it("turns white-on-transparent into white-on-opaque-black at the canvas size", () => {
-    const mask = renderSvgPng('<rect x="16" y="9" width="32" height="18" fill="white"/>', 64, 36);
-    // 前提確認：原遮罩底確實是全透明。
-    expect(pixelAt(decodePixels(mask), 0, 0)[3]).toBe(0);
+  it(
+    "turns white-on-transparent into white-on-opaque-black at the canvas size",
+    () => {
+      const mask = renderSvgPng('<rect x="16" y="9" width="32" height="18" fill="white"/>', 64, 36);
+      // 前提確認：原遮罩底確實是全透明。
+      expect(pixelAt(decodePixels(mask), 0, 0)[3]).toBe(0);
 
-    const flattened = flattenMaskToBlack(mask, "image/png", 64, 36);
-    const image = decodePixels(flattened);
-    expect(image.width).toBe(64);
-    expect(image.height).toBe(36);
-    // alpha 全不透明。
-    const alphas = new Set<number>();
-    for (let offset = 3; offset < image.pixels.length; offset += 4)
-      alphas.add(image.pixels[offset]!);
-    expect([...alphas]).toEqual([255]);
-    // 原透明處為黑、原白框處為白。
-    expect(pixelAt(image, 0, 0)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 63, 35)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 32, 18)).toEqual([255, 255, 255, 255]);
-  });
+      const flattened = flattenMaskToBlack(mask, "image/png", 64, 36);
+      const image = decodePixels(flattened);
+      expect(image.width).toBe(64);
+      expect(image.height).toBe(36);
+      // alpha 全不透明。
+      const alphas = new Set<number>();
+      for (let offset = 3; offset < image.pixels.length; offset += 4)
+        alphas.add(image.pixels[offset]!);
+      expect([...alphas]).toEqual([255]);
+      // 原透明處為黑、原白框處為白。
+      expect(pixelAt(image, 0, 0)).toEqual([0, 0, 0, 255]);
+      expect(pixelAt(image, 63, 35)).toEqual([0, 0, 0, 255]);
+      expect(pixelAt(image, 32, 18)).toEqual([255, 255, 255, 255]);
+    },
+    RASTER_TIMEOUT_MS,
+  );
 
   it("rejects unsupported media types", () => {
     expect(() => flattenMaskToBlack(new Uint8Array([1, 2, 3]), "image/gif", 64, 36)).toThrow(
