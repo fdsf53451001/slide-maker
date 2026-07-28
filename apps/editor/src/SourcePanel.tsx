@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PresentationProject, SourceAsset } from "@slide-maker/core";
 import { api, projectAssetUrl, type UrlSourceFailure, type WebSearchResult } from "./api.js";
 import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
@@ -172,7 +173,11 @@ function SourcePreviewDialog({
   useEffect(() => {
     firstHitRef.current?.scrollIntoView?.({ block: "center" });
   }, [source.id]);
-  return (
+  // 四個對話框一律 portal 到 body：它們在 React tree 上是來源面板的後代，而來源面板整塊
+  // 會被側邊欄收合（`.inspector-collapsed`）以 `display: none` 藏起來——祖先一旦 none，
+  // `position: fixed` 的後代也跟著消失。收合鈕就在對話框背後、且這裡沒有 focus trap，
+  // 鍵盤走到它按下去就會讓填到一半的對話框整個不見。
+  return createPortal(
     <div
       className="source-preview-backdrop"
       role="dialog"
@@ -263,7 +268,8 @@ function SourcePreviewDialog({
           </section>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -302,7 +308,8 @@ function WebSourceDialog({
     }
   };
   const selected = results.filter((result) => selectedUrls.has(result.url));
-  return (
+  // portal 到 body，理由同 SourcePreviewDialog。
+  return createPortal(
     <div
       className="web-source-backdrop"
       role="dialog"
@@ -401,7 +408,8 @@ function WebSourceDialog({
           </button>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -468,7 +476,8 @@ function UrlSourceDialog({
   const [localError, setLocalError] = useState<string>();
   const urls = parsePastedUrls(value);
   const tooMany = urls.length > MAX_PASTED_URLS;
-  return (
+  // portal 到 body，理由同 SourcePreviewDialog。
+  return createPortal(
     <div
       className="text-source-backdrop"
       role="dialog"
@@ -552,7 +561,8 @@ function UrlSourceDialog({
           </button>
         </footer>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -570,7 +580,8 @@ function TextSourceDialog({
   const normalizedName = /\.(?:md|txt)$/i.test(name.trim())
     ? name.trim()
     : `${name.trim() || "貼上文字"}.md`;
-  return (
+  // portal 到 body，理由同 SourcePreviewDialog。
+  return createPortal(
     <div
       className="text-source-backdrop"
       role="dialog"
@@ -630,7 +641,8 @@ function TextSourceDialog({
           </button>
         </footer>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

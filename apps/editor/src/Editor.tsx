@@ -2447,6 +2447,9 @@ export function Editor() {
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [styles, setStyles] = useState<StylePreset[]>([]);
   const [panel, setPanel] = useState<"slide" | "project" | "sources" | "export">("slide");
+  // 收起側邊欄只縮版面、不卸載面板內容（見 styles.css 的 .inspector-collapsed）：
+  // 面板裡有未存檔的大綱草稿與捲動位置，收合一次就清掉等於懲罰使用者把畫布放大。
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefDraft, setBriefDraft] = useState<PresentationBrief>();
   const [draggedId, setDraggedId] = useState<string>();
   const system = useSystemSettings();
@@ -4055,7 +4058,7 @@ export function Editor() {
     else setError(summary);
   };
   return (
-    <div className="shell">
+    <div className={`shell${inspectorCollapsed ? " inspector-collapsed" : ""}`}>
       <header>
         <button
           className="brand"
@@ -4642,7 +4645,7 @@ export function Editor() {
           </div>
         </div>
       </main>
-      <aside className="inspector">
+      <aside className="inspector" id="inspector">
         <div className="inspector-tabs">
           <button className={panel === "slide" ? "active" : ""} onClick={() => setPanel("slide")}>
             頁面
@@ -4662,6 +4665,22 @@ export function Editor() {
           </button>
           <button className={panel === "export" ? "active" : ""} onClick={() => setPanel("export")}>
             匯出
+          </button>
+          {/*
+           * 收合鈕留在分頁列裡，收起來之後它是側邊欄唯一還看得見的東西（其餘由 CSS 藏掉），
+           * 所以還原鈕與收合鈕是同一顆——不必另外找地方擺一個只有收合時才存在的按鈕。
+           */}
+          <button
+            type="button"
+            className="inspector-collapse"
+            // 少了 aria-controls，讀螢幕的人只聽得到「已展開／已收合」，卻不知道是什麼展開了。
+            aria-controls="inspector"
+            aria-expanded={!inspectorCollapsed}
+            aria-label={inspectorCollapsed ? "展開側邊欄" : "收起側邊欄"}
+            title={inspectorCollapsed ? "展開側邊欄" : "收起側邊欄，放大編輯區"}
+            onClick={() => setInspectorCollapsed((collapsed) => !collapsed)}
+          >
+            {inspectorCollapsed ? "‹" : "›"}
           </button>
         </div>
         {panel === "slide" && (
