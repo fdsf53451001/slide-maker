@@ -92,8 +92,8 @@ function stubEditorFetch(
 
 async function openSourcePanel(topic: string): Promise<void> {
   fireEvent.click(await screen.findByText(topic));
-  // 「來源」在左側導覽與右側 inspector 各有一個入口，開哪一個都掛上同一個 SourcePanel。
-  fireEvent.click(screen.getAllByRole("button", { name: /來源/ })[0]!);
+  // 「來源」的唯一入口是右側 inspector 的分頁，標籤帶著來源筆數（「來源 N」）。
+  fireEvent.click(screen.getByRole("button", { name: /^來源 \d+$/ }));
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
