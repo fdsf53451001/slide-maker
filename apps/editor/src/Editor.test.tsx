@@ -5021,3 +5021,217 @@ describe("手動文字層", () => {
     expect(snapshot()).toEqual(side);
   });
 });
+
+/**
+ * 「正在抽取文字」是**這一頁**的事，不是整個編輯器的事。
+ *
+ * 抽字要等 OCR 排隊（伺服器端一次只跑一個）＋辨識，數十秒起跳，使用者這段時間多半已經
+ * 去看別頁了。舊版把它記在編輯器層級的單一 state，於是：A 頁抽字還沒回來時，切到 B 頁那顆
+ * 「抽離文字」也是灰的（B 頁其實可以排隊）、而「正在抽取文字…」的進度條會掛在 B 頁的畫布
+ * 上（那一頁根本沒有在抽字）。兩件事都在說謊，而且沒有任何錯誤訊息，使用者只會覺得功能壞了。
+ *
+ * 收尾同樣要綁回**發起的那一頁**：拿完成當下的 `selected` 去清，會把狀態清到別頁上——A 頁
+ * 的按鈕就此永遠灰著（要重新整理才會好），B 頁的進度條永遠轉著。
+ */
+describe("抽字進行中的狀態是逐頁的", () => {
+  const now = new Date().toISOString();
+
+  /** 兩頁都已生圖、都沒有文字層的專案：兩頁的「抽離文字」本來都該按得下去。 */
+  const twoSlideProject = (topic: string) => {
+    const project = createProject({ topic, brief: { desiredSlideCount: 2 } });
+    project.workflowStage = "editing";
+    for (const slide of project.slides) {
+      slide.versions = [
+        {
+          id: `${slide.id}-v1`,
+          imagePath: `assets/generated/${slide.id}.png`,
+          prompt: "",
+          providerId: "mock-image",
+          model: "mock",
+          parameters: {},
+          styleVersion: 1,
+          sources: [],
+          createdAt: now,
+        },
+      ];
+      slide.currentVersionId = `${slide.id}-v1`;
+    }
+    return project;
+  };
+
+  /**
+   * `POST …/extract-text` 停在飛行中，由測試決定何時回應。
+   *
+   * 用可控的 deferred 而不是「回應很慢的 stub」：要驗的正是請求還沒回來的那個時間窗，拿
+   * 時間賭它在慢機器上會偽綠。
+   */
+  const stubExtractApi = (project: PresentationProject) => {
+    let release: (() => void) | undefined;
+    const extractPaths: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (path.endsWith("/extract-text") && init?.method === "POST") {
+        extractPaths.push(path);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return Response.json(
+          {
+            id: "extract-job",
+            projectId: project.id,
+            slideId: project.slides[0]!.id,
+            providerId: "local-inpaint",
+            status: "queued",
+            operation: "extract-text",
+            attempt: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+          { status: 202 },
+        );
+      }
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true, imageEditing: true, maskedEditing: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { extractPaths, releaseExtract: () => release?.() };
+  };
+
+  const extractButton = () =>
+    screen.getByRole("button", { name: /^(抽離文字|處理中…)$/ }) as HTMLButtonElement;
+  const progress = () => screen.queryByText("正在抽取文字…");
+
+  it("A 頁抽字進行中時，B 頁的抽字鈕照樣可按、進度條也不跟過去", async () => {
+    const project = twoSlideProject("逐頁抽字狀態");
+    const { extractPaths } = stubExtractApi(project);
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("逐頁抽字狀態"));
+    await screen.findByDisplayValue(project.slides[0]!.purpose);
+    expect(extractButton().disabled).toBe(false);
+
+    fireEvent.click(extractButton());
+    // 停在請求飛行中：A 頁在忙。
+    await waitFor(() => expect(progress()).toBeTruthy());
+    expect(extractButton().disabled).toBe(true);
+    expect(extractButton().textContent).toBe("處理中…");
+    expect(extractPaths).toHaveLength(1);
+    expect(extractPaths[0]).toContain(project.slides[0]!.id);
+
+    // 切到 B 頁：那一頁沒有任何工作在跑。
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    await screen.findByDisplayValue(project.slides[1]!.purpose);
+    expect(progress()).toBeNull();
+    expect(extractButton().disabled).toBe(false);
+    expect(extractButton().textContent).toBe("抽離文字");
+
+    // B 頁真的排得進去（不是只有按鈕看起來亮著）。
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(extractPaths).toHaveLength(2));
+    expect(extractPaths[1]).toContain(project.slides[1]!.id);
+
+    // 切回 A 頁：它的工作還在跑，狀態要原封不動地還在那裡。
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    await screen.findByDisplayValue(project.slides[0]!.purpose);
+    expect(progress()).toBeTruthy();
+    expect(extractButton().disabled).toBe(true);
+  });
+
+  /**
+   * 伺服器的 429（佇列滿了）要以**那句繁中說明**送到畫面上，而且按鈕要解鎖讓使用者能再試。
+   *
+   * 這條走的是 `failureMessage()` 的 `message` 優先路徑：少了 message，使用者會看到裸的
+   * `OCR_QUEUE_BUSY`——一個沒有下一步的字串；而 `finally` 少清一次，那顆按鈕就永遠灰著，
+   * 「請稍候再試」變成做不到的指示。
+   */
+  it("佇列滿載的 429 顯示伺服器那句繁中說明，按鈕解鎖可再試", async () => {
+    const project = twoSlideProject("佇列滿載");
+    const busyMessage = "另一頁正在抽離文字，一次只能處理一頁，請稍候再試。";
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (path.endsWith("/extract-text") && init?.method === "POST")
+        return Response.json({ error: "OCR_QUEUE_BUSY", message: busyMessage }, { status: 429 });
+      if (path === "/api/projects") return Response.json([project]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true, imageEditing: true, maskedEditing: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
+      return Response.json(project);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("佇列滿載"));
+    await screen.findByDisplayValue(project.slides[0]!.purpose);
+    fireEvent.click(extractButton());
+
+    // 裸錯誤碼不算數：使用者要看到的是那句話（錯誤 toast 的節點是「訊息 ×」，取內容比對）。
+    const toast = await screen.findByRole("button", { name: /一次只能處理一頁/ });
+    expect(toast.textContent).toContain(busyMessage);
+    expect(toast.textContent).not.toContain("OCR_QUEUE_BUSY");
+    expect(progress()).toBeNull();
+    expect(extractButton().disabled).toBe(false);
+  });
+
+  it("在別頁時完成的抽字，收尾清的是發起的那一頁", async () => {
+    const project = twoSlideProject("跨頁收尾");
+    const { releaseExtract } = stubExtractApi(project);
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("跨頁收尾"));
+    await screen.findByDisplayValue(project.slides[0]!.purpose);
+
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(progress()).toBeTruthy());
+
+    // 使用者跑去看 B 頁，抽字才回來。
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    await screen.findByDisplayValue(project.slides[1]!.purpose);
+    expect(extractButton().disabled).toBe(false);
+    releaseExtract();
+    // B 頁不得因為「別頁的工作完成了」而變成忙碌或冒出進度條。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(progress()).toBeNull();
+    expect(extractButton().disabled).toBe(false);
+
+    // 回到 A 頁：進度條收掉、按鈕解鎖（收尾若清到 B 頁，這裡會永遠是灰的）。
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    await screen.findByDisplayValue(project.slides[0]!.purpose);
+    await waitFor(() => expect(progress()).toBeNull());
+    expect(extractButton().disabled).toBe(false);
+  });
+});

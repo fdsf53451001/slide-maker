@@ -37,5 +37,6 @@ installShutdownHandlers(
   app.locals.providerReadiness as ProviderReadinessService,
   undefined,
   undefined,
-  app.locals.imageDescriptions as BackgroundWork,
+  // `createApp()` 已經把所有要跟著關機收尾的佇列（圖片描述、OCR）組成一個 BackgroundWork。
+  app.locals.backgroundWork as BackgroundWork,
 );

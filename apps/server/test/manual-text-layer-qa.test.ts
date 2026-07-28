@@ -703,10 +703,14 @@ describe("manual text layer: 匯出、旅行、併發、磁碟", () => {
     // 每一筆引用都指得到檔案。
     for (const assetPath of referenced)
       expect(onDisk.includes(assetPath), `${assetPath} 被引用但磁碟上不存在`).toBe(true);
-    // text-layers/ 底下沒有孤兒（其他前綴如 ocr-input／edit-masks 是工作用中間產物，
-    // 本來就不進引用集合，不在這條的範圍內）。
+    // text-layers/ 底下沒有孤兒（edit-masks/ 是 job 引用的工作用產物，不進這個引用集合，
+    // 不在這條的範圍內）。
     for (const assetPath of onDisk.filter((path) => path.startsWith("assets/text-layers/")))
       expect(referenced.has(assetPath), `${assetPath} 是孤兒 composite`).toBe(true);
+    // ocr-input/ 曾經也算「不檢查的中間產物」，現在不是了：抽字端點在 handler 收尾時就會
+    // 刪掉那張正規化圖，所以跑完整條路之後那個前綴底下必須一個檔案都不剩（沒刪的話，
+    // 每按一次抽字就漏一張 1–3 MB 的 PNG，而且永遠沒有人回收）。
+    expect(onDisk.filter((path) => path.startsWith("assets/ocr-input/"))).toEqual([]);
     // 原圖仍在（合併出來的層以它為 originalVersionId，抽字也是跑在它上面）。
     expect(await context.exists(original.imagePath)).toBe(true);
   }, 90_000);
