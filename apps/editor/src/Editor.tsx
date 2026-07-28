@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -26,6 +27,7 @@ import {
 } from "@slide-maker/core";
 import {
   api,
+  ApiError,
   imageUrl,
   projectAssetUrl,
   styleAssetUrl,
@@ -829,6 +831,94 @@ export function hiddenSlideCount(slides: readonly { hidden?: boolean }[]): numbe
 }
 
 /**
+ * 批次抽字一遇到就整批停下的錯誤代碼。
+ *
+ * 這幾個講的都是「伺服器現在整個不行」而不是某一頁的問題：`OCR_QUEUE_BUSY` 是閘門正滿
+ * （繼續送只會讓別人的抽字也排不進去）、`OCR_UNAVAILABLE` 是 OCR 環境沒裝好、
+ * `OCR_QUEUE_SHUTDOWN` 是伺服器正在重啟、`PROVIDER_PREFLIGHT_BLOCKED` 是 readiness 閘門
+ * 擋下（`app.ts` 的 `assertCanGenerate` → 409）。硬跑下去只是把同一個失敗重複 N 次。
+ */
+const OCR_BATCH_ABORT_CODES = new Set([
+  "OCR_QUEUE_BUSY",
+  "OCR_QUEUE_SHUTDOWN",
+  "OCR_UNAVAILABLE",
+  "PROVIDER_PREFLIGHT_BLOCKED",
+]);
+
+/**
+ * 這個失敗是「伺服器現在整個不行」（整批停下），還是「這一頁的狀況」（跳過繼續跑）？
+ *
+ * 光看錯誤碼不夠。抽字端點的失敗有一大票走不到具名代碼：`MASKED_EDITING_UNSUPPORTED`
+ * 之類的裸 `Error` 會落到 `app.ts` 最後那條 500 `INTERNAL_SERVER_ERROR`，反向代理逾時、
+ * 憑證過期也一樣——這些下一頁都不會變好，而 150 頁的 PDF 匯入專案等於 150 次註定失敗的
+ * 往返（每次都還先排一次 OCR 佇列）。所以除了代碼，`5xx` 與 `401`／`403` 也一律中止。
+ *
+ * 刻意**不**整個 4xx 都中止：`OCR_NO_TEXT`、`OCR_NO_PRESENTATION_TEXT`、
+ * `TEXT_LAYER_BOX_LIMIT`、`EDIT_BASE_VERSION_MISSING` 都是這一頁自己的狀況（整份簡報裡
+ * 有幾頁純圖表本來就很正常），跳過就好。
+ *
+ * 也刻意**不**對 `OCR_QUEUE_BUSY` 加退避重試：撞到就停是這條路的設計（見 `ocr-queue.ts`），
+ * 重試只會讓這個批次跟別人的抽字互相搶閘門。
+ */
+function isBatchAbortingFailure(reason: unknown): boolean {
+  if (!(reason instanceof ApiError)) return false;
+  if (reason.code && OCR_BATCH_ABORT_CODES.has(reason.code)) return true;
+  return reason.status >= 500 || reason.status === 401 || reason.status === 403;
+}
+
+/** 「批次抽離全部文字」的目標頁與跳過的頁（分原因），一次掃完給確認框、按鈕與 tooltip 共用。 */
+export interface BatchExtractPlan {
+  /** 要處理的頁，依現有順序。 */
+  targets: readonly SlideSpec[];
+  /** 目標頁裡的隱藏頁張數（確認框要講出來）。 */
+  hiddenTargets: number;
+  /** 這一版已經有「抽出來的」文字層，再抽一次是重做已經精確的東西。 */
+  skippedExtracted: number;
+  /** 還沒有圖（沒有 `currentVersionId`，或那個版本不在 `versions` 裡）。 */
+  skippedNoImage: number;
+}
+
+/**
+ * 掃出批次抽字要處理哪幾頁。
+ *
+ * 合格條件與單頁那顆「抽離文字」鈕**完全同一條**：這一版要有圖，而且不能已經有 `extracted`
+ * 的文字層（那份是 OCR ＋ 抹字做出來的，或 PDF 匯入的原生文字層，重抽只是拿較差的結果覆蓋
+ * 較好的）。手動層（`origin === "manual"`）合格——它的背景一個字都沒抹，圖上原本的文字還
+ * 等著被抽出來，伺服器端會把兩者合併。
+ *
+ * **隱藏頁一律納入這份清單**：抽字是讓頁面變得可編輯，不是產出成品，隱藏頁一樣要能編輯。
+ *
+ * 但「納入清單」不等於「不必問」。成本取決於抹字引擎，兩種情況要分開：預設的 OpenCV
+ * 在本機跑、不吃任何配額，沒有取捨可問，所以只在確認框裡把張數講出來就夠；選「生圖模型」
+ * 時 `app.ts` 的抽字端點會**逐頁**排一個遮罩編輯 job，每一頁都燒一次影像模型配額——那與
+ * 「批次生成全部頁面」是同一個成本結構，依 CLAUDE.md 必須用共用的 `BatchGenerateDialog`
+ * 讓使用者三選一，不是只告知。挑清單的責任在這裡，問不問由呼叫端依引擎決定。
+ */
+export function batchExtractPlan(slides: readonly SlideSpec[]): BatchExtractPlan {
+  const targets: SlideSpec[] = [];
+  let skippedExtracted = 0;
+  let skippedNoImage = 0;
+  for (const slide of slides) {
+    const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
+    if (!version) {
+      skippedNoImage += 1;
+      continue;
+    }
+    if (version.textLayer && (version.textLayer.origin ?? "extracted") === "extracted") {
+      skippedExtracted += 1;
+      continue;
+    }
+    targets.push(slide);
+  }
+  return {
+    targets,
+    hiddenTargets: hiddenSlideCount(targets),
+    skippedExtracted,
+    skippedNoImage,
+  };
+}
+
+/**
  * 批次生成遇到隱藏頁時，使用者選了什麼。
  *
  * `"all"` 刻意對應「不傳 `slideIds`」而不是「傳全部 id」：那是加入這個對話框之前的行為，
@@ -837,27 +927,62 @@ export function hiddenSlideCount(slides: readonly { hidden?: boolean }[]): numbe
 type BatchGenerateChoice = "all" | "visible-only";
 
 /**
- * 有隱藏頁時，「批次生成全部頁面」按下去要先問清楚要不要連隱藏頁一起生成。
+ * 這個三選一問的是哪一種批次。
  *
- * 為什麼要問而不是只告知：隱藏頁不進 `pptx`／`pdf`、也不放映，但生成它一樣消耗影像模型
+ * 兩者的成本結構相同（隱藏頁不進成品，但處理它一樣燒一次影像模型配額），差別只在動詞與
+ * 分母的意義：`generate` 的分母是整份簡報的頁數，`extract` 的分母是這次要抽字的頁數
+ * （已經有文字層、還沒有圖的頁根本不在名單裡）。
+ */
+type BatchChoiceVariant = "generate" | "extract";
+
+const BATCH_CHOICE_COPY: Record<
+  BatchChoiceVariant,
+  { label: string; heading: string; visibleOnly: string; all: string }
+> = {
+  generate: {
+    label: "批次生成與隱藏頁",
+    heading: "要連隱藏頁一起生成嗎？",
+    visibleOnly: "只生成可見頁",
+    all: "含隱藏頁一起生成",
+  },
+  extract: {
+    label: "批次抽離文字與隱藏頁",
+    heading: "要連隱藏頁一起抽離文字嗎？",
+    visibleOnly: "只抽可見頁",
+    all: "含隱藏頁一起抽",
+  },
+};
+
+/**
+ * 有隱藏頁、而且這次動作會為每一頁燒配額時，按下去要先問清楚要不要連隱藏頁一起做。
+ *
+ * 為什麼要問而不是只告知：隱藏頁不進 `pptx`／`pdf`、也不放映，但處理它一樣消耗影像模型
  * 配額——「全部頁面」這個字面承諾與「隱藏」這個意圖在這裡直接衝突，兩種答案都合理，
  * 所以是使用者的決定。`confirm()` 只有兩個答案，裝不下三選一。
  *
- * 兩個呼叫點（inspector 的批次生成、精靈的確認生成）共用這一份，不各寫一個。
+ * 三個呼叫點（inspector 的批次生成、精靈的確認生成、inspector 的批次抽字）共用這一份，
+ * 不各寫一個。抽字只有在抹字引擎是**生圖模型**時才走這裡；OpenCV 在本機跑、不吃配額，
+ * 沒有取捨可問，多一次點擊只是純粹的阻礙。
  */
 function BatchGenerateDialog({
   total,
   hiddenCount,
   busy,
+  variant = "generate",
+  body,
   onChoose,
   onCancel,
 }: {
   total: number;
   hiddenCount: number;
   busy: boolean;
+  variant?: BatchChoiceVariant;
+  /** 覆寫說明段落；省略時用批次生成那一段。 */
+  body?: ReactNode;
   onChoose: (choice: BatchGenerateChoice) => void;
   onCancel: () => void;
 }) {
+  const copy = BATCH_CHOICE_COPY[variant];
   return (
     <div
       className="confirm-backdrop"
@@ -869,23 +994,27 @@ function BatchGenerateDialog({
         className="confirm-dialog choices"
         role="dialog"
         aria-modal="true"
-        aria-label="批次生成與隱藏頁"
+        aria-label={copy.label}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2>要連隱藏頁一起生成嗎？</h2>
+        <h2>{copy.heading}</h2>
         <p>
-          這份簡報共 <strong>{total}</strong> 頁，其中 <strong>{hiddenCount}</strong> 頁已隱藏。
-          隱藏頁不會進 pptx／pdf 匯出，也不會出現在簡報放映中，但生成它一樣會消耗影像模型配額。
+          {body ?? (
+            <>
+              這份簡報共 <strong>{total}</strong> 頁，其中 <strong>{hiddenCount}</strong> 頁已隱藏。
+              隱藏頁不會進 pptx／pdf 匯出，也不會出現在簡報放映中，但生成它一樣會消耗影像模型配額。
+            </>
+          )}
         </p>
         <div className="confirm-actions">
           <button type="button" onClick={onCancel} disabled={busy}>
             取消
           </button>
           <button type="button" disabled={busy} onClick={() => onChoose("visible-only")}>
-            只生成可見頁（{total - hiddenCount} 頁）
+            {copy.visibleOnly}（{total - hiddenCount} 頁）
           </button>
           <button type="button" className="primary" disabled={busy} onClick={() => onChoose("all")}>
-            含隱藏頁一起生成（{total} 頁）
+            {copy.all}（{total} 頁）
           </button>
         </div>
       </div>
@@ -2388,6 +2517,39 @@ export function Editor() {
   // 圖上文字逐字來自大綱時能修好空格與誤認字，否則會把正確的字換成大綱裡的相似片段。
   const [textRepair, setTextRepair] = useState<"off" | "outline">("off");
   /**
+   * 「批次抽離全部文字」的進度（`undefined` ＝ 沒有在跑）。`current` 是**正在處理**的第幾頁
+   * （1-based），不是已完成數：使用者盯著的是「現在卡在哪一頁」。
+   */
+  const [batchExtract, setBatchExtract] = useState<{
+    current: number;
+    total: number;
+    /** 使用者已經按過「停止」：按鈕要改口，但當前這一頁還在飛。 */
+    stopping: boolean;
+  }>();
+  /**
+   * 批次抽字的「不要再送下一頁」旗標。
+   *
+   * 走 ref 而不是 state：整批是一個長壽的 async 迴圈，它閉包裡抓到的 state 永遠是按下開始
+   * 那一刻的值，使用者後來按「停止」它一輩子讀不到。
+   *
+   * 只有「不再送出下一頁」的語意，**沒有取消**：抽字端點刻意沒有取消機制（見
+   * `apps/server/src/ocr-queue.ts`），已經在飛的那一頁會做完、抹字 job 照建、版本照落地。
+   * 不要「改進」成 `AbortController` 假裝取消得掉——那只會讓伺服器算完的 4GB OCR 成果沒人收，
+   * 使用者回來看到的是什麼都沒發生。
+   *
+   * 分兩種而不是 boolean：`"user"` 是使用者按停止（做完當前這一頁、寫回結果、報告中止），
+   * `"left"` 是元件卸載或換了專案（連當前這一頁的結果都不可以寫回去——那會把 A 專案的內容
+   * 蓋到 B 專案的畫面上）。
+   */
+  const batchExtractStop = useRef<"user" | "left">(undefined);
+  /**
+   * 畫面上「現在是哪一份專案」，由上面那個 layout effect 在 commit 期間同步更新。
+   * 批次抽字每一次寫回之前都拿它與**呼叫當下**的 id 比對。
+   */
+  const activeProjectId = useRef<string>(undefined);
+  /** 抹字引擎是生圖模型、又有隱藏頁時，開三選一對話框問要不要連隱藏頁一起抽。 */
+  const [askBatchExtractChoice, setAskBatchExtractChoice] = useState(false);
+  /**
    * 文字圖層正在跑的工作，**逐頁**記錄（key 是 slide id）。
    *
    * 分成三種而不是一個 boolean：三者耗時與意義都不同——`save` 是每次編輯後的自動儲存重繪
@@ -2494,6 +2656,25 @@ export function Editor() {
       if (pageNumberTimer.current === undefined) return;
       clearTimeout(pageNumberTimer.current);
       pageNumberTimer.current = undefined;
+    };
+  }, [project?.id]);
+  /**
+   * 離開這份專案（換專案或整個卸載）時，批次抽字不再送出後續頁面，且在途那一頁的結果
+   * 不可以寫回來——`setProject` 收到的是**上一份**專案的內容，會直接蓋掉畫面上的新專案。
+   * 收尾一律用「呼叫當下」抓下來的 id，這裡只負責記錄「現在畫面上是誰」。
+   *
+   * **一定要是 layout effect。** passive effect 的 cleanup 是排進 scheduler 的另一個 task 才
+   * flush 的，而 `api.getProject()` 的續行走 microtask——換專案的 commit 與那個 flush 之間
+   * 隔著一整個空窗，落在裡面的寫回讀到的旗標還是 `undefined`，舊專案照樣蓋上去。layout
+   * effect 的 cleanup 在 commit 期間**同步**跑完，換專案這個離散事件結束時旗標必定已經立好。
+   *
+   * 兩道守衛並存不是重複：`activeProjectId` 是正向的身分比對（換專案），`"left"` 旗標
+   * 涵蓋卸載——卸載後沒有新的 effect body 會跑，ref 裡留著的還是舊 id，比對不出來。
+   */
+  useIsomorphicLayoutEffect(() => {
+    activeProjectId.current = project?.id;
+    return () => {
+      batchExtractStop.current = "left";
     };
   }, [project?.id]);
 
@@ -3131,6 +3312,16 @@ export function Editor() {
     railRef.current?.querySelector(".thumbnail.selected")?.scrollIntoView?.({ block: "nearest" });
   }, [selectedId]);
 
+  /**
+   * 批次抽字的名單。放在 `useMemo` 而不是每次 render 直接算：它對**全部**頁面各跑一次
+   * `versions.find()`，而這個元件會因為拖曳頁碼滑桿、打字改大綱等等高頻互動不斷重繪，
+   * 150 頁的專案等於每一幀重跑 150 次線性搜尋。
+   *
+   * 也一定要放在所有 early return **之前**——下面 `route === "/models"` 那幾條提早回傳的
+   * 分支若把這個 hook 跳過，hook 順序就會在切換路由時錯位。
+   */
+  const extractPlan = useMemo(() => batchExtractPlan(project?.slides ?? []), [project?.slides]);
+
   const importNoticeToast = importNotice ? (
     <button className="toast import-report" onClick={() => setImportNotice(undefined)}>
       {importNotice} ×
@@ -3584,6 +3775,68 @@ export function Editor() {
       )
       .finally(() => trackTextLayerTask(slideId, undefined));
   };
+  /**
+   * 抽字要交給哪個 provider。單頁與批次共用同一個運算式——兩條路的參數一旦分岔，
+   * 使用者在面板上選的引擎就會只對其中一顆按鈕生效。
+   */
+  const textExtractProviderId =
+    textExtractEngine === "opencv" ? "local-inpaint" : effectiveImageProviderId;
+  /** 抹字引擎寫給使用者看的名字（確認框與 tooltip 共用）。 */
+  const textExtractEngineLabel =
+    textExtractEngine === "opencv" ? "OpenCV（本機、不消耗配額）" : "生圖模型（會消耗影像配額）";
+  /**
+   * 生圖模型引擎才受影像 provider 限制（遮罩編輯能力＋readiness，與「生成此頁」同一組門檻）。
+   * OpenCV 在本機跑、不碰 provider，什麼都不必等。
+   */
+  const batchExtractModelBlocked =
+    textExtractEngine === "model" &&
+    (!provider?.capabilities.maskedEditing ||
+      readinessBusy ||
+      !readiness ||
+      readiness.blocking ||
+      (readiness.requiresAcknowledgement && !acceptUnknownReadiness));
+  // 比照「批次生成全部頁面」點擊時的門檻：有圖片工作在跑時，這一頁的圖等一下就會換掉，
+  // 現在對它抽字抽到的是舊圖。
+  const batchExtractJobsBusy = project.jobs.some((job) =>
+    ["queued", "running"].includes(job.status),
+  );
+  /**
+   * 有沒有**單頁**抽字正在飛。
+   *
+   * 這是循序不變量的另一半：伺服器的 OCR 閘門是 1 active ＋ 2 waiting，批次自己排得再整齊，
+   * 只要旁邊有第二個來源同時送，就可能撞出 429 `OCR_QUEUE_BUSY` 而讓整批中止。所以兩顆按鈕
+   * 必須互斥——這裡擋「單頁在跑時不准開批次」，單頁那顆則以 `batchExtract` 擋反方向。
+   *
+   * 只認 `extract`：`save`（自動儲存重繪）與 `create`（建立手動文字層）都不碰 OCR。
+   */
+  const singleExtractInFlight = [...textLayerTasks.values()].some((task) => task === "extract");
+  const batchExtractDisabled =
+    extractPlan.targets.length === 0 ||
+    batchExtract !== undefined ||
+    singleExtractInFlight ||
+    batchExtractJobsBusy ||
+    batchExtractModelBlocked;
+  /**
+   * 灰掉時一定要說明原因：抹字引擎的選單在另一個分頁（頁面）的收合區裡，使用者在專案分頁
+   * 上看到一顆沒有理由的灰按鈕，是完全猜不到要去哪裡改的。
+   */
+  const batchExtractTitle = batchExtract
+    ? "逐頁排隊處理中；按「停止」會在做完目前這一頁之後停下。"
+    : extractPlan.targets.length === 0
+      ? extractPlan.skippedExtracted === 0
+        ? "還沒有任何頁面有圖片可以抽離文字。"
+        : extractPlan.skippedNoImage === 0
+          ? "所有頁面都已經有可編輯文字層。"
+          : "沒有可以抽離文字的頁面：其餘頁面不是已有文字層，就是還沒有圖。"
+      : singleExtractInFlight
+        ? "有頁面正在抽離文字，等它完成再開始批次（伺服器一次只跑一頁 OCR）。"
+        : batchExtractJobsBusy
+          ? "有頁面的圖片工作還在跑（生成或抹字），等它完成再抽字。"
+          : batchExtractModelBlocked
+            ? !provider?.capabilities.maskedEditing
+              ? "目前的生圖模型不支援遮罩編輯；請到「頁面」分頁把抹字引擎改回 OpenCV。"
+              : (readiness?.message ?? "正在檢查生圖模型狀態…")
+            : `逐頁以 OCR 抽離文字，共 ${extractPlan.targets.length} 頁（抹字引擎：${textExtractEngineLabel}）。`;
   const startTextExtraction = async () => {
     if (!selected || !selectedVersion) return;
     // 抽字要等 OCR 排隊＋辨識，數十秒起跳，使用者這段時間多半已經去看別頁了：收尾一定要
@@ -3598,7 +3851,7 @@ export function Editor() {
       await api.extractText(
         project.id,
         slideId,
-        textExtractEngine === "opencv" ? "local-inpaint" : effectiveImageProviderId,
+        textExtractProviderId,
         textThreshold,
         acceptUnknownReadiness,
         textRepair,
@@ -3609,6 +3862,197 @@ export function Editor() {
     } finally {
       trackTextLayerTask(slideId, undefined);
     }
+  };
+  /**
+   * 「批次抽離全部文字」：對 {@link batchExtractPlan} 挑出來的每一頁跑一次既有的抽字端點。
+   *
+   * 完全複用單頁那條路（同一個端點、同一組參數），這裡只多做三件事：先問一次、逐頁排隊、
+   * 把逐頁的失敗收成一份摘要。
+   */
+  const batchExtractConfirmMessage = (count: number, hidden: number) => {
+    const skippedTotal = extractPlan.skippedExtracted + extractPlan.skippedNoImage;
+    const skipReasons = [
+      ...(extractPlan.skippedExtracted > 0
+        ? [`${extractPlan.skippedExtracted} 頁已經有可編輯文字層`]
+        : []),
+      ...(extractPlan.skippedNoImage > 0 ? [`${extractPlan.skippedNoImage} 頁還沒有圖`] : []),
+    ];
+    return [
+      `批次抽離全部文字：會處理 ${count} 頁` +
+        (hidden > 0 ? `（其中 ${hidden} 頁是隱藏頁，一併處理）` : "") +
+        (skippedTotal > 0 ? `，跳過 ${skippedTotal} 頁（${skipReasons.join("、")}）` : "") +
+        "。",
+      `抹字引擎：${textExtractEngineLabel}。`,
+      // 換專案會讓整批靜默停下（見寫回前的守衛），事後畫面上不留任何痕跡——使用者回來
+      // 只會以為它跑完了。這句話要在開始之前就講。
+      "頁面會逐一排隊送出（伺服器一次只跑一頁 OCR），整批可能需要數分鐘；" +
+        "中途離開這份專案會停止批次。確定開始？",
+    ].join("\n");
+  };
+  const runBatchTextExtraction = async (
+    targets: readonly SlideSpec[],
+    /** 三選一對話框已經問過了，不要再跳一次 `confirm()`。 */
+    preConfirmed = false,
+  ) => {
+    if (targets.length === 0 || batchExtract) return;
+    if (
+      !preConfirmed &&
+      !confirm(batchExtractConfirmMessage(targets.length, hiddenSlideCount(targets)))
+    )
+      return;
+    // 收尾一律用**呼叫當下**的專案 id：整批可能跑好幾分鐘，這期間使用者可以換專案。
+    const projectId = project.id;
+    /**
+     * 這一輪的結果還能不能寫回畫面？
+     *
+     * 兩道守衛缺一不可：`activeProjectId` 是正向的身分比對（使用者換去了別的專案，
+     * 寫回等於把舊專案蓋上去），`"left"` 旗標則涵蓋卸載——卸載後不會再有 effect body 跑，
+     * ref 裡留的還是這份專案的 id，光比對是分不出來的。
+     */
+    const abandoned = () =>
+      batchExtractStop.current === "left" || activeProjectId.current !== projectId;
+    batchExtractStop.current = undefined;
+    setError(undefined);
+    // 立刻進「進行中」，不要等到第一頁真的送出去：`confirm()` 一關掉按鈕就會重新算 disabled，
+    // 中間若空著一段（例如下面查 OCR 狀態的那趟往返），使用者連按兩下就開得起兩批。
+    setBatchExtract({ current: 1, total: targets.length, stopping: false });
+    const failures: { order: number; reason: string }[] = [];
+    let succeeded = 0;
+    /** 整批提前停下的原因；`undefined` ＝ 每一頁都送出去過了。 */
+    let abortedBy: "user" | "server" | undefined;
+    let abortMessage: string | undefined;
+    /** 開跑前的準備就失敗了（查 OCR 狀態那一趟），連迴圈都沒有進去。 */
+    let preflightMessage: string | undefined;
+    try {
+      // OCR 可不可用是**伺服器層級**的事，只在開跑前檢查一次；逐頁各檢查一次只是每頁多一趟
+      // 往返，而且答案不會不一樣（真的中途壞掉時，下面的錯誤碼分岔會把整批停下來）。
+      const status = await api.ocrStatus();
+      // 丟出去而不是 `return`：`return` 會連同下面的 `finally` 一起結束整個函式，
+      // try/finally 之後那段回報摘要的程式碼一行都不會跑，使用者什麼訊息都看不到。
+      // 交給下面那道 catch 統一收（與單頁 `startTextExtraction` 同一個寫法）。
+      if (!status.available) throw new Error(status.message);
+      for (const [index, slide] of targets.entries()) {
+        /*
+         * 「停止」只擋得下**還沒送出**的頁。
+         *
+         * 抽字端點刻意沒有取消機制（見 `apps/server/src/ocr-queue.ts`）：OCR 跑完就會一路
+         * 做完樣式精修、產遮罩、把抹字 job 寫進 project.json，中途放棄只會讓算完的成果沒人收。
+         * 所以旗標只在「要不要送下一頁」這個點上讀，不要「補上」中斷在途請求的能力。
+         */
+        if (abandoned()) return;
+        if (batchExtractStop.current === "user") {
+          abortedBy = "user";
+          break;
+        }
+        setBatchExtract({ current: index + 1, total: targets.length, stopping: false });
+        trackTextLayerTask(slide.id, "extract");
+        try {
+          /*
+           * **一定要 await，一頁一頁送。**
+           *
+           * 伺服器的 OCR 閘門併發是 1、等待區只有 2 筆（`ocr-queue.ts`），第 4 筆起立刻回
+           * 429 `OCR_QUEUE_BUSY`。改成 `Promise.all` 或預先併發送出，在 4 頁以上的專案上
+           * 必定整批爆掉；就算閘門放寬，單一 OCR 程序峰值約 4GB RSS 且並行零共享，那是直接
+           * 把伺服器打到 OOM。這裡慢不是還沒優化，是規格。
+           */
+          await api.extractText(
+            projectId,
+            slide.id,
+            textExtractProviderId,
+            textThreshold,
+            acceptUnknownReadiness,
+            textRepair,
+          );
+          // 202 已經回來了＝這一頁抽字成功（抹字 job 已排進 project.json）。下面那趟重讀
+          // 只是為了讓畫面跟上，**不是**成功與否的一部分。
+          succeeded += 1;
+          /*
+           * 逐頁重讀專案，畫布與縮圖列才會一頁一頁亮起來，而不是整批跑完才一次跳完。
+           *
+           * 這一趟**不是**多餘的：專案輪詢（`jobsBusy` 那條 effect）的觸發條件是
+           * `project.jobs` 裡有 queued/running 的 job，而 `project` 只有靠這裡寫回才會知道
+           * 抽字剛排了一個抹字 job——沒有這一趟，`jobsBusy` 從頭到尾都是 false，輪詢一次
+           * 都不會啟動（它自己 bootstrap 不了）。
+           *
+           * `.catch` 吞掉是刻意的：網路抖一下害重讀失敗時，這一頁的抽字其實已經成功了，
+           * 把它記成「這一頁失敗」是在說謊——最壞的後果只是這一頁晚一點才更新，而輪詢
+           * 接手之後也會補上。
+           */
+          const refreshed = await api.getProject(projectId).catch(() => undefined);
+          // 這趟往返中間使用者可能已經換掉專案：`refreshed` 是**上一份**專案的內容，
+          // 寫回去等於把它蓋到畫面上的新專案。
+          if (abandoned()) return;
+          if (refreshed) setProject(refreshed);
+        } catch (reason) {
+          const message = reason instanceof Error ? reason.message : "文字抽離失敗";
+          if (isBatchAbortingFailure(reason)) {
+            // 原因不在這一頁身上，所以不列進逐頁失敗清單，而是整批停下來。
+            abortedBy = "server";
+            abortMessage = message;
+            break;
+          }
+          failures.push({ order: slide.order + 1, reason: message });
+        } finally {
+          trackTextLayerTask(slide.id, undefined);
+        }
+      }
+      // 停止按在最後一頁上時迴圈是自然結束的，旗標沒有人讀到——不補這一句，使用者按了
+      // 停止卻連一句回應都沒有（按鈕直接消失，命中下面「全部跑完不留訊息」那條）。
+      if (abortedBy === undefined && batchExtractStop.current === "user") abortedBy = "user";
+    } catch (reason) {
+      /*
+       * 這一層是 `api.ocrStatus()` 等「迴圈之外」的失敗的唯一出口。
+       *
+       * 少了它，`/api/ocr/status` 回 500 或非 JSON 時例外會一路穿出這個 async 函式，
+       * 而呼叫端是 `void runBatchTextExtraction(...)`——沒有人接，變成 unhandled rejection：
+       * 使用者按下去只看到按鈕閃一下，畫面上一個字都沒有。單頁那條本來就有這道 catch。
+       */
+      preflightMessage = reason instanceof Error ? reason.message : "批次抽離文字失敗";
+    } finally {
+      setBatchExtract(undefined);
+    }
+    // 換專案／卸載就什麼都不要說：這份摘要講的是另一份專案的事。
+    if (abandoned()) return;
+    if (preflightMessage !== undefined) {
+      setError(preflightMessage);
+      return;
+    }
+    // 全部順利跑完時不留任何訊息——畫面已經逐頁更新過了，一句「成功 12 頁」佔著通知列
+    // 反而像出了事。
+    if (failures.length === 0 && abortedBy === undefined) return;
+    // 「還沒送出」不含撞出中止的那一頁：它已經送過了，只是原因不在它身上所以沒有列進
+    // 逐頁清單。
+    const remaining =
+      targets.length - succeeded - failures.length - (abortedBy === "server" ? 1 : 0);
+    /*
+     * 逐頁原因最多列 6 筆。通知列是一顆按鈕，把 100 頁的原因全串上去等於一面文字牆，
+     * 而失敗多半是同一個原因重複，看前幾筆就夠判斷。
+     */
+    const shown = failures.slice(0, 6).map((item) => `第 ${item.order} 頁：${item.reason}`);
+    const failureDetail = failures.length
+      ? `，失敗 ${failures.length} 頁（${shown.join("；")}${
+          failures.length > shown.length ? `；另有 ${failures.length - shown.length} 頁` : ""
+        }）`
+      : "";
+    const headline =
+      abortedBy === "user"
+        ? remaining > 0
+          ? `批次抽離文字已由你中止：完成 ${succeeded} 頁`
+          : // 停止按下去時剩的正好是最後一頁：它照樣做完了，說「中止」會讓人以為有東西沒做。
+            `你按下停止時已經是最後一頁：完成 ${succeeded} 頁`
+        : abortedBy === "server"
+          ? `批次抽離文字已中止：完成 ${succeeded} 頁`
+          : `批次抽離文字完成：成功 ${succeeded} 頁`;
+    const summary =
+      `${headline}${failureDetail}${remaining > 0 ? `，還有 ${remaining} 頁沒有送出` : ""}。` +
+      (abortMessage ? ` ${abortMessage}` : "");
+    /*
+     * 沒有任何一頁失敗時走**非錯誤**的通知列（`importNotice` 那條，紅色的錯誤列留給真的
+     * 出錯的情況）：使用者自己按的停止不是故障，用紅字回報等於在說他做錯了什麼。
+     * 伺服器層級的中止仍算錯誤——那是真的有東西壞了。
+     */
+    if (failures.length === 0 && abortedBy !== "server") setImportNotice(summary);
+    else setError(summary);
   };
   return (
     <div className="shell">
@@ -4393,7 +4837,13 @@ export function Editor() {
               </button>
               <div
                 className={`text-extraction-control${showTextThreshold ? " open" : ""}`}
-                title="只處理當頁；低於門檻的文字保留在原圖。"
+                // 說明掛在外層而不是按鈕上：批次進行中那顆是 disabled 的，而瀏覽器不會對
+                // disabled 的表單控制項派送指標事件，掛在它身上的 tooltip 永遠顯示不出來。
+                title={
+                  batchExtract
+                    ? "批次抽離文字進行中；伺服器一次只跑一頁 OCR，等它跑完或按「停止」再抽這一頁。"
+                    : "只處理當頁；低於門檻的文字保留在原圖。"
+                }
               >
                 <div className="text-extraction-row">
                   <button
@@ -4404,6 +4854,15 @@ export function Editor() {
                       !!activeJob ||
                       !!previewVersion ||
                       textLayerBusy ||
+                      /*
+                       * 批次抽字進行中時不准單獨再抽一頁。
+                       *
+                       * `textLayerBusy` 擋不住這個：它只看**當前這一頁**，使用者切到別頁
+                       * 那顆就亮了，於是兩個 OCR 請求同時在飛。伺服器的閘門是 1 active ＋
+                       * 2 waiting，多出來的那一筆很容易讓批次裡的某一頁撞上 429
+                       * `OCR_QUEUE_BUSY`——而那個代碼會把**整批**停掉。
+                       */
+                      batchExtract !== undefined ||
                       // 這個版本已經有抽出來的文字層了：再抽一次是拿 OCR ＋ 抹字引擎重做一份
                       // 已經精確而且零成本的東西（PDF 匯入的文字層取自原生文字層）。手動層
                       // 不在此列——它的背景一個字都沒抹，圖上原本的文字還等著被抽出來。
@@ -4877,6 +5336,51 @@ export function Editor() {
               >
                 批次生成全部頁面
               </button>
+              {/*
+                批次抽離全部文字。進行中時這一顆變成進度顯示（不可再按），旁邊多長出一顆
+                「停止」——停止只擋得下還沒送出的頁，所以兩顆要並排在同一列，讓「正在做的
+                是第幾頁」與「停下來」在同一個視線落點上。
+              */}
+              {/*
+                `title` 掛在這一列而不是按鈕上：按鈕在最需要解釋的時候（灰掉時）正好是
+                disabled 的，而 Chrome／Safari 不會對 disabled 的表單控制項派送指標事件，
+                掛在它身上的 tooltip 一次都不會出現（jsdom 抓得到屬性，所以測試綠不代表看得到）。
+              */}
+              <div className="batch-extract-row" title={batchExtractTitle}>
+                <button
+                  className="batch-extract"
+                  // 抹字引擎是生圖模型時，每一頁都會排一個遮罩編輯 job、燒一次影像配額，
+                  // 隱藏頁因此變成一個真的取捨（與批次生成同一個結構）：走共用的三選一。
+                  // OpenCV 或沒有隱藏頁時維持單一 confirm，不多一次點擊。
+                  onClick={() => {
+                    if (textExtractEngine === "model" && extractPlan.hiddenTargets > 0)
+                      setAskBatchExtractChoice(true);
+                    else void runBatchTextExtraction(extractPlan.targets);
+                  }}
+                  disabled={batchExtractDisabled}
+                >
+                  {batchExtract
+                    ? `抽離文字 ${batchExtract.current} / ${batchExtract.total}…`
+                    : "批次抽離全部文字"}
+                </button>
+                {batchExtract && (
+                  <button
+                    className="batch-extract-stop"
+                    // 只立旗：在飛的那一頁沒有取消機制（見 `runBatchTextExtraction` 的註解），
+                    // 這顆的語意就是「做完這一頁之後不要再送了」。
+                    onClick={() => {
+                      batchExtractStop.current = "user";
+                      setBatchExtract((current) =>
+                        current ? { ...current, stopping: true } : current,
+                      );
+                    }}
+                    disabled={batchExtract.stopping}
+                    title="做完目前這一頁就停下；已經送出的那一頁沒有辦法取消。"
+                  >
+                    {batchExtract.stopping ? "停止中…" : "停止"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -5137,6 +5641,38 @@ export function Editor() {
           onChoose={(choice) => {
             setAskBatchChoice(false);
             void runBatchGenerate(choice);
+          }}
+        />
+      )}
+      {askBatchExtractChoice && (
+        <BatchGenerateDialog
+          variant="extract"
+          // 分母是**這次要抽字的頁數**，不是整份簡報：已經有文字層、還沒有圖的頁根本不在
+          // 名單裡，拿總頁數當分母會讓兩顆按鈕上的數字對不上使用者按下去真正會發生的事。
+          total={extractPlan.targets.length}
+          hiddenCount={extractPlan.hiddenTargets}
+          busy={false}
+          body={
+            <>
+              這次會處理 <strong>{extractPlan.targets.length}</strong> 頁，其中{" "}
+              <strong>{extractPlan.hiddenTargets}</strong> 頁已隱藏。 隱藏頁不會進 pptx／pdf
+              匯出，也不會出現在簡報放映中，而你選的抹字引擎是
+              <strong>生圖模型</strong>，每一頁都會消耗一次影像模型配額。
+              頁面會逐一排隊送出（伺服器一次只跑一頁 OCR），整批可能需要數分鐘；
+              中途離開這份專案會停止批次。
+            </>
+          }
+          onCancel={() => setAskBatchExtractChoice(false)}
+          onChoose={(choice) => {
+            setAskBatchExtractChoice(false);
+            // 這個對話框本身就是那次確認，不要再跳一次 `confirm()`——連問兩遍同一件事
+            // 只會讓人以為第一次沒按到。
+            void runBatchTextExtraction(
+              choice === "visible-only"
+                ? extractPlan.targets.filter((slide) => !slide.hidden)
+                : extractPlan.targets,
+              true,
+            );
           }}
         />
       )}

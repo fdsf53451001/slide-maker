@@ -125,13 +125,45 @@ function failureMessage(body: unknown, fallback: string): string {
   return [failure.message || failure.error || fallback, detail].filter(Boolean).join(" — ");
 }
 
+/** 失敗回應裡的錯誤代碼（`{ error: "OCR_QUEUE_BUSY" }`）；沒有就是 `undefined`。 */
+function failureCode(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const code = (body as ApiFailure).error;
+  return typeof code === "string" && code ? code : undefined;
+}
+
+/**
+ * API 失敗。`message` 與以前完全一樣（就是給使用者看的那一句），另外把伺服器的錯誤代碼
+ * 與 HTTP 狀態一起帶出來。
+ *
+ * 代碼是給「要依失敗種類分岔」的呼叫端用的：批次抽字必須分辨「這一頁不行」（`OCR_NO_TEXT`
+ * 之類，跳過繼續跑）與「伺服器現在整個不行」（`OCR_QUEUE_BUSY`，再送下一頁只是重複失敗）。
+ * **不要**改成比對 `message` 字串——那是寫給人看的繁中句子，改一個字就會讓分岔悄悄失效。
+ * 既有的 `reason instanceof Error ? reason.message : …` 顯示路徑不受影響。
+ */
+export class ApiError extends Error {
+  readonly code: string | undefined;
+  readonly status: number;
+  constructor(message: string, status: number, code: string | undefined) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   const body = (await response.json()) as T | ApiFailure;
-  if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+  if (!response.ok)
+    throw new ApiError(
+      failureMessage(body, response.statusText),
+      response.status,
+      failureCode(body),
+    );
   return body as T;
 }
 
