@@ -2179,6 +2179,25 @@ header {
   color: var(--accent-soft);
   background: rgba(var(--accent-rgb), 0.07);
 }
+/* 批次抽離全部文字：進行中時右邊多長出一顆「停止」。這一列自己排成兩欄，而不是改
+   `.panel-actions` 的方向——上面三顆是單欄堆疊，改了會一起變形。 */
+.batch-extract-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+/* 刻意不套 `.batch-generate` 的強調色：預設的 OpenCV 引擎在本機跑、不消耗任何配額，
+   把它畫得跟「會花錢」的批次生成一樣醒目只會誤導。 */
+.panel-actions .batch-extract:disabled {
+  color: var(--text-dim-2);
+  cursor: not-allowed;
+}
+.panel-actions .batch-extract-stop {
+  border-color: rgba(var(--danger-rgb), 0.55);
+  color: var(--danger);
+  background: rgba(var(--danger-rgb), 0.08);
+  padding-inline: 14px;
+}
 .source-add-actions {
   /* 2×2：一列兩顆、共兩列。四顆等寬（`1fr`，不是 `auto`）才不會因為標題長度不同而長短腳。 */
   display: grid;
