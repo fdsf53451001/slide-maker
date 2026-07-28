@@ -1168,8 +1168,27 @@ button:disabled {
 .shell {
   height: 100vh;
   display: grid;
-  grid-template: 52px 1fr / 228px minmax(600px, 1fr) 360px;
+  --inspector-w: 360px;
+  grid-template: 52px 1fr / 228px minmax(600px, 1fr) var(--inspector-w);
   overflow: hidden;
+}
+/*
+ * 側邊欄收起：inspector 那條軌道縮成只放得下切換鈕的窄條，省下的寬度全數落到中間的
+ * 畫布（`minmax(600px, 1fr)`）。面板內容用 `display: none` 藏起來而不是在 JSX 卸載，
+ * 收合／還原才不會清掉未存檔的大綱草稿與捲動位置。
+ *
+ * 只改 `--inspector-w`、不重寫整條 `grid-template-columns`：後者會把左欄與畫布的軌道
+ * 一起複製一份，之後有人改了 `.shell` 的左欄寬度，收合右側邊欄就會順手把左欄也拉回舊值。
+ */
+.shell.inspector-collapsed {
+  --inspector-w: 30px;
+}
+.shell.inspector-collapsed .inspector-tabs {
+  grid-template-columns: minmax(0, 1fr);
+}
+.shell.inspector-collapsed .inspector > *:not(.inspector-tabs),
+.shell.inspector-collapsed .inspector-tabs > button:not(.inspector-collapse) {
+  display: none;
 }
 header {
   grid-column: 1 / -1;
@@ -1875,8 +1894,11 @@ header {
   box-shadow: 0 10px 50px rgba(0, 0, 0, 0.45);
 }
 @media (max-width: 1200px) {
+  /* 收合寬度不隨斷點變（`--inspector-w` 由 .inspector-collapsed 覆寫，那條的
+     特異性比這裡高），收合鈕的落點才不會隨視窗跳動。 */
   .shell {
-    grid-template-columns: 190px minmax(540px, 1fr) 330px;
+    --inspector-w: 330px;
+    grid-template-columns: 190px minmax(540px, 1fr) var(--inspector-w);
   }
   .stage {
     /* 與上面同一套不對稱，理由同 .stage 的 padding 註解（右邊貼的是文字工具列或畫布本身）。 */
@@ -2070,12 +2092,29 @@ header {
   height: 44px;
   display: grid;
   /* 按鈕是 nowrap，軌道用裸 1fr（＝minmax(auto, 1fr)）就縮不到 min-content 以下；
-     「來源 100」這種加長標籤會把分頁列撐出面板，故與本檔其他 grid 一致用 minmax(0, 1fr)。 */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+     「來源 100」這種加長標籤會把分頁列撐出面板，故與本檔其他 grid 一致用 minmax(0, 1fr)。
+     末尾的固定軌道是收合鈕：它只有一個字元寬，讓它跟著分頁一起分 1fr 只會白白吃掉
+     四個分頁的可用寬度。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 26px;
   border-bottom: 1px solid var(--surface-5);
 }
 .inspector-tabs button {
   font-size: 11px;
+}
+.inspector-tabs .inspector-collapse {
+  padding: 8px 0;
+  font-size: 13px;
+  line-height: 1;
+  color: #6e7b91;
+}
+.inspector-tabs .inspector-collapse:hover {
+  color: var(--accent-strong);
+  background: #171e2c;
+}
+/* 收起之後這顆是側邊欄唯一的入口，用亮色標出來：維持分頁那個灰，等於要使用者
+   在一條 30px 的暗色窄條上找一個灰箭頭。 */
+.shell.inspector-collapsed .inspector-collapse {
+  color: var(--text-bright);
 }
 /* 來源筆數的小字：原本在 header 導覽列，現在只出現在「來源」分頁。 */
 .inspector-tabs b {

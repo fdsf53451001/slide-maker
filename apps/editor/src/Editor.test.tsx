@@ -2340,9 +2340,12 @@ describe("header 導覽收斂到 inspector 分頁", () => {
     },
   ];
 
+  // 分頁列裡還有一顆收起／展開側邊欄的按鈕，它不是面板入口，不列入這裡的順序比對
+  // （它自己的行為由 InspectorCollapse.test.tsx 釘住）。
   const tabLabels = () =>
     within(document.querySelector<HTMLElement>(".inspector-tabs")!)
       .getAllByRole("button")
+      .filter((button) => !button.classList.contains("inspector-collapse"))
       .map((button) => button.textContent);
 
   it("header 只留「▶ 簡報模式」，三個面板入口整個畫面上各只剩分頁那一顆", async () => {
