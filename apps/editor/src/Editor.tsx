@@ -349,6 +349,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.matches("input, select, a") || target.isContentEditable;
 }
 
+/** 某一頁正在跑的文字圖層工作。 */
+type TextLayerTask = "save" | "extract" | "create";
+
 /** 待寫入伺服器的文字圖層變更；`boxes` 直接存引用（文字框陣列一律不可變更新）。 */
 type PendingTextSave = {
   projectId: string;
@@ -2385,13 +2388,28 @@ export function Editor() {
   // 圖上文字逐字來自大綱時能修好空格與誤認字，否則會把正確的字換成大綱裡的相似片段。
   const [textRepair, setTextRepair] = useState<"off" | "outline">("off");
   /**
-   * 文字圖層正在跑的工作。分成三種而不是一個 boolean：三者耗時與意義都不同——`save` 是每次
-   * 編輯後的自動儲存重繪（伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒），
-   * `create` 是在沒有文字層的版本上建立文字編輯版本（一次合成＋開版本）。
-   * 只報「處理中」等於把幾件事混成一句話，使用者無從判斷該不該等。
+   * 文字圖層正在跑的工作，**逐頁**記錄（key 是 slide id）。
+   *
+   * 分成三種而不是一個 boolean：三者耗時與意義都不同——`save` 是每次編輯後的自動儲存重繪
+   * （伺服器重跑合成），`extract` 是抽離文字（OCR＋抹字，可能數十秒），`create` 是在沒有
+   * 文字層的版本上建立文字編輯版本（一次合成＋開版本）。只報「處理中」等於把幾件事混成
+   * 一句話，使用者無從判斷該不該等。
+   *
+   * 以前是編輯器層級的單一 state，那會讓工作跟著使用者跑：A 頁的抽字還沒回來時，切到 B 頁
+   * 那顆抽字鈕也是灰的，而「正在抽取文字…」的進度條會顯示在 B 頁的畫布上——兩件事都在說謊。
+   * 這些工作本來就是綁在某一頁上的，state 也照著綁。
    */
-  const [textLayerTask, setTextLayerTask] = useState<"save" | "extract" | "create">();
-  const textLayerBusy = textLayerTask !== undefined;
+  const [textLayerTasks, setTextLayerTasks] = useState<ReadonlyMap<string, TextLayerTask>>(
+    () => new Map(),
+  );
+  const trackTextLayerTask = (slideId: string, task: TextLayerTask | undefined) =>
+    setTextLayerTasks((current) => {
+      if (current.get(slideId) === task) return current;
+      const next = new Map(current);
+      if (task) next.set(slideId, task);
+      else next.delete(slideId);
+      return next;
+    });
   const [textUndo, setTextUndo] = useState<EditableTextBox[][]>([]);
   const [textRedo, setTextRedo] = useState<EditableTextBox[][]>([]);
   /**
@@ -2557,6 +2575,12 @@ export function Editor() {
   }, [effectiveImageProviderId]);
 
   const selected = project?.slides.find((slide) => slide.id === selectedId) ?? project?.slides[0];
+  /*
+   * 下面的 UI 一律只看「**這一頁**在跑什麼」。別頁的工作照樣在跑、完成時照樣寫回專案狀態，
+   * 只是不該讓這一頁的按鈕變灰、也不該把進度條掛到這一頁的畫布上。
+   */
+  const textLayerTask = selected ? textLayerTasks.get(selected.id) : undefined;
+  const textLayerBusy = textLayerTask !== undefined;
   // 編輯區滾輪：向下捲切到下一頁、向上捲切到上一頁；用冷卻節流避免慣性滾動連跳。
   const handleStageWheel = (event: ReactWheelEvent) => {
     const slides = project?.slides;
@@ -2743,7 +2767,7 @@ export function Editor() {
   const saveTextLayer = (pending: PendingTextSave) => {
     if (pendingTextSave.current !== pending) return;
     pendingTextSave.current = undefined;
-    setTextLayerTask("save");
+    trackTextLayerTask(pending.slideId, "save");
     void api
       .updateTextLayer(
         pending.projectId,
@@ -2756,7 +2780,8 @@ export function Editor() {
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "文字圖層自動儲存失敗"),
       )
-      .finally(() => setTextLayerTask(undefined));
+      // 換頁 flush 也走這條路，所以收尾要用 `pending` 裡的那一頁，不是收尾當下的 `selected`。
+      .finally(() => trackTextLayerTask(pending.slideId, undefined));
   };
   useEffect(() => {
     // 只在使用者實際編輯過（textDirty）才儲存：常駐的文字圖層不能把重新播種前的舊狀態寫回伺服器。
@@ -3539,13 +3564,15 @@ export function Editor() {
       return;
     }
     if (!selected || !selectedVersion || !canStartManualText) return;
-    setTextLayerTask("create");
+    // 這一輪的頁面，收尾時一律用它：非同步期間使用者可能已經切到別頁。
+    const slideId = selected.id;
+    trackTextLayerTask(slideId, "create");
     setError(undefined);
     void api
-      .createManualTextLayer(project.id, selected.id, selectedVersion.id, [box])
+      .createManualTextLayer(project.id, slideId, selectedVersion.id, [box])
       .then((updated) => {
         const nextVersionId = updated.slides.find(
-          (candidate) => candidate.id === selected.id,
+          (candidate) => candidate.id === slideId,
         )?.currentVersionId;
         if (nextVersionId) pendingTextSelect.current = { versionId: nextVersionId, boxId: box.id };
         setProject(updated);
@@ -3555,18 +3582,22 @@ export function Editor() {
         // 只在「這一版沒有文字層」時按得下去，所以那個代碼在這條路上定義上到不了畫面上。
         setError(reason instanceof Error ? reason.message : "建立文字編輯版本失敗"),
       )
-      .finally(() => setTextLayerTask(undefined));
+      .finally(() => trackTextLayerTask(slideId, undefined));
   };
   const startTextExtraction = async () => {
     if (!selected || !selectedVersion) return;
-    setTextLayerTask("extract");
+    // 抽字要等 OCR 排隊＋辨識，數十秒起跳，使用者這段時間多半已經去看別頁了：收尾一定要
+    // 用**呼叫當下**的頁面，拿收尾時的 `selected` 會把狀態清到別頁上（那一頁的抽字鈕就此
+    // 永遠灰著，而這一頁的進度條永遠轉著）。
+    const slideId = selected.id;
+    trackTextLayerTask(slideId, "extract");
     setError(undefined);
     try {
       const status = await api.ocrStatus();
       if (!status.available) throw new Error(status.message);
       await api.extractText(
         project.id,
-        selected.id,
+        slideId,
         textExtractEngine === "opencv" ? "local-inpaint" : effectiveImageProviderId,
         textThreshold,
         acceptUnknownReadiness,
@@ -3576,7 +3607,7 @@ export function Editor() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "文字抽離失敗");
     } finally {
-      setTextLayerTask(undefined);
+      trackTextLayerTask(slideId, undefined);
     }
   };
   return (

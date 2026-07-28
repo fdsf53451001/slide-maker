@@ -19,18 +19,23 @@ import type { RawOcrResult } from "../src/ocr.js";
  */
 
 /**
- * 每一次 `ocr.recognize()` 收到的輸入圖路徑（依序）。
+ * 每一次 `ocr.recognize()` 收到的輸入圖**位元組**（依序）。
  *
  * 「抽字到底是拿哪一張圖去 OCR」只有這裡看得出來：端點把正規化後的圖存成 `ocr-input/*.png`
  * 再把路徑交給 adapter，回應與專案狀態都不會提到它。
+ *
+ * 存位元組而不是路徑，是因為那個檔案是**中間產物**：端點在 handler 收尾時就會刪掉它（見
+ * `ocr_input_cleanup_failed` 那條路），請求結束後再去讀路徑只會拿到 ENOENT。這裡是唯一
+ * 「檔案還在」的時刻，所以就地讀下來。刻意不改成「不要刪」或把斷言弱化——這一組測試守的
+ * 是「手動層要餵未合成的原圖、不是合成圖」，那是像素級的事實，必須真的比對圖。
  */
-const ocrInputs: string[] = [];
+const ocrInputs: Buffer[] = [];
 
 /** OCR stub：固定回一個高信賴度的標題框，讓 extract-text 走得完整條路。 */
 const fakeOcr = {
   status: async () => ({ available: true, message: "ok" }),
   recognize: async (imagePath: string): Promise<RawOcrResult> => {
-    ocrInputs.push(imagePath);
+    ocrInputs.push(await readFile(imagePath));
     return {
       width: 1920,
       height: 1080,
@@ -57,12 +62,19 @@ const fakeOcr = {
  * canvas 尺寸，因為抽字途中的中間產物都會被正規化成 1920×1080。
  */
 async function regionDiff(
-  left: string,
-  right: string,
+  // 收 Buffer 是為了 `ocrInputs`：那個中間產物在請求結束時就被刪了，只能比對當場抓下來的
+  // 位元組。sharp 對路徑與 Buffer 的處理一致。
+  left: string | Buffer,
+  right: string | Buffer,
   region: { left: number; top: number; width: number; height: number },
 ): Promise<number> {
-  const raw = async (path: string) =>
-    sharp(path).resize(1920, 1080, { fit: "fill" }).extract(region).removeAlpha().raw().toBuffer();
+  const raw = async (source: string | Buffer) =>
+    sharp(source)
+      .resize(1920, 1080, { fit: "fill" })
+      .extract(region)
+      .removeAlpha()
+      .raw()
+      .toBuffer();
   const [a, b] = await Promise.all([raw(left), raw(right)]);
   let total = 0;
   for (let index = 0; index < a.length; index += 1) total += Math.abs(a[index]! - b[index]!);

@@ -10,13 +10,33 @@ export class ShutdownDeadlineExceeded extends Error {
 }
 
 /**
- * 除了 job runner 之外、也要跟著關機收尾的背景工作（目前是圖片描述佇列）。
+ * 除了 job runner 之外、也要跟著關機收尾的背景工作（目前是圖片描述佇列與 OCR 佇列）。
  *
  * 型別刻意只要求 `shutdown()`：這裡不該知道那是什麼佇列，而 `app.locals` 取出來的東西
  * 是 `any`，用最小介面接住才不會把整個型別讓掉。
  */
 export interface BackgroundWork {
   shutdown(): Promise<void>;
+}
+
+/**
+ * 把多個背景工作併成一個 `BackgroundWork`。
+ *
+ * 刻意用組合而不是讓 `gracefulShutdown` 收一個陣列：那支的每一步（先 abort 再等、與
+ * job runner 併行、期限競賽）都是有理由的既有語意，多背景工作跟它無關，不值得為此動它
+ * 的簽名與流程。
+ *
+ * 兩件事必須守住：①**併行**送出（依序 await 等於讓後面的工作晚幾秒才收到 abort，而總
+ * 預算只有 graceMs）；②用 `allSettled` 吞掉失敗——`BackgroundWork` 的契約就是「自己吞掉
+ * 所有失敗、不把關機拖成 reject」，組合物件不能把成員的例外放出去，否則原本 exit(0) 的
+ * 關機會變成 exit(1)。
+ */
+export function combineBackgroundWork(...works: readonly BackgroundWork[]): BackgroundWork {
+  return {
+    shutdown: async () => {
+      await Promise.allSettled(works.map((work) => work.shutdown()));
+    },
+  };
 }
 
 export async function gracefulShutdown(
