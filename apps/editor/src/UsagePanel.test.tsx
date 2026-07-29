@@ -232,6 +232,43 @@ describe("用量面板", () => {
     expect(textRow?.querySelector(".usage-row-note")).toBeNull();
   });
 
+  /**
+   * 同一個桶**同時**有未回報與本機呼叫——`richSummary()` 剛好一組只有未回報、一組只有本機，
+   * 所以這個混合的形狀在那份 fixture 底下測不到，而它正是措辭最容易出錯的地方：兩段話疊在
+   * 一起時，讀者必須還能分清楚哪個數字燒了配額。可達路徑很平常（`image` 桶裡 mock 與不回報
+   * 的 gateway 並存、抹字引擎設成生圖模型時的 `extract-text`）。
+   */
+  it("同一組同時有未回報與本機時，兩者是各自獨立的子句", async () => {
+    stubUsage({
+      p1: summary({
+        totalCalls: 10,
+        totalRequests: 10,
+        unreportedCalls: 2,
+        localCalls: 8,
+        totals: bucket({ calls: 10, requests: 10, unreportedCalls: 2, localCalls: 8 }),
+        byCapability: {
+          image: bucket({ calls: 10, requests: 10, unreportedCalls: 2, localCalls: 8 }),
+        },
+      }),
+    });
+    render(<UsagePanel projectId="p1" />);
+
+    const row = await waitFor(() => {
+      const found = [...(panel()?.querySelectorAll(".usage-row") ?? [])].find(
+        (node) => node.querySelector(".usage-row-name")?.textContent === "影像",
+      );
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    const note = row.querySelector(".usage-row-note")?.textContent ?? "";
+    expect(note).toContain("已回報用量 0 / 10 次");
+    // 兩個括號各自貼著自己的數字：本機那一段**不可以**接在未回報後面當它的括號註解
+    // （舊版就是 `未回報 2 次（本機 8 次未耗配額）`，括號裡的數字還比較大）。
+    expect(note).toContain("未回報 2 次（已耗配額）");
+    expect(note).toContain("本機 8 次（未耗配額）");
+    expect(note).not.toContain("次（本機");
+  });
+
   it("依操作預設折疊", async () => {
     stubUsage({ p1: richSummary() });
     render(<UsagePanel projectId="p1" />);
@@ -557,6 +594,148 @@ describe("批次生成結束後自動重抓", () => {
 });
 
 /**
+ * 批次**抽字**的 `jobsBusy` 邊緣與批次**生成**不同，所以要單獨釘一條。
+ *
+ * 生成是伺服器一次把所有 job 排進佇列，`jobsBusy` 全程 true、只有一個邊緣；抽字是前端的
+ * 逐頁迴圈，每一頁換來一個抹字 job，而那個 job 往往在迴圈等下一頁 OCR 的時候就跑完了——
+ * `jobsBusy` 於是一頁掉一次 false。沒有守衛的話 20 頁就是約 20 次 `GET /usage`，每一次都
+ * 要 `await usageLedger.idle()` 加一趟完整的專案載入與帳本解析，而抽字按鈕就在同一個
+ * 「專案」分頁上，面板全程掛著、跟著閃「更新中…」。
+ */
+describe("批次抽字期間不重抓", () => {
+  /** 三頁都沒有文字層＝三頁都會被批次抽字挑中。 */
+  function extractableProject(topic: string): PresentationProject {
+    const project = createProject({ topic, brief: { desiredSlideCount: 3 } });
+    project.workflowStage = "editing";
+    const now = new Date().toISOString();
+    for (const slide of project.slides) {
+      slide.versions = [
+        {
+          id: `${slide.id}-v1`,
+          imagePath: `assets/generated/${slide.id}.png`,
+          prompt: "",
+          providerId: "mock-image",
+          model: "mock",
+          parameters: {},
+          styleVersion: 1,
+          sources: [],
+          createdAt: now,
+        },
+      ];
+      slide.currentVersionId = `${slide.id}-v1`;
+    }
+    return project;
+  }
+
+  /**
+   * 抽字端點回 202 之後，專案裡就多一個 queued 的抹字 job；**下一趟**讀專案時它已經完成。
+   * 這正是實機的節奏（抹字比一頁 OCR 快），也正是製造出「一頁一個 false 邊緣」的東西。
+   */
+  function stubExtracting(project: PresentationProject, usage: UsageSummary) {
+    const extractCalls: string[] = [];
+    let jobStatus: "idle" | "queued" | "completed" = "idle";
+    const now = new Date().toISOString();
+    const snapshot = () => {
+      const clone = structuredClone(project);
+      clone.jobs =
+        jobStatus === "idle"
+          ? []
+          : [
+              {
+                id: `job-${extractCalls.length}`,
+                projectId: clone.id,
+                slideId: clone.slides[0]!.id,
+                providerId: "local-inpaint",
+                status: jobStatus,
+                operation: "extract-text",
+                attempt: 1,
+                progress: { step: jobStatus === "queued" ? 1 : 6, total: 6 },
+                createdAt: now,
+                updatedAt: now,
+              },
+            ];
+      // 讀過一次就當它跑完了：queued → completed，於是 busy 掉回 false。
+      if (jobStatus === "queued") jobStatus = "completed";
+      return clone;
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (path === `/api/projects/${project.id}/usage`) return Response.json(usage);
+      if (path.endsWith("/extract-text") && init?.method === "POST") {
+        extractCalls.push(path);
+        // 一頁 OCR 實機是十幾秒，遠比 700 毫秒的專案輪詢慢——**這個時間差才是問題的來源**：
+        // 上一頁的抹字 job 在這段等待裡跑完，輪詢看到沒有 busy job，false 邊緣就發生了。
+        // 這裡壓成 1 秒（仍長過一次輪詢），少了它整批會快到輪詢一次都插不進來，測試就
+        // 驗不到任何東西（實測：拿掉守衛也照樣綠）。
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        jobStatus = "queued";
+        return Response.json({ id: "job", status: "queued" }, { status: 202 });
+      }
+      if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
+      if (path === "/api/projects") return Response.json([snapshot()]);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true, imageEditing: true, maskedEditing: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      if (path.includes("/readiness"))
+        return Response.json({
+          providerId: "mock-image",
+          status: "ready",
+          blocking: false,
+          requiresAcknowledgement: false,
+          message: "Ready",
+          checkedAt: now,
+          expiresAt: now,
+        });
+      return Response.json(snapshot());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      extractCalls,
+      usageCalls: () =>
+        fetchMock.mock.calls.filter(([input]) => String(input).includes("/usage")).length,
+    };
+  }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("逐頁的 job 進出佇列不觸發重抓，整批收尾才補一次", async () => {
+    const project = extractableProject("批次抽字用量");
+    const stub = stubExtracting(project, richSummary());
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("批次抽字用量"));
+    fireEvent.click(await screen.findByRole("button", { name: "專案" }));
+    await screen.findByText("19,134");
+    expect(stub.usageCalls()).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "批次抽離全部文字" }));
+    // 三頁都送出去了＝迴圈跑完；期間每一頁都製造過一次 busy 的 false 邊緣。
+    await waitFor(() => expect(stub.extractCalls).toHaveLength(3), { timeout: 5_000 });
+    expect(stub.usageCalls()).toBe(1);
+
+    // 收尾補的那一次（最後一頁的 job 還在佇列裡時，等它自己的 false 邊緣）。
+    await waitFor(() => expect(stub.usageCalls()).toBe(2), { timeout: 5_000 });
+    // 就這一次：邊緣不可以退化成輪詢。
+    await act(async () => {
+      await sleep(2_200);
+    });
+    expect(stub.usageCalls()).toBe(2);
+  }, 30_000);
+});
+
+/**
  * 形狀檢查（`isUsageSummary`）**誤判合法回應**的代價，是整個 USAGE 區塊變成一行錯誤字——
  * 那是使用者直接看到的迴歸，而且比顯示錯數字更容易發生：`apps/editor` 不相依 `apps/server`，
  * 兩邊只靠「線上形狀」對齊。
@@ -813,6 +992,25 @@ describe("形狀檢查不可以誤判合法回應", () => {
     const withNull = structuredClone(SERVER_MIXED_LEDGER) as unknown as Record<string, unknown>;
     withNull.totalCalls = null;
     expect(isUsageSummary(withNull)).toBe(false);
+  });
+
+  /**
+   * `byModel` 的三個字串欄位（`modelEntryId`／`model`／`providerKind`）和那 12 個數字一樣
+   * 非驗不可：`providerKind` 會直接被當成 JSX 子節點畫成 badge，塞一個物件進去就是
+   * 「Objects are not valid as a React child」——整個 inspector 白畫面，而那正是這道守衛
+   * 唯一要防的事。只驗數字的話這個形狀會**通過**檢查然後在 render 期炸掉。
+   */
+  it.each([
+    ["providerKind 是物件（會被當成 React 子節點）", "providerKind", { kind: "openai" }],
+    ["model 是數字", "model", 42],
+    ["modelEntryId 不見了", "modelEntryId", undefined],
+  ])("byModel 的 %s 判成錯誤回應", (_name, key, value) => {
+    const broken = structuredClone(SERVER_MIXED_LEDGER) as unknown as {
+      byModel: Record<string, unknown>[];
+    };
+    if (value === undefined) delete broken.byModel[0]![key];
+    else broken.byModel[0]![key] = value;
+    expect(isUsageSummary(broken)).toBe(false);
   });
 
   it("truncated／unreadable 不是布林就判成錯誤回應", () => {

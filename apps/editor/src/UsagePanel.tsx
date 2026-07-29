@@ -101,6 +101,22 @@ function isBucket(value: unknown): value is UsageBucket {
 }
 
 /**
+ * `byModel` 的每一筆還多三個**字串**欄位，而且非驗不可：`providerKind` 與 `model` 直接被
+ * 當成 JSX 子節點畫成 badge 與列名，一個物件進去就是「Objects are not valid as a React
+ * child」——整個 inspector 白畫面，正是這道守衛存在的唯一理由。只驗 12 個數字鍵等於把
+ * 這一半的形狀交給運氣。
+ */
+function isModelBucket(value: unknown): value is UsageModelBucket {
+  if (!isBucket(value)) return false;
+  const record = value as unknown as Record<string, unknown>;
+  return (
+    typeof record["modelEntryId"] === "string" &&
+    typeof record["model"] === "string" &&
+    typeof record["providerKind"] === "string"
+  );
+}
+
+/**
  * 回應到底是不是一份統計。
  *
  * **用量面板絕不可以有本事弄壞編輯器。** 它是觀測，不是產品功能——伺服器改了欄位、
@@ -118,7 +134,7 @@ export function isUsageSummary(value: unknown): value is UsageSummary {
   if (typeof record["truncated"] !== "boolean" || typeof record["unreadable"] !== "boolean")
     return false;
   if (!isBucket(record["totals"])) return false;
-  if (!Array.isArray(record["byModel"]) || !record["byModel"].every(isBucket)) return false;
+  if (!Array.isArray(record["byModel"]) || !record["byModel"].every(isModelBucket)) return false;
   return [record["byCapability"], record["byOperation"]].every(
     (group) =>
       typeof group === "object" &&
@@ -162,11 +178,19 @@ function BucketRow({
         「calls − reported − local」（那正是伺服器把這一格也放進每個桶的理由）。
         那條規則屬於伺服器；前端補算它就等於維護第二份會漂移的定義。
       */}
+      {/*
+        「未回報」與「本機」是**兩個獨立的子句**，各自帶自己的括號。舊版把本機那一段接在
+        未回報之後（`未回報 2 次（本機 8 次未耗配額）`），括號裡的數字比前面還大，讀起來像
+        在解釋前一個數字——而這兩者正是這個面板唯一不可混淆的一組（見檔頭 ②）：一個燒了
+        配額只是不知道燒多少，一個根本沒碰模型。同一個桶同時有這兩種很平常（`image` 桶裡
+        mock 與不回報的 gateway 並存、`extract-text` 的抹字引擎是生圖模型時就是）。
+      */}
       {bucket.reportedCalls < bucket.calls && (
         <div className={`usage-row-note${bucket.unreportedCalls > 0 ? " warn" : ""}`}>
           已回報用量 {formatCount(bucket.reportedCalls)} / {formatCount(bucket.calls)} 次
-          {bucket.unreportedCalls > 0 && `，未回報 ${formatCount(bucket.unreportedCalls)} 次`}
-          {bucket.localCalls > 0 && `（本機 ${formatCount(bucket.localCalls)} 次未耗配額）`}
+          {bucket.unreportedCalls > 0 &&
+            `，未回報 ${formatCount(bucket.unreportedCalls)} 次（已耗配額）`}
+          {bucket.localCalls > 0 && `，本機 ${formatCount(bucket.localCalls)} 次（未耗配額）`}
         </div>
       )}
       {bucket.failedCalls > 0 && (

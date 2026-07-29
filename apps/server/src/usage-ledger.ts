@@ -125,16 +125,27 @@ export interface UsageRecordInput {
   usage?: ProviderUsage;
 }
 
+/**
+ * 每一個數字欄位都要 `.finite()`。zod 的 `z.number()` 拒 `NaN` 但**收下 `Infinity`**，而
+ * 帳本是一行一行的 JSON：`"inputTokens": 1e999` 解出來就是 `Infinity`、過得了
+ * `nonnegative()`、一路加進聚合，最後 `JSON.stringify` 把它輸出成 `null`——前端的形狀檢查
+ * （12 個數字鍵）於是整份拒收，畫面顯示「格式無法解析」，其餘幾百筆正常紀錄跟著消失。
+ * 擋在這裡的話它只是又一行壞資料：算進 `malformedLines`，其餘照常顯示。
+ */
+const finiteNonNegative = () => z.number().finite().nonnegative();
+
 const providerUsageSchema = z
   .object({
-    inputTokens: z.number().nonnegative().optional(),
-    outputTokens: z.number().nonnegative().optional(),
-    reasoningTokens: z.number().nonnegative().optional(),
-    cachedTokens: z.number().nonnegative().optional(),
-    totalTokens: z.number().nonnegative().optional(),
-    imageTokens: z.number().nonnegative().optional(),
+    inputTokens: finiteNonNegative().optional(),
+    outputTokens: finiteNonNegative().optional(),
+    reasoningTokens: finiteNonNegative().optional(),
+    cachedTokens: finiteNonNegative().optional(),
+    totalTokens: finiteNonNegative().optional(),
+    imageTokens: finiteNonNegative().optional(),
     reported: z.boolean(),
-    cost: z.object({ amount: z.number(), unit: z.literal("openrouter-credit") }).optional(),
+    cost: z
+      .object({ amount: z.number().finite(), unit: z.literal("openrouter-credit") })
+      .optional(),
   })
   .strict();
 

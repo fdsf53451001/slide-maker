@@ -2182,7 +2182,8 @@ header {
   font-size: 10px;
   line-height: 1.6;
 }
-.page-number-heading {
+/* 同 `.usage-heading`：不帶 `.panel-content` 就被 `.inspector-heading` 的 margin 簡寫吃掉。 */
+.panel-content .page-number-heading {
   margin-top: 18px;
 }
 .page-number-toggle {
@@ -2205,7 +2206,12 @@ header {
 /* === 模型用量統計（UsagePanel）===
    誠實優先於密度：未回報／本機／失敗這三行是這個區塊存在的理由，所以它們用的是可讀的
    12px 正文尺寸，而不是旁邊那些一眼掃過的 10px 欄位標籤。 */
-.usage-heading {
+/*
+ * 選擇器必須帶 `.panel-content`：`.panel-content .inspector-heading { margin: 0 -18px 16px }`
+ * 的特異性 (0,2,0) 勝過裸的 (0,1,0)，展開後的 `margin-top: 0` 永遠贏——單寫
+ * `.usage-heading` 是死 CSS，USAGE 標題會緊貼上一列（實測：貼著批次抽字那一列）。
+ */
+.panel-content .usage-heading {
   margin-top: 22px;
 }
 .usage-refresh {

@@ -190,6 +190,39 @@ describe("壞行的耐受度", () => {
   });
 
   /**
+   * `1e999` 這種數值在 JSON 裡完全合法，`JSON.parse` 給的是 `Infinity`——而 zod 的
+   * `z.number()` 拒 `NaN` 卻收 `Infinity`，`nonnegative()` 也擋不住它。收下的代價**不是**
+   * 少算一筆，而是整份統計消失：聚合結果變成 `Infinity`，`JSON.stringify` 把它寫成 `null`，
+   * 前端的形狀檢查於是拒收整份回應，畫面顯示「格式無法解析」。所以這一行必須跟其他壞行
+   * 走同一條路：算進 `malformedLines`，其餘照常。
+   */
+  it("Infinity 的 token 數當壞行處理，不讓整份統計變成 null", async () => {
+    const { ledger: instance, path } = await ledger();
+    await instance.recordProject(PROJECT_ID, input());
+    await instance.idle();
+    const good = (await readFile(path, "utf8")).trim();
+    await writeFile(
+      path,
+      [
+        good,
+        // 1e999 解析出來就是 Infinity（不是字串、也不是語法錯誤）。
+        '{"at":"2026-07-29T00:00:00.000Z","capability":"text","operation":"outline-draft","ok":true,"usage":{"inputTokens":1e999,"reported":true}}',
+        // cost 也走同一道閘門。
+        '{"at":"2026-07-29T00:00:00.000Z","capability":"text","operation":"outline-draft","ok":true,"usage":{"reported":true,"cost":{"amount":1e999,"unit":"openrouter-credit"}}}',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const summary = await instance.summarizeProject(PROJECT_ID);
+    expect(summary.malformedLines).toBe(2);
+    expect(summary.totalCalls).toBe(1);
+    expect(Number.isFinite(summary.totals.inputTokens)).toBe(true);
+    expect(summary.totals.inputTokens).toBe(10);
+    // 整份摘要仍然序列化得出來：這正是收下 Infinity 會壞掉的那一步。
+    expect(JSON.parse(JSON.stringify(summary))).toMatchObject({ totalCalls: 1 });
+  });
+
+  /**
    * 模型名來自模型庫，是**使用者輸入**。它若能帶著換行進帳本，一行紀錄就能偽造出第二行
    * ——統計會憑空多出一次呼叫，而 JSONL 的每一行是一次「已經花掉的配額」的證據。
    * `JSON.stringify` 會把 `\n` 轉義，這條測試就是釘住「不可改成自己拼字串」。

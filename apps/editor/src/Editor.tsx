@@ -3008,18 +3008,42 @@ export function Editor() {
    * 換專案時只重設邊緣、不觸發：`project.id` 一變，`UsagePanel` 就被 `key` 重建並自己抓
    * 一次，這裡再遞一個訊號只是同一份資料多打一次；而「上一份專案忙完」對新專案的畫面
    * 也不是有意義的事件。
+   *
+   * **批次抽字期間整條關掉**（`batchExtractBusy`）。批次**生成**只有一個邊緣：伺服器一次把
+   * 所有 job 排進佇列，`jobsBusy` 全程都是 true。批次**抽字**不是——它是前端的逐頁迴圈，每
+   * 一頁換來一個抹字 job，那個 job 往往在迴圈等下一頁 OCR 的時候就跑完了，`jobsBusy` 於是
+   * 一頁掉一次 false：20 頁就是約 20 次 `GET /usage`，每一次都要 `await usageLedger.idle()`
+   * 加一趟完整的專案載入與帳本解析，而抽字按鈕就在「專案」分頁上、面板全程掛著（畫面還會
+   * 跟著閃「更新中…」）。收尾補一次即可：批次結束時若還有 job 在飛就不補，等它自己的 false
+   * 邊緣，那一份數字才是完整的。
    */
   const [usageRefreshToken, setUsageRefreshToken] = useState(0);
-  const usageBusyEdge = useRef<{ projectId: string | undefined; busy: boolean }>({
+  const batchExtractBusy = batchExtract !== undefined;
+  const usageBusyEdge = useRef<{
+    projectId: string | undefined;
+    busy: boolean;
+    batching: boolean;
+  }>({
     projectId: project?.id,
     busy: jobsBusy,
+    batching: batchExtractBusy,
   });
   useEffect(() => {
     const previous = usageBusyEdge.current;
-    usageBusyEdge.current = { projectId: project?.id, busy: jobsBusy };
+    usageBusyEdge.current = {
+      projectId: project?.id,
+      busy: jobsBusy,
+      batching: batchExtractBusy,
+    };
     if (previous.projectId !== project?.id) return;
+    if (batchExtractBusy) return;
+    // 批次抽字剛收尾：期間的邊緣全被壓掉了，這裡補上那一次。
+    if (previous.batching) {
+      if (!jobsBusy) setUsageRefreshToken((token) => token + 1);
+      return;
+    }
     if (previous.busy && !jobsBusy) setUsageRefreshToken((token) => token + 1);
-  }, [project?.id, jobsBusy]);
+  }, [project?.id, jobsBusy, batchExtractBusy]);
   useEffect(() => {
     if (!activeJob) return;
     const timer = setInterval(() => setNow(Date.now()), 1_000);
