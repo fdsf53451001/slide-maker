@@ -27,7 +27,7 @@ async function ledger(): Promise<{ ledger: UsageLedger; root: string; path: stri
 function input(patch: Partial<UsageRecordInput> = {}): UsageRecordInput {
   return {
     capability: "text",
-    operation: "outline-generate",
+    operation: "outline-draft",
     model: "gpt-5.6-luna",
     modelEntryId: "entry-1",
     providerKind: "openai",
@@ -60,7 +60,7 @@ describe("位元組上限的輪替", () => {
       JSON.stringify({
         at: new Date(index + 1).toISOString(),
         capability: "text",
-        operation: "outline-generate",
+        operation: "outline-draft",
         model: `${padding}-${index + 1}`,
         modelEntryId: "entry-1",
         ok: true,
@@ -103,7 +103,7 @@ describe("位元組上限的輪替", () => {
         JSON.stringify({
           at: new Date(index + 1).toISOString(),
           capability: "text",
-          operation: "outline-generate",
+          operation: "outline-draft",
           model: `${padding}-${index + 1}`,
           ok: true,
           usage: { reported: false },
@@ -157,7 +157,7 @@ describe("壞行的耐受度", () => {
         JSON.stringify({
           at: "2026-07-29T00:00:00.000Z",
           capability: "text",
-          operation: "outline-generate",
+          operation: "outline-draft",
           prompt: "UNTRUSTED_INPUT 機密",
           ok: true,
           usage: { reported: false },
@@ -166,7 +166,7 @@ describe("壞行的耐受度", () => {
         JSON.stringify({
           at: "2026-07-29T00:00:00.000Z",
           capability: "text",
-          operation: "outline-generate",
+          operation: "outline-draft",
           ok: true,
           usage: {},
         }),
@@ -199,7 +199,7 @@ describe("壞行的耐受度", () => {
     const forged = JSON.stringify({
       at: "2026-07-29T00:00:00.000Z",
       capability: "text",
-      operation: "outline-generate",
+      operation: "outline-draft",
       ok: true,
       usage: { inputTokens: 999_999, reported: true },
     });
@@ -307,7 +307,7 @@ describe("寫入失敗留下的證據", () => {
     expect(logged).toContain("usage_ledger_write_failed");
     // 判讀得出來：哪個專案、哪一種呼叫、什麼錯。
     expect(logged).toContain(PROJECT_ID);
-    expect(logged).toContain("outline-generate");
+    expect(logged).toContain("outline-draft");
     expect(logged).toContain("EISDIR");
     // 但不含路徑、例外訊息與 stack。
     expect(logged).not.toContain(path);

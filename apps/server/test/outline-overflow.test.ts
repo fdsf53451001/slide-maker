@@ -126,6 +126,10 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     sourceIds: [],
   });
 
+  /**
+   * 同一份回覆同時滿足兩個階段：階段 1 只讀 purpose 與頁數，階段 2 只讀 content 與 refs。
+   * 兩階段的 schema 都會忽略自己不認得的欄位，所以測試不必為兩次呼叫各準備一份。
+   */
   const deckReply = (contents: string[]) => ({
     actualSlideCount: contents.length,
     rationale: "測試用",
@@ -134,10 +138,22 @@ describe("大綱 content 超標的重試收斂與降級", () => {
       content,
       narrative: "講者補充",
       layoutHint: "單欄重點",
+      sourceRefs: [],
+      imageRefs: [],
       sourceUrls: [],
     })),
     sources: [],
   });
+
+  /**
+   * 整份大綱是兩次獨立的模型呼叫：第一次規劃（決定頁數與每頁的 purpose），之後才是寫作
+   * 與長度重試。`round(1)` 同時當規劃那一輪的回覆，頁數才與第一輪草稿一致。
+   */
+  const stubDeck = (round: (attempt: number) => string[]) =>
+    stubTextProvider((attempt) => deckReply(round(Math.max(1, attempt - 1))));
+
+  /** 階段 2 第 n 輪的 prompt 在 prompts 裡的位置（0 是階段 1 的規劃）。 */
+  const draftPrompt = (prompts: string[], round: number) => prompts[round]!;
 
   it("單頁重生三輪都超標時採用最短的那一版，而不是整個請求失敗", async (context) => {
     if (bindUnavailable) return context.skip();
@@ -232,9 +248,7 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     const project = await createProject();
     const overflowPage = `${units(HARD_LIMIT + 40)}超標頁`;
     const shortPage = "沒有超標的第一頁";
-    stubTextProvider((attempt) =>
-      deckReply(attempt === 1 ? [shortPage, overflowPage] : [shortPage, "改短後的第二頁"]),
-    );
+    stubDeck((round) => (round === 1 ? [shortPage, overflowPage] : [shortPage, "改短後的第二頁"]));
     captureWarnings();
 
     const { status } = await post<PresentationProject>(`/api/projects/${project.id}/outline`, {
@@ -242,34 +256,49 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     });
 
     expect(status).toBe(200);
-    expect(prompts).toHaveLength(2);
-    expect(untrustedPayload(prompts[0]!).previousAttempt).toBeUndefined();
+    // 1 次規劃 + 2 次寫作。
+    expect(prompts).toHaveLength(3);
+    expect(untrustedPayload(draftPrompt(prompts, 1)).previousAttempt).toBeUndefined();
     // 指令行也不得洩漏這個欄位：第一輪的 prompt 要與加入這條路之前逐字元相同。
+    expect(draftPrompt(prompts, 1)).not.toContain("previousAttempt");
+    // 規劃那一輪與長度重試無關，一個字都不該提到它。
     expect(prompts[0]).not.toContain("previousAttempt");
     // 單次無狀態呼叫看不到「上次那份」：沒超標的頁也必須在 prompt 裡，「其餘頁原樣回傳」
     // 才有受詞。順序由陣列承載，不再用 order 指認頁面。
-    expect(untrustedPayload(prompts[1]!).previousAttempt).toEqual([
+    expect(untrustedPayload(draftPrompt(prompts, 2)).previousAttempt).toEqual([
       {
+        // purpose 由階段 1 定下，階段 2 不回傳它——但重試指令說「保留這一頁的結構」，
+        // 沒有它那句話就沒有受詞。
+        planRef: "P1",
         purpose: "第 1 頁",
         content: shortPage,
         narrative: "講者補充",
         layoutHint: "單欄重點",
+        sourceRefs: [],
+        imageRefs: [],
         sourceUrls: [],
         overflow: false,
       },
       {
+        planRef: "P2",
         purpose: "第 2 頁",
         content: overflowPage,
         narrative: "講者補充",
         layoutHint: "單欄重點",
+        sourceRefs: [],
+        imageRefs: [],
         sourceUrls: [],
         overflow: true,
         measuredUnits: HARD_LIMIT + 43,
         cutUnits: 43,
       },
     ]);
-    expect(prompts[1]).toContain('Reproduce every entry marked "overflow": false exactly as');
-    expect(JSON.stringify(untrustedPayload(prompts[1]!).previousAttempt)).not.toContain('"order"');
+    expect(draftPrompt(prompts, 2)).toContain(
+      'Reproduce every entry marked "overflow": false exactly as',
+    );
+    expect(JSON.stringify(untrustedPayload(draftPrompt(prompts, 2)).previousAttempt)).not.toContain(
+      '"order"',
+    );
   });
 
   it("整份大綱多頁同時超標時，每一頁拿到的是自己的砍字數", async (context) => {
@@ -278,9 +307,7 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     // +5 的頁被要求砍 100 正是 outlineDataFidelityInstruction 要防的過度刪減。
     const barelyOver = units(HARD_LIMIT + 5);
     const wayOver = units(HARD_LIMIT + 100);
-    stubTextProvider((attempt) =>
-      attempt === 1 ? deckReply([barelyOver, wayOver]) : deckReply([units(10), units(11)]),
-    );
+    stubDeck((round) => (round === 1 ? [barelyOver, wayOver] : [units(10), units(11)]));
     captureWarnings();
 
     const { status } = await post<PresentationProject>(`/api/projects/${project.id}/outline`, {
@@ -288,24 +315,25 @@ describe("大綱 content 超標的重試收斂與降級", () => {
     });
 
     expect(status).toBe(200);
-    const fedBack = untrustedPayload(prompts[1]!).previousAttempt as {
+    const fedBack = untrustedPayload(draftPrompt(prompts, 2)).previousAttempt as {
       measuredUnits?: number;
       cutUnits?: number;
     }[];
     expect(fedBack.map((entry) => entry.cutUnits)).toEqual([5, 100]);
     expect(fedBack.map((entry) => entry.measuredUnits)).toEqual([HARD_LIMIT + 5, HARD_LIMIT + 100]);
     // 單一數字若編進指令句子，兩頁就會共用最長那頁的超額。
-    expect(prompts[1]).not.toContain("Cut at least 100 units");
+    expect(draftPrompt(prompts, 2)).not.toContain("Cut at least 100 units");
   });
 
   it("整份大綱挑最短時比的是所有超標頁的超額總和，不是單一最長頁", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject(3);
     // 第一輪：一頁超 +100，總超額 100。第二輪：三頁各超 +95，最長頁較短但整體更糟。
-    stubTextProvider((attempt) => {
-      if (attempt === 1) return deckReply([units(HARD_LIMIT + 100), units(10), units(11)]);
-      return deckReply([units(HARD_LIMIT + 95), units(HARD_LIMIT + 95), units(HARD_LIMIT + 95)]);
-    });
+    stubDeck((round) =>
+      round === 1
+        ? [units(HARD_LIMIT + 100), units(10), units(11)]
+        : [units(HARD_LIMIT + 95), units(HARD_LIMIT + 95), units(HARD_LIMIT + 95)],
+    );
     const readWarnings = captureWarnings();
 
     const { status, body } = await post<PresentationProject>(
@@ -376,7 +404,7 @@ describe("大綱 content 超標的重試收斂與降級", () => {
   it("整份大綱最短的那一版超過 hard 的兩倍時整批失敗", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject();
-    stubTextProvider(() => deckReply([units(HARD_LIMIT * 2 + 1), units(10)]));
+    stubDeck(() => [units(HARD_LIMIT * 2 + 1), units(10)]);
     const readWarnings = captureWarnings();
 
     const { status, body } = await post<PresentationProject & { error?: string }>(
@@ -386,7 +414,8 @@ describe("大綱 content 超標的重試收斂與降級", () => {
 
     expect(status).toBe(400);
     expect(body.error).toBe("CODEX_OUTLINE_CONTENT_UNREADABLE");
-    expect(prompts).toHaveLength(3);
+    // 1 次規劃 + 3 輪寫作。
+    expect(prompts).toHaveLength(4);
     const rejected = readWarnings().filter(
       (entry) => entry.event === "outline_content_overflow_rejected",
     );

@@ -11,6 +11,40 @@ export const webSearchResultSchema = z.object({
   title: z.string().trim().min(1).max(500),
   summary: z.string().trim().min(1).max(4_000),
 });
+/**
+ * 一個專案最多幾份來源、總位元組上限多少，以及單次「貼上網址」最多幾筆。
+ *
+ * **住在 core 是因為前後端都要知道**：伺服器用它們擋寫入（`sources.ts` 的
+ * `assertSourceCapacity()`），編輯器用它們顯示「175/200」與「最多 10 筆」。上限的真相只能
+ * 有一份——前端自己抄一個數字就是第二份真相，而且不會有任何測試發現它過期：使用者實測時
+ * 看到的 `SOURCES 175/100` 就是這麼來的（伺服器早就放寬到 200，畫面上還印著 100）。
+ *
+ * 數字本身的取捨（2 GiB 為何是上傳位元組而不是記憶體、為何非圖片來源另有字數上限）寫在
+ * `apps/server/src/sources.ts` 的 `MAX_SOURCE_TEXT_CHARS`：那是伺服器側的實作考量，
+ * 這裡只放「合約」。
+ */
+export const SOURCE_COUNT_LIMIT = 200;
+export const SOURCE_TOTAL_BYTES_LIMIT = 2 * 1024 ** 3;
+export const URL_SOURCE_BATCH_LIMIT = 10;
+
+/**
+ * 一份風格最多帶幾張參考圖，也是風格分析一次最多挑幾頁。
+ *
+ * 同一個 4 原本散在四個地方（core 的 `stylePresetSchema`、伺服器兩個端點的 `referenceIds`、
+ * 編輯器的 `MAX_ANALYSIS_PAGES`），改動時必定漏掉一個。
+ */
+export const STYLE_REFERENCE_IMAGE_LIMIT = 4;
+
+/**
+ * 單一上傳檔案的位元組上限，以及 PDF 匯入簡報的頁數上限。
+ *
+ * 同樣是「兩邊都要知道」：伺服器用它們擋（`sources.ts` 的 `MAX_SOURCE_BYTES`、
+ * `pdf-deck-render.ts` 的 `MAX_DECK_PAGES`），編輯器的匯入視窗要把同一組數字寫給使用者看
+ * （「最多 150 頁、100MB」）。分開寫的話，放寬伺服器上限之後畫面仍然勸退使用者。
+ */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+export const MAX_DECK_IMPORT_PAGES = 150;
+
 export const sourceUsageSchema = z.enum([
   "content",
   "visual-reference",
@@ -18,6 +52,17 @@ export const sourceUsageSchema = z.enum([
   "direct-asset",
   "exclude-from-generation",
 ]);
+
+/**
+ * 這個用途的來源被選進 `slide.sourceIds` 時，會不會變成送進影像模型的一張附圖。
+ *
+ * `jobs.ts` 組 references 與大綱決定每頁引用幾份來源，都必須用同一個判準：兩邊各寫一份
+ * `usage === "visual-reference"` 之類的條件，就是「大綱以為只附了 3 張、實際附了 12 張」
+ * 的來源（2026-07-29 線上 20 頁全數撞上 `GEMINI_IMAGE_REFERENCES_LIMIT`）。
+ */
+export function sourceAttachesReferenceImage(usage: z.infer<typeof sourceUsageSchema>): boolean {
+  return usage === "visual-reference" || usage === "style-reference" || usage === "direct-asset";
+}
 
 export const presentationBriefSchema = z.object({
   topic: z.string().trim().min(1),
@@ -124,7 +169,7 @@ export const stylePresetSchema = z.object({
    * 空字串代表未分析過，生成端行為與加入此欄位前完全一致。
    */
   designSystem: z.string().default(""),
-  referenceImages: z.array(styleReferenceImageSchema).max(4).default([]),
+  referenceImages: z.array(styleReferenceImageSchema).max(STYLE_REFERENCE_IMAGE_LIMIT).default([]),
   coverImageId: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

@@ -173,7 +173,7 @@ describe("deck outline overflow retry", () => {
 
   it("carries the structural fields the instruction tells the model to keep", () => {
     const instruction = outlineDeckOverflowRetryInstruction("high");
-    expect(instruction).toMatch(/content, narrative, layoutHint, and sourceUrls/);
+    expect(instruction).toMatch(/content, narrative, layoutHint, and the sources you cited/);
     expect(instruction).toMatch(/keep its structure, its decisions about what to cover/);
   });
 });

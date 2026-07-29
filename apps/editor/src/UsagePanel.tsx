@@ -53,7 +53,9 @@ const OPERATION_LABELS: Record<string, string> = {
   "extract-text": "抽離文字",
   search: "網路搜尋",
   "style-analysis": "風格分析",
-  "outline-generate": "大綱生成",
+  // 整份大綱的兩個階段各自一列：規劃（挑來源、定每頁用途）與寫稿（含長度收斂的重試輪數）。
+  "outline-plan": "大綱規劃",
+  "outline-draft": "大綱撰寫",
   "outline-regenerate": "大綱重建",
   "ocr-style-refine": "抽字樣式精修",
   "image-description": "圖片內容描述",

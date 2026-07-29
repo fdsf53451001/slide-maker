@@ -35,7 +35,7 @@ afterEach(() => {
 function input(patch: Partial<UsageRecordInput> = {}): UsageRecordInput {
   return {
     capability: "text",
-    operation: "outline-generate",
+    operation: "outline-draft",
     model: "gpt-5.6-luna",
     modelEntryId: "entry-1",
     providerKind: "openai",
@@ -55,7 +55,7 @@ describe("append 的讀取次數", () => {
       JSON.stringify({
         at: new Date().toISOString(),
         capability: "text",
-        operation: "outline-generate",
+        operation: "outline-draft",
         ok: true,
         usage: { reported: false },
       }),

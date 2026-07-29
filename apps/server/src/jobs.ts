@@ -4,6 +4,8 @@ import sharp from "sharp";
 import {
   SafeProviderError,
   logError,
+  logWarn,
+  sourceAttachesReferenceImage,
   type GeneratedImage,
   type GenerationJob,
   type EditableTextBox,
@@ -57,6 +59,56 @@ const PROVIDER_ERROR_MESSAGES: Record<string, string> = {
   CODEX_IMAGE_ARTIFACT_UNSUPPORTED:
     "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
 };
+
+/** 一張要附給影像模型的圖。`sourceId` 只供截斷 log 使用，不會送進 provider。 */
+export interface JobImageReference {
+  path: string;
+  mediaType: string;
+  role: ImageReferenceRole;
+  name?: string;
+  sourceId?: string;
+}
+
+/**
+ * 把 references 砍到 provider 宣告得下的張數。
+ *
+ * 大綱那端的 schema 上限是「請模型配合」而不是保證（非嚴格 gateway 不遵守 json_schema），
+ * 而使用者手動指定來源、風格帶三張參考圖時，正常路徑也湊得出超過 8 張。沒有這一層，
+ * 超額只會在 transport 的最後一刻整個 job 失敗（2026-07-29 線上 20 頁全掛）。
+ *
+ * 三條規則：
+ *  1. `protectedIndices`（編輯任務的 base／mask）**一張都不能砍**：它們是被 `edit.baseImageIndex`
+ *     ／`maskImageIndex` 指到的位置，砍掉會讓索引指向別的角色——那是無聲的失敗（模型收到
+ *     「Image 1 是你要編輯的投影片」與「Image 1: role=style」互相打架的兩句話）。
+ *  2. 風格參考圖優先於內容參考圖：少一張資料圖只是少一份佐證，少了風格圖整頁會長得不像
+ *     這份簡報。
+ *  3. 同類之間依原順序砍尾，`sourceIds` 的排序因此就是保留的優先序。
+ *
+ * 回傳保留下來的原始索引，呼叫端據此重算 `edit` 的索引——雖然目前 base／mask 一定在最前
+ * 面（砍尾不會位移它們），但那是排列上的巧合，不是這個函式該賴以成立的前提。
+ */
+export function limitReferences<T extends { role: ImageReferenceRole }>(
+  references: readonly T[],
+  max: number | undefined,
+  protectedIndices: readonly number[] = [],
+): { keptIndices: number[]; droppedIndices: number[] } {
+  const all = references.map((_reference, index) => index);
+  if (max === undefined || references.length <= max)
+    return { keptIndices: all, droppedIndices: [] };
+  const isProtected = new Set(protectedIndices);
+  const budget = Math.max(0, max - isProtected.size);
+  const supplemental = all.filter((index) => !isProtected.has(index));
+  const priority = (index: number): number => (references[index]!.role === "style" ? 0 : 1);
+  const kept = new Set([
+    ...isProtected,
+    // 穩定排序：同一優先級維持原順序，砍的永遠是尾巴那幾張。
+    ...supplemental.sort((left, right) => priority(left) - priority(right)).slice(0, budget),
+  ]);
+  return {
+    keptIndices: all.filter((index) => kept.has(index)),
+    droppedIndices: all.filter((index) => !kept.has(index)),
+  };
+}
 
 function outlineSnapshot(slide: SlideSpec): SlideOutlineSnapshot {
   return {
@@ -742,12 +794,21 @@ export class JobRunner {
     try {
       const { project, slide, job } = context;
       const provider = this.providers.get(job.providerId);
-      const selectedSources = project.sources.filter(
-        (source) =>
-          slide.sourceIds.includes(source.id) &&
-          source.allowModelAccess &&
-          source.usage !== "exclude-from-generation",
-      );
+      const selectedSources = project.sources
+        .filter(
+          (source) =>
+            slide.sourceIds.includes(source.id) &&
+            source.allowModelAccess &&
+            source.usage !== "exclude-from-generation",
+        )
+        // **依 slide.sourceIds 的順序**，不是 project.sources 的（那是上傳順序）。
+        // 兩者無關：20 張舊截圖之後才加的 2 張關鍵圖表，即使模型把它們排在 sourceIds 最
+        // 前面，這裡仍會照上傳順序把舊圖排前面——超過 provider 上限時被 limitReferences
+        // 砍掉的正好是模型真正要的那兩張。`limitReferences` 的「依原順序砍尾」要成立，
+        // 前提就是這個陣列已經是優先序。
+        .sort(
+          (left, right) => slide.sourceIds.indexOf(left.id) - slide.sourceIds.indexOf(right.id),
+        );
       const styleReferences = this.styles
         ? project.styleSnapshot.referenceImages.map((reference) => ({
             path: this.styles!.referenceAssetPath(reference.assetPath),
@@ -757,9 +818,12 @@ export class JobRunner {
           }))
         : [];
       const contentReferences = selectedSources
-        .filter((source) =>
-          ["visual-reference", "style-reference", "direct-asset"].includes(source.usage),
-        )
+        // 「哪些 usage 會變成一張附圖」只有 `sourceAttachesReferenceImage()` 一份：大綱那端
+        // 是用它算每頁的影像額度的。這裡各寫一份字串陣列，下一個人新增 usage（例如
+        // `logo-asset`）時只會改到 predicate——大綱以為「這不是圖、不佔額度」，這裡卻照附，
+        // 完全就是 2026-07-29 那次事故的形狀，而且靜默。role 的三分支是另一回事（決定合約
+        // 怎麼描述這張圖），維持原樣。
+        .filter((source) => sourceAttachesReferenceImage(source.usage))
         .map((source) => ({
           path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
           mediaType: source.mediaType,
@@ -769,13 +833,9 @@ export class JobRunner {
               ? "direct-asset"
               : "content") as ImageReferenceRole,
           name: source.name,
+          sourceId: source.id,
         }));
-      const references: Array<{
-        path: string;
-        mediaType: string;
-        role: ImageReferenceRole;
-        name?: string;
-      }> = [...styleReferences, ...contentReferences];
+      const references: JobImageReference[] = [...styleReferences, ...contentReferences];
       let edit;
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
@@ -808,11 +868,77 @@ export class JobRunner {
           ...(maskImageIndex === undefined ? {} : { maskImageIndex }),
           ...(job.operation === "extract-text" ? { purpose: "text-removal" as const } : {}),
         };
-        // index 與 role 分歧會是無聲的：合約會同時印出「Image 1 是你要編輯的投影片」與
-        // 「Image 1: role=style，只取它的配色」，模型收到互相打架的兩句話而我們一無所知。
-        if (references[baseImageIndex]?.role !== "base")
+      }
+      // provider 宣告的張數上限在這裡就砍，不留到 transport 最後一刻整個 job 失敗。
+      // 砍完才做下面的能力檢查與 index 一致性檢查：檢查的對象必須是真正會送出去的那一份。
+      const limited = limitReferences(
+        references,
+        provider.capabilities.maxReferenceImages,
+        edit
+          ? [
+              edit.baseImageIndex,
+              ...(edit.maskImageIndex === undefined ? [] : [edit.maskImageIndex]),
+            ]
+          : [],
+      );
+      // 受保護的張數本身就超過上限（今天不可達：base + mask 最多 2 張，而每個宣告上限的
+      // provider 都遠大於 2）。真的發生時 limitReferences 會回超過 max 的張數——那是刻意的
+      // （寧可讓 transport 擋，也不能砍掉編輯任務的底圖），但不能無聲無息。
+      if (
+        provider.capabilities.maxReferenceImages !== undefined &&
+        limited.keptIndices.length > provider.capabilities.maxReferenceImages
+      )
+        logWarn("image_references_protected_over_limit", {
+          projectId,
+          jobId,
+          slideId: job.slideId,
+          providerId: job.providerId,
+          maxReferenceImages: provider.capabilities.maxReferenceImages,
+          keptCount: limited.keptIndices.length,
+        });
+      if (limited.droppedIndices.length) {
+        // 只記 id 與數字：檔名（使用者的檔案名稱常含人名／公司名）、prompt、正文都不進 log。
+        logWarn("image_references_truncated", {
+          projectId,
+          jobId,
+          slideId: job.slideId,
+          providerId: job.providerId,
+          maxReferenceImages: provider.capabilities.maxReferenceImages,
+          requestedCount: references.length,
+          keptCount: limited.keptIndices.length,
+          droppedCount: limited.droppedIndices.length,
+          droppedRoles: limited.droppedIndices.map((index) => references[index]!.role),
+          droppedSourceIds: limited.droppedIndices.flatMap((index) => {
+            const sourceId = references[index]!.sourceId;
+            return sourceId ? [sourceId] : [];
+          }),
+        });
+        const keptPosition = new Map(
+          limited.keptIndices.map((index, position) => [index, position]),
+        );
+        references.splice(
+          0,
+          references.length,
+          ...limited.keptIndices.map((index) => references[index]!),
+        );
+        if (edit) {
+          // base／mask 一定在保留名單裡（limitReferences 不砍受保護的索引），但位置仍要重算：
+          // 讓「哪張是底圖」永遠由這份對照表決定，而不是靠 unshift/splice 的排列巧合。
+          edit = {
+            ...edit,
+            baseImageIndex: keptPosition.get(edit.baseImageIndex)!,
+            ...(edit.maskImageIndex === undefined
+              ? {}
+              : { maskImageIndex: keptPosition.get(edit.maskImageIndex)! }),
+          };
+        }
+      }
+      // index 與 role 分歧會是無聲的：合約會同時印出「Image 1 是你要編輯的投影片」與
+      // 「Image 1: role=style，只取它的配色」，模型收到互相打架的兩句話而我們一無所知。
+      if (edit) {
+        if (references[edit.baseImageIndex]?.role !== "base")
           throw new Error("EDIT_BASE_REFERENCE_ROLE_MISMATCH");
-        if (maskImageIndex !== undefined && references[maskImageIndex]?.role !== "mask")
+        if (edit.maskImageIndex !== undefined && references[edit.maskImageIndex]?.role !== "mask")
           throw new Error("EDIT_MASK_REFERENCE_ROLE_MISMATCH");
       }
       // Base/mask images are intrinsic edit inputs, not optional reference-image
@@ -835,7 +961,8 @@ export class JobRunner {
             style: project.styleSnapshot,
             width: project.canvas.width,
             height: project.canvas.height,
-            references,
+            // sourceId 只給截斷 log 用，不外流到 provider 的請求裡。
+            references: references.map(({ sourceId: _sourceId, ...reference }) => reference),
             model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
             parameters: {},
             ...(edit ? { edit } : {}),

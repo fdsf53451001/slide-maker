@@ -607,6 +607,23 @@ describe("OpenAiCompatibleImageProvider", () => {
     });
     expect(provider.capabilities.referenceImages).toBe(true);
     expect(provider.capabilities.multipleReferenceImages).toBe(true);
+    // 宣告的上限必須是「這個實例真的會走的那條 transport」的上限：images 是 16、
+    // chat／openrouter 是 8。宣告錯了，jobs.ts 會依一個不存在的上限截斷。
+    expect(provider.capabilities.maxReferenceImages).toBe(16);
+    expect(
+      new OpenAiCompatibleImageProvider({
+        config: { baseUrl: "http://x", apiKey: "k", timeoutMs: 1_000 },
+        model: "gemini-3.1-flash-image",
+        apiShape: "chat",
+      }).capabilities.maxReferenceImages,
+    ).toBe(8);
+    expect(
+      new OpenAiCompatibleImageProvider({
+        config: { baseUrl: "http://x", apiKey: "k", timeoutMs: 1_000 },
+        model: "openrouter/model",
+        apiShape: "openrouter-image",
+      }).capabilities.maxReferenceImages,
+    ).toBe(8);
   });
 
   it("images shape routes reference-image generation through /images/edits image[]", async () => {

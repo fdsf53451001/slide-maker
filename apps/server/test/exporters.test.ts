@@ -37,7 +37,7 @@ describe("slide-project 匯出不得夾帶用量帳本", () => {
     const ledger = new UsageLedger(repository);
     await ledger.recordProject(project.id, {
       capability: "text",
-      operation: "outline-generate",
+      operation: "outline-draft",
       model: "gpt-5.6-luna",
       modelEntryId: "entry-1",
       providerKind: "openai",

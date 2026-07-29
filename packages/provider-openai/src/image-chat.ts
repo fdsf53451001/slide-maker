@@ -12,7 +12,7 @@ import { parseChatCompletionsUsage } from "./usage.js";
 type ChatImagePart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
-const MAX_CHAT_REFERENCES = 8;
+export const MAX_CHAT_REFERENCES = 8;
 
 function chatPrompt(request: ImageGenerationRequest): string {
   return [

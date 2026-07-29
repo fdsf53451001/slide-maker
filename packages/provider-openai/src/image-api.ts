@@ -23,7 +23,7 @@ import { parseImagesApiUsage } from "./usage.js";
  * 張數上限（gpt-image 系列為 16）。沒有上限時，參考圖一多就只會拿到 gateway 的不透明
  * 400，錯誤訊息無法指向真正原因，故比照其他 transport 在送出前擋下。
  */
-const MAX_IMAGES_REFERENCES = 16;
+export const MAX_IMAGES_REFERENCES = 16;
 
 function assertReferenceLimit(request: ImageGenerationRequest): void {
   if (request.references.length > MAX_IMAGES_REFERENCES)

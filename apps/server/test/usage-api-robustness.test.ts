@@ -446,44 +446,50 @@ describe("用量帳本的端點耐用度", () => {
     }, 60_000);
   });
 
-  describe("整份大綱那條路的逐輪記帳", () => {
+  describe("整份大綱兩階段的逐輪記帳", () => {
     /**
-     * `usage-api.test.ts` 釘的是**單頁**重生成那條迴圈；整份大綱是另一個呼叫點、另一組
-     * 欄位（`outline-generate`、沒有 slideId），而它才是最貴的那一條——一次三輪、每一輪都
-     * 帶著整包來源節錄。兩條共用 `recordStructuredUsage`，但「有沒有真的接上去」是各自的事。
+     * `usage-api.test.ts` 釘的是**單頁**重生成那條迴圈；整份大綱是另一個呼叫點，而且自從改成
+     * 兩階段之後它是**兩種 operation**：規劃一次、寫稿一到三次。它同時是最貴的那一條——寫稿
+     * 的每一輪都帶著整包來源節錄。三者共用 `recordStructuredUsage`（掛在 `runOutlineStage`
+     * 這個接縫上），但「有沒有真的接上去」是各自的事：規劃階段漏接的話，面板會安靜地少報。
      */
-    it("整份大綱重試三輪各記一筆，attempt 遞增且不帶 slideId", async (context) => {
+    it("規劃記一筆、寫稿三輪各記一筆，兩階段分屬不同 operation", async (context) => {
       if (unavailable) return context.skip();
       const project = await createProject();
       const hard = outlineContentCharBudget("high").hard;
-      let attempt = 0;
+      let call = 0;
       stubText(async () => {
-        attempt += 1;
-        // 三輪都超標（但不到 hard 的兩倍，才不會整批失敗），迴圈因此跑滿。
-        const overflow = "台".repeat(hard + 100 - attempt);
+        call += 1;
+        // 第一次呼叫是階段 1（規劃）：只回每頁用途，不回 content。
+        if (call === 1)
+          return {
+            value: {
+              actualSlideCount: 2,
+              rationale: "測試用計畫",
+              slides: [
+                { purpose: "第 1 頁", sourceRefs: [], imageRefs: [] },
+                { purpose: "第 2 頁", sourceRefs: [], imageRefs: [] },
+              ],
+            },
+            usage: { inputTokens: 500, outputTokens: 5, reported: true },
+          };
+        // 之後每一次都是階段 2（寫稿）。三輪都超標（但不到 hard 的兩倍，才不會整批失敗），
+        // 長度收斂的迴圈因此跑滿。
+        const draftAttempt = call - 1;
+        const overflow = "台".repeat(hard + 100 - draftAttempt);
+        const slide = (planRef: string, content: string) => ({
+          // 階段 1 的錨點原樣回聲：兩次無狀態呼叫之間唯一的配對依據。
+          planRef,
+          content,
+          narrative: "講者補充",
+          layoutHint: "單欄重點",
+          sourceRefs: [],
+          imageRefs: [],
+          sourceUrls: [],
+        });
         return {
-          value: {
-            actualSlideCount: 2,
-            rationale: "測試用",
-            slides: [
-              {
-                purpose: "第 1 頁",
-                content: overflow,
-                narrative: "講者補充",
-                layoutHint: "單欄重點",
-                sourceUrls: [],
-              },
-              {
-                purpose: "第 2 頁",
-                content: "短",
-                narrative: "講者補充",
-                layoutHint: "單欄重點",
-                sourceUrls: [],
-              },
-            ],
-            sources: [],
-          },
-          usage: { inputTokens: 1_000 * attempt, outputTokens: 10, reported: true },
+          value: { slides: [slide("P1", overflow), slide("P2", "短")] },
+          usage: { inputTokens: 1_000 * draftAttempt, outputTokens: 10, reported: true },
         };
       });
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -495,9 +501,16 @@ describe("用量帳本的端點耐用度", () => {
         body: JSON.stringify({ replace: true }),
       });
 
-      const rows = (await ledgerLines(project.id)).filter(
-        (line) => line.operation === "outline-generate",
-      );
+      const lines = await ledgerLines(project.id);
+      // 規劃階段自己一筆：與寫稿共用一個 operation 的話，這一筆會被寫稿的三筆蓋掉語意，
+      // 「規劃吃多少」就再也問不出來。
+      const plan = lines.filter((line) => line.operation === "outline-plan");
+      expect(plan).toHaveLength(1);
+      expect(plan[0]).toMatchObject({ attempt: 1, capability: "text", ok: true });
+      expect(plan[0]!.slideId).toBeUndefined();
+      expect(plan[0]!.usage).toMatchObject({ inputTokens: 500 });
+
+      const rows = lines.filter((line) => line.operation === "outline-draft");
       expect(rows).toHaveLength(3);
       expect(rows.map((line) => line.attempt)).toEqual([1, 2, 3]);
       expect(rows.every((line) => line.slideId === undefined)).toBe(true);
@@ -507,11 +520,20 @@ describe("用量帳本的端點耐用度", () => {
         1_000, 2_000, 3_000,
       ]);
       const summary = await json<UsageSummary>(`/api/projects/${project.id}/usage`);
-      expect(summary.byOperation["outline-generate"]).toMatchObject({
+      expect(summary.byOperation["outline-plan"]).toMatchObject({
+        calls: 1,
+        reportedCalls: 1,
+        inputTokens: 500,
+      });
+      expect(summary.byOperation["outline-draft"]).toMatchObject({
         calls: 3,
         reportedCalls: 3,
         inputTokens: 6_000,
       });
+      // 舊的單發 operation 一筆都不該再出現（`USAGE_OPERATIONS` 已移除它，留著就是死值）。
+      expect(lines.some((line) => line.operation === "outline-generate")).toBe(false);
+      // 四次呼叫全進了 text 這一格：任一階段漏接都會讓這個總數少一截。
+      expect(summary.byCapability["text"]).toMatchObject({ calls: 4, inputTokens: 6_500 });
     }, 60_000);
   });
 

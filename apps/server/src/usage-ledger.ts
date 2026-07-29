@@ -63,13 +63,17 @@ export type UsageCapability = (typeof USAGE_CAPABILITIES)[number];
 export const USAGE_OPERATIONS = [
   // 影像三種直接沿用 `generationJobSchema` 的 `operation` 值，不另外改名成 "image"：
   // 帳本要能與 job 逐筆對照，換個名字只會多一層心算。`capability: "image"` 已足以
-  // 把 `generate` 與 `outline-generate` 分開。
+  // 把 `generate` 與大綱那幾種分開。
   "generate",
   "edit",
   "extract-text",
   "search",
   "style-analysis",
-  "outline-generate",
+  // 整份大綱是**兩階段兩個值**，不是一個 `outline-generate` 再靠 `attempt` 區分：規劃只看
+  // 目錄裡的一句摘要、寫稿扛著整批正文片段，兩者的 prompt 規模差一個數量級，混進同一格
+  // `byOperation` 就答不出「哪一階段在燒配額」。寫稿那格的 `calls` 同時就是重試輪數。
+  "outline-plan",
+  "outline-draft",
   "outline-regenerate",
   "ocr-style-refine",
   "image-description",

@@ -32,7 +32,7 @@ async function readLines(path: string): Promise<Record<string, unknown>[]> {
 function input(patch: Partial<UsageRecordInput> = {}): UsageRecordInput {
   return {
     capability: "text",
-    operation: "outline-generate",
+    operation: "outline-draft",
     model: "gpt-5.6-luna",
     modelEntryId: "entry-1",
     providerKind: "openai",
@@ -54,7 +54,7 @@ describe("UsageLedger 落地", () => {
     const [line] = await readLines(path);
     expect(line).toMatchObject({
       capability: "text",
-      operation: "outline-generate",
+      operation: "outline-draft",
       model: "gpt-5.6-luna",
       modelEntryId: "entry-1",
       providerKind: "openai",
@@ -152,7 +152,7 @@ describe("大小上限", () => {
         JSON.stringify({
           at: new Date(index).toISOString(),
           capability: "text",
-          operation: "outline-generate",
+          operation: "outline-draft",
           attempt: index,
           ok: true,
           usage: { reported: false },
@@ -185,7 +185,7 @@ describe("大小上限", () => {
         JSON.stringify({
           at: new Date(index + 1).toISOString(),
           capability: "text",
-          operation: "outline-generate",
+          operation: "outline-draft",
           ok: true,
           usage: { reported: false },
         }),
@@ -220,7 +220,7 @@ describe("大小上限", () => {
       JSON.stringify({
         at: new Date(index + 1).toISOString(),
         capability: "text",
-        operation: "outline-generate",
+        operation: "outline-draft",
         ok: true,
         usage: { reported: false },
       }),
@@ -369,7 +369,7 @@ describe("聚合", () => {
   const record = (patch: Partial<UsageRecord> = {}): UsageRecord => ({
     at: "2026-07-29T00:00:00.000Z",
     capability: "text",
-    operation: "outline-generate",
+    operation: "outline-draft",
     model: "gpt-5.6-luna",
     modelEntryId: "entry-1",
     providerKind: "openai",
@@ -406,7 +406,7 @@ describe("聚合", () => {
     expect(summary.byCapability.text).toMatchObject({ calls: 2, inputTokens: 200 });
     expect(summary.byCapability.search).toMatchObject({ calls: 1 });
     expect(summary.byCapability.image).toMatchObject({ calls: 1 });
-    expect(summary.byOperation["outline-generate"]).toMatchObject({ calls: 2, outputTokens: 40 });
+    expect(summary.byOperation["outline-draft"]).toMatchObject({ calls: 2, outputTokens: 40 });
     expect(summary.byOperation.search).toMatchObject({ calls: 1 });
     // byModel 依 calls 由多到少。
     expect(summary.byModel[0]).toMatchObject({ modelEntryId: "entry-1", calls: 2 });
@@ -557,7 +557,7 @@ describe("聚合", () => {
     const summary = summarizeUsage([record({ requests: 3 }), record(), record({ requests: 2 })]);
     expect(summary.totalCalls).toBe(3);
     expect(summary.totalRequests).toBe(6);
-    expect(summary.byOperation["outline-generate"]?.requests).toBe(6);
+    expect(summary.byOperation["outline-draft"]?.requests).toBe(6);
   });
 
   /**
