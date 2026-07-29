@@ -119,6 +119,7 @@ import { createHtmlRenderer, type HtmlRenderer } from "./web-render.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask, unerasedImagePath } from "./text-layers.js";
 import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
+import { traditionalizeBoxes } from "./traditionalize.js";
 
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
@@ -2651,7 +2652,7 @@ export async function createApp(
   app.post("/api/projects/:projectId/slides/:slideId/extract-text", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
     const slideId = idSchema.parse(request.params.slideId);
-    const { providerId, threshold, acceptUnknownReadiness, textRepair } = z
+    const { providerId, threshold, acceptUnknownReadiness, textRepair, traditionalize } = z
       .object({
         // 預設走本地 OpenCV inpaint（快、零配額）；前端選「生圖模型」時
         // 才帶專案組合解析出的影像 providerId。
@@ -2660,6 +2661,9 @@ export async function createApp(
         acceptUnknownReadiness: z.boolean().default(false),
         // 預設 off：拿大綱回頭改 OCR 讀到的字，實測改壞的比修好的多（見 `refineOcrBoxes`）。
         textRepair: z.enum(["off", "outline"]).default("off"),
+        // 預設 on：PaddleOCR 的中文模型是簡體語料訓練出來的，讀繁體投影片會零星吐出簡體
+        // 字形，不修就會在重繪回圖上時變成簡繁混排。只動「簡體專屬字」，見 `traditionalize.ts`。
+        traditionalize: z.boolean().default(true),
       })
       .parse(request.body ?? {});
     const ocrStatus = await ocr.status();
@@ -2746,7 +2750,26 @@ export async function createApp(
       // unclip 外擴，直接換算會偏大偏移）。文字本身預設沿用 OCR 的辨識結果，只有
       // 使用者挑「大綱修復」時才以 content/layoutHint 為錨改寫（見 `refineOcrBoxes`）。
       const rawImage = await sharp(normalized).raw().toBuffer({ resolveWithObject: true });
-      const refined = await refineOcrBoxes(boxesFromOcr(result, project.canvas, threshold), {
+      const ocrBoxes = boxesFromOcr(result, project.canvas, threshold);
+      /*
+       * 簡→繁要在 `refineOcrBoxes` **之前**做，順序不可對調。
+       *
+       * `textRepair: "outline"` 是拿這一頁的大綱（繁體）當錨做模糊比對；OCR 讀出來的
+       * 簡體字與大綱的繁體字逐字不同，先修復再轉繁等於用一份混著簡體的字串去比對，
+       * 相似度被壓低、該對上的句子對不上。
+       */
+      const traditionalized = traditionalize
+        ? traditionalizeBoxes(ocrBoxes)
+        : { boxes: ocrBoxes, changedBoxes: 0, changedChars: 0 };
+      if (traditionalized.changedBoxes)
+        // 只記 id 與數字：OCR 認到的字、改成什麼字，一個都不進 log。
+        logInfo("ocr_traditionalized", {
+          projectId,
+          slideId,
+          changedBoxes: traditionalized.changedBoxes,
+          changedChars: traditionalized.changedChars,
+        });
+      const refined = await refineOcrBoxes(traditionalized.boxes, {
         textRepair,
         sourceTexts: [slide.content, slide.layoutHint],
         image: {

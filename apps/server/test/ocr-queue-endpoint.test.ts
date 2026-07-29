@@ -820,3 +820,171 @@ describe("extract-text 的 ocr-input 中間產物清理", () => {
     for (const survivor of survivors) expect(await stat(survivor).then(() => true)).toBe(true);
   }, 60_000);
 });
+
+/**
+ * 簡→繁轉換的**接線**：判準本身由 `traditionalize.test.ts` 釘住，這裡只證三件在單元測試
+ * 裡看不到的事——預設是開的（body 什麼都不帶就會轉）、`false` 真的關得掉（zod 沒有把它
+ * coerce 成 true），以及轉換結果真的進了 202 回傳的 `textExtraction.boxes`（不是在某個
+ * 中間步驟被丟掉）。
+ */
+describe("extract-text 的簡→繁轉換（HTTP 契約）", () => {
+  let server: Server | undefined;
+  const cleanups: (() => Promise<void>)[] = [];
+
+  afterEach(async () => {
+    if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+    vi.restoreAllMocks();
+  });
+
+  /** PaddleOCR 把繁體投影片讀成簡體的那一框。 */
+  const SIMPLIFIED: RawOcrResult = {
+    width: 1920,
+    height: 1080,
+    boxes: [rawBox("营收成长", 120, 120)],
+  };
+
+  const setup = async (result: RawOcrResult = SIMPLIFIED) => {
+    cleanups.push(await fakeInpaintEngine());
+    const dataRoot = join(
+      await mkdtemp(join(tmpdir(), "slide-maker-ocr-tc-")),
+      ".slide-maker-data",
+    );
+    const app = await createApp(dataRoot, join(tmpdir(), "slide-maker-no-editor-dist"), {
+      ocr: instantOcr(result).adapter,
+    });
+    await new Promise<void>((resolve, reject) => {
+      server = app.listen(0, "127.0.0.1", (error?: Error) => (error ? reject(error) : resolve()));
+    });
+    const baseUrl = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
+    const call = async (path: string, init?: RequestInit) => {
+      const response = await fetch(`${baseUrl}${path}`, {
+        ...init,
+        headers: { "content-type": "application/json", ...init?.headers },
+      });
+      return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+    };
+    const json = async <T>(path: string, init?: RequestInit): Promise<T> => {
+      const { status, body } = await call(path, init);
+      if (status >= 400) throw new Error(`${status} ${String(body.error ?? "")}`);
+      return body as T;
+    };
+    let project = await json<PresentationProject>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        topic: "簡繁轉換",
+        brief: { desiredSlideCount: 1, webSearchMode: "disabled" },
+      }),
+    });
+    await json<PresentationProject>(`/api/projects/${project.id}/outline`, {
+      method: "POST",
+      body: JSON.stringify({ replace: true }),
+    });
+    project = await json<PresentationProject>(`/api/projects/${project.id}`);
+    const slideId = project.slides[0]!.id;
+    await json<GenerationJob>(`/api/projects/${project.id}/slides/${slideId}/generate`, {
+      method: "POST",
+      body: JSON.stringify({ providerId: "mock-image" }),
+    });
+    await waitUntil(async () => {
+      project = await json<PresentationProject>(`/api/projects/${project.id}`);
+      return project.slides[0]!.currentVersionId !== undefined;
+    });
+    return {
+      /** 把這一頁的大綱換成指定文字（`textRepair: "outline"` 的錨）。 */
+      setOutline: (content: string, layoutHint: string) =>
+        json<PresentationProject>(`/api/projects/${project.id}/slides/${slideId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ content, layoutHint }),
+        }),
+      /** 回傳 202 的 job 裡，這一頁抽出來的框文字。 */
+      extractedTexts: async (body: Record<string, unknown> = {}) => {
+        const { status, body: job } = await call(
+          `/api/projects/${project.id}/slides/${slideId}/extract-text`,
+          { method: "POST", body: JSON.stringify(body) },
+        );
+        expect(status).toBe(202);
+        return ((job as unknown as GenerationJob).textExtraction?.boxes ?? []).map(
+          (entry) => entry.text,
+        );
+      },
+    };
+  };
+
+  it("body 不帶 traditionalize 時預設會轉", async () => {
+    const context = await setup();
+    expect(await context.extractedTexts()).toEqual(["營收成長"]);
+  }, 60_000);
+
+  it("traditionalize:false 時原樣保留 OCR 讀到的簡體", async () => {
+    const context = await setup();
+    // `z.boolean()` 而不是 `z.coerce.boolean()`：後者連 `"false"` 都會變成 true。
+    expect(await context.extractedTexts({ traditionalize: false })).toEqual(["营收成长"]);
+  }, 60_000);
+
+  /**
+   * 順序不變量：簡→繁一定要排在 `refineOcrBoxes` **之前**。
+   *
+   * 大綱是繁體的，OCR 讀出來的是簡體；先修復再轉繁等於拿混著簡體的字串去做模糊比對，
+   * 編輯距離被那幾個簡體字拉高到超過 `MAX_ERROR_RATIO`（34%），該對上的那一行就對不上。
+   * 這裡刻意讓大綱帶空格：對上時空格會被還原回來，因此「有沒有對上」在結果字串上直接
+   * 看得出來，兩行對調就會紅。
+   */
+  /** 9 個字裡有 4 個簡體（营／长／与／获）＝ 44% 差異，先修復必定超過 34% 的門檻。 */
+  const MOSTLY_SIMPLIFIED: RawOcrResult = {
+    width: 1920,
+    height: 1080,
+    boxes: [rawBox("营收成长与获利能力", 120, 120, 720, 64)],
+  };
+
+  it("traditionalize 搭 textRepair:outline 時，大綱修復對得上（順序不可對調）", async () => {
+    const context = await setup(MOSTLY_SIMPLIFIED);
+    await context.setOutline("營收成長 與 獲利能力", "標題置中");
+    expect(await context.extractedTexts({ textRepair: "outline" })).toEqual([
+      // 空格是大綱獨有的，只有真的對上才會出現在結果裡。兩行對調的話會拿到
+      // `營收成長與獲利能力`（沒有空格＝沒對上，只是照樣被轉繁）。
+      "營收成長 與 獲利能力",
+    ]);
+  }, 60_000);
+
+  it("同一份輸入關掉 traditionalize 就對不上——證明門檻真的擋在那裡", async () => {
+    const context = await setup(MOSTLY_SIMPLIFIED);
+    await context.setOutline("營收成長 與 獲利能力", "標題置中");
+    // 沒有轉繁的 needle 與大綱差 44%，`correctTextFromSources` 直接放棄，原文原樣留下。
+    expect(await context.extractedTexts({ textRepair: "outline", traditionalize: false })).toEqual([
+      "营收成长与获利能力",
+    ]);
+  }, 60_000);
+
+  /**
+   * `ocr_traditionalized` 的 log 只准帶 id 與數字。
+   *
+   * 與 `ocr_queue_rejected` 同一條紀律，做法也照抄 `outline-overflow.test.ts`：直接對序列化
+   * 後的整串斷言，任何人不小心把 `boxes`／原文塞進欄位都會紅。
+   */
+  it("ocr_traditionalized 的 log 不含 OCR 正文或頁面內文", async () => {
+    const context = await setup();
+    const secret = "第三季毛利率四十七點二";
+    await context.setOutline(secret, "標題置中");
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+
+    expect(await context.extractedTexts()).toEqual(["營收成長"]);
+
+    const logged = logs.filter((line) => line.includes("ocr_traditionalized"));
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0]!)).toMatchObject({
+      changedBoxes: 1,
+      // 营→營、长→長；`收`／`成` 兩個字簡繁同形。
+      changedChars: 2,
+      severity: "INFO",
+    });
+    // OCR 讀到的字（轉換前後都算）與頁面內文一個字都不能進去。
+    expect(logged[0]).not.toContain("营收成长");
+    expect(logged[0]).not.toContain("營收成長");
+    expect(logged[0]).not.toContain(secret);
+  }, 60_000);
+});

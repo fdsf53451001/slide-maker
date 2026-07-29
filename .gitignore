@@ -7,7 +7,10 @@ dist-lib/
 .data/
 .slide-maker-data/
 .e2e-data/
-.venv-ocr/
+# 尾斜線只匹配目錄。worktree 裡的 .venv-ocr 是指回主 checkout 的 symlink（見
+# merge-needs-user-testing-first），帶斜線就忽略不到它，`git add -A` 會把一條絕對路徑
+# symlink 加進版控。
+.venv-ocr
 # scripts/ 底下的 Python（local_inpaint.py、OCR 橋接）被 server 以子行程呼叫，執行後
 # 直譯器會就地留下 bytecode 快取，內容依 Python 版本而異，不入版控。
 __pycache__/

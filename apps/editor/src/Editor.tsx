@@ -2519,6 +2519,9 @@ export function Editor() {
   // 文字修復：預設關（OCR 讀到什麼就是什麼）。「大綱修復」拿這頁的大綱回頭改 OCR 的字，
   // 圖上文字逐字來自大綱時能修好空格與誤認字，否則會把正確的字換成大綱裡的相似片段。
   const [textRepair, setTextRepair] = useState<"off" | "outline">("off");
+  // 簡體轉繁體：預設開。PaddleOCR 的中文模型是簡體語料訓練出來的，讀繁體投影片會零星
+  // 吐出簡體字形；只替換「簡體專屬字」，繁體中本來就合法的字形（台／里／面／后／干）不動。
+  const [traditionalize, setTraditionalize] = useState(true);
   /**
    * 「批次抽離全部文字」的進度（`undefined` ＝ 沒有在跑）。`current` 是**正在處理**的第幾頁
    * （1-based），不是已完成數：使用者盯著的是「現在卡在哪一頁」。
@@ -3858,6 +3861,7 @@ export function Editor() {
         textThreshold,
         acceptUnknownReadiness,
         textRepair,
+        traditionalize,
       );
       setProject(await api.getProject(project.id));
     } catch (reason) {
@@ -3965,6 +3969,7 @@ export function Editor() {
             textThreshold,
             acceptUnknownReadiness,
             textRepair,
+            traditionalize,
           );
           // 202 已經回來了＝這一頁抽字成功（抹字 job 已排進 project.json）。下面那趟重讀
           // 只是為了讓畫面跟上，**不是**成功與否的一部分。
@@ -4942,6 +4947,24 @@ export function Editor() {
                         可能被改成大綱裡的相似句子。
                       </small>
                     )}
+                    {/* 說明走原生 title tooltip 而非常駐 <small>：這段字比選項本身長三倍，
+                        常駐會把門檻滑桿擠出面板可視範圍；且面板祖先是 overflow: hidden，
+                        自繪的 tooltip 泡泡會被裁掉，原生的不會。與 .text-layer-rail 那排
+                        圖示鈕同一套慣例。 */}
+                    <label
+                      className="extract-toggle"
+                      title={
+                        "只改簡體專屬字形：「台」「里」「面」「后」「干」「云」這類繁體中本來就合法的字不會被動到" +
+                        "（所以「云计算」只會修成「云計算」）。\n含日文假名的文字框整框跳過。"
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={traditionalize}
+                        onChange={(event) => setTraditionalize(event.target.checked)}
+                      />
+                      簡體轉繁體
+                    </label>
                     <label className="threshold-slider">
                       門檻 <b>{textThreshold.toFixed(2)}</b>
                       <input

@@ -325,12 +325,19 @@ export const api = {
     threshold = 0.75,
     acceptUnknownReadiness = false,
     textRepair: "off" | "outline" = "off",
+    traditionalize = true,
   ) =>
     request<GenerationJob>(
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/extract-text`,
       {
         method: "POST",
-        body: JSON.stringify({ providerId, threshold, acceptUnknownReadiness, textRepair }),
+        body: JSON.stringify({
+          providerId,
+          threshold,
+          acceptUnknownReadiness,
+          textRepair,
+          traditionalize,
+        }),
       },
     ),
   updateTextLayer: (

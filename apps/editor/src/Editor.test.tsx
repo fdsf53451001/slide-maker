@@ -2127,6 +2127,35 @@ describe("Editor MVP navigation", () => {
     );
   });
 
+  it("簡體轉繁體預設開啟，取消勾選後隨請求送出 false", async () => {
+    const project = extractionProject();
+    const fetchMock = extractionFetchMock(project, false);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    // 預設開：PaddleOCR 讀繁體投影片會零星吐出簡體字形，不修就是簡繁混排。
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({ body: expect.stringContaining('"traditionalize":true') }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "調整文字抽離選項" }));
+    const toggle = (await screen.findByLabelText("簡體轉繁體")) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "抽離文字" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/extract-text$/),
+        expect.objectContaining({ body: expect.stringContaining('"traditionalize":false') }),
+      ),
+    );
+  });
+
   it("opens a project and exposes slide, source, project and export workflows", async () => {
     const project = createProject({
       topic: "UI 測試專案",
