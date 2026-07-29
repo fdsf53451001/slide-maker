@@ -1,9 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { extname } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
-import { createSourceInputSchema, type SourceAsset } from "@slide-maker/core";
+import {
+  createSourceInputSchema,
+  MAX_UPLOAD_BYTES,
+  SOURCE_COUNT_LIMIT,
+  SOURCE_TOTAL_BYTES_LIMIT,
+  type SourceAsset,
+} from "@slide-maker/core";
 
-const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
+const MAX_SOURCE_BYTES = MAX_UPLOAD_BYTES;
 const TEXT_TYPES = new Set(["text/plain", "text/markdown"]);
 /** 可上傳的圖片 media type。圖片描述那條路也認這一份，不另立第二份清單。 */
 export const SOURCE_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg"]);
@@ -281,9 +287,144 @@ export function detectSourceMediaType(name: string, declared: string, bytes: Uin
   return expected;
 }
 
+/**
+ * 單一來源的正文字數上限（圖片走 `image-description.ts` 自己的 20000）。
+ *
+ * 截的是**抽取出來的文字**，不是上傳的檔案：`extractedText` 與由它切出來的 `chunks` 都住在
+ * `project.json` 裡，而 chunks 因為視窗重疊還比正文多三成。沒有這道上限時，`SOURCE_TOTAL_BYTES_LIMIT`
+ * （2 GiB 的**檔案**）換算成記憶體是無界的——200 份文字型 PDF 就足以讓每一次 updateProject
+ * 的峰值超過 2Gi 的實例。
+ *
+ * 400000 字約等於 200–300 頁密排文字，是「一份簡報用得上的單一來源」的合理上界；200 份都
+ * 頂到上限時，專案的文字量約 80 M 字元、`project.json` 約 190 MB、峰值約 560 MB，還留得下
+ * sharp 與 OCR 的空間。**截斷會讓超出的部分連 FTS 都檢索不到**（chunks 由同一份文字切出），
+ * 這是刻意的取捨：與其讓整台機器 OOM 掉所有人的請求，不如讓一份特別大的來源只索引前 400000
+ * 字，而且 `metadata.textTruncated` 會把這件事寫在來源上，不是靜默發生。
+ */
+export const MAX_SOURCE_TEXT_CHARS = 400_000;
+
 /** 一塊的最大字數。`source-context.ts` 餵進 prompt 前也以同一個數字截斷。 */
 export const SOURCE_CHUNK_CHARS = 1600;
 const SOURCE_CHUNK_STRIDE = 1200;
+
+/**
+ * 份數與容量的上限**住在 `@slide-maker/core`**（見那裡的說明）：編輯器要用同一組數字顯示
+ * 「175/200」，前端自己抄一份就是第二份真相。這裡只放伺服器側的判斷與訊息。
+ *
+ * **2 GiB 說的是上傳的位元組，不是記憶體。**兩者的關聯要靠 {@link MAX_SOURCE_TEXT_CHARS}
+ * 才成立：`extractedText` 與 `chunks` 都內嵌在 `project.json` 裡，而每次 `updateProject` 是
+ * readFile → JSON.parse → parseProject → structuredClone → JSON.stringify，峰值約檔案的三倍。
+ * Cloud Run 的實例正好也是 2Gi（`infra/main.tf`），所以「200 份各 10 MB 的 PDF」若不限制
+ * 抽出來的文字量，光是讀寫專案就能打掉整台機器——同一台機器上「第二個 PaddleOCR 就 OOM」
+ * 是已經踩過的坑。
+ *
+ * 200 份則要與 `OUTLINE_CATALOG_CHAR_BUDGET` 一起看：目錄要裝得下這麼多份，模型才選得到
+ * 最後那幾份。
+ */
+
+/** 位元組 → 人看得懂的字串。錯誤訊息要讓使用者知道自己離上限多遠。 */
+export function formatSourceBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"] as const;
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  // 整數就不補小數點：「2 GB」比「2.00 GB」好讀，而 1.97 GB 需要那兩位才看得出離上限多近。
+  const rounded = Math.round(value * 100) / 100;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)} ${units[unit]}`;
+}
+
+/**
+ * 專案來源的兩種上限各自的錯誤。
+ *
+ * **兩個碼刻意分開**：份數滿了要使用者刪幾份、容量滿了要刪「大的那幾份」，兩者的下一步
+ * 不同，混成一個 `SOURCE_PROJECT_LIMIT` 的話使用者不知道自己撞到哪一條。訊息帶實際數字，
+ * 前端只負責顯示——把「100 份」寫在前端字串裡就是第二份真相，改上限時必定漂掉。
+ */
+export class SourceLimitError extends Error {
+  constructor(
+    readonly code: "SOURCE_COUNT_LIMIT" | "SOURCE_SIZE_LIMIT",
+    message: string,
+  ) {
+    super(message);
+    this.name = "SourceLimitError";
+  }
+}
+
+/** 再收 `incomingBytes` 這麼多會不會超過上限；沒超過回 `undefined`。 */
+export function sourceCapacityError(
+  sources: readonly { sizeBytes: number }[],
+  incomingBytes: number,
+): SourceLimitError | undefined {
+  if (sources.length >= SOURCE_COUNT_LIMIT)
+    return new SourceLimitError(
+      "SOURCE_COUNT_LIMIT",
+      `專案來源已達 ${SOURCE_COUNT_LIMIT} 份上限（目前 ${sources.length} 份），請先刪掉一些來源再試。`,
+    );
+  const used = sources.reduce((sum, source) => sum + source.sizeBytes, 0);
+  if (used + incomingBytes > SOURCE_TOTAL_BYTES_LIMIT)
+    return new SourceLimitError(
+      "SOURCE_SIZE_LIMIT",
+      `專案來源總容量已達 ${formatSourceBytes(SOURCE_TOTAL_BYTES_LIMIT)} 上限（目前 ${formatSourceBytes(used)}），請先刪掉一些較大的來源再試。`,
+    );
+  return undefined;
+}
+
+/** 同 {@link sourceCapacityError}，但直接丟出來（寫入端點用）。 */
+export function assertSourceCapacity(
+  sources: readonly { sizeBytes: number }[],
+  incomingBytes: number,
+): void {
+  const error = sourceCapacityError(sources, incomingBytes);
+  if (error) throw error;
+}
+
+/**
+ * 截到 `limit` 字以內，但切在**看得懂的邊界**上：先找換行（段落／表格列），再找句末標點，
+ * 兩者都沒有才硬切。
+ *
+ * 硬切的代價不是「少幾個字」而是「多一句假話」：實測大綱目錄把一份餐廳評比表切在
+ * `… | 職人丼深夜食堂 信義店 ` 這種位置，模型看到的是一列殘缺的表格，既判斷不了這份來源
+ * 講什麼，還可能把半行當成完整資料引用。
+ *
+ * 邊界只在後 60% 的範圍內找：太靠前的換行會讓截出來的東西短到失去選源價值，那時寧可硬切。
+ */
+/**
+ * 視窗內最後一個「真的是句末」的標點位置，找不到回 -1。
+ *
+ * 全形標點無條件算數；ASCII 的 `.`／`!`／`?`／`;` **必須後接空白或視窗結尾**。裸的句點會
+ * 把小數點、副檔名與網域當成句末，切出「語法完整但數字是錯的」句子——實測
+ * `Revenue grew to 12.5 billion` 切成 `Revenue grew to 12.`、`annual-report-2025.pdf` 切成
+ * `annual-report-2025.`、`data.example.com` 切成 `data.`。那比硬切**更難察覺**：硬切看得出
+ * 殘缺，`12.` 看起來是一句完整的話，而它說的是假的。
+ */
+function lastSentenceEnd(window: string): number {
+  const pattern = /[。！？；]|[.!?;](?=\s|$)/g;
+  let last = -1;
+  for (let match = pattern.exec(window); match; match = pattern.exec(window)) last = match.index;
+  return last;
+}
+
+/** 切在 `limit`，但不把 surrogate pair 劈成兩半（末尾留半個 code unit 是亂碼字）。 */
+function sliceWholeChars(text: string, limit: number): string {
+  const window = text.slice(0, limit);
+  const last = window.charCodeAt(window.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? window.slice(0, -1) : window;
+}
+
+export function truncateAtBoundary(text: string, limit: number): string {
+  if (limit <= 0) return "";
+  if (text.length <= limit) return text;
+  const window = sliceWholeChars(text, limit);
+  const floor = Math.floor(limit * 0.4);
+  const newline = window.lastIndexOf("\n");
+  if (newline >= floor) return window.slice(0, newline).trimEnd();
+  const sentence = lastSentenceEnd(window);
+  if (sentence >= floor) return window.slice(0, sentence + 1);
+  return window.trimEnd();
+}
 
 /**
  * 切塊：1200 字步長、1600 字視窗（刻意重疊，句子被切斷時兩塊各留一半仍檢索得到）。
@@ -337,6 +478,11 @@ export async function ingestSource(
   else if (mediaType.endsWith("presentationml.presentation"))
     extractedText = parseOffice(bytes, "pptx");
   const id = randomUUID();
+  // 切在合理邊界而不是硬切：截斷點會出現在目錄摘要與最後一塊 chunk 裡。
+  const truncated = extractedText.length > MAX_SOURCE_TEXT_CHARS;
+  const storedText = truncated
+    ? truncateAtBoundary(extractedText, MAX_SOURCE_TEXT_CHARS)
+    : extractedText;
   return {
     id,
     name: parsed.name,
@@ -346,9 +492,10 @@ export async function ingestSource(
     status: "indexed",
     assetPath,
     sizeBytes: bytes.length,
-    extractedText,
-    chunks: chunkSourceText(id, extractedText),
-    metadata: {},
+    extractedText: storedText,
+    chunks: chunkSourceText(id, storedText),
+    // 截斷不能靜默：使用者看到「這份 PDF 的後半段找不到」時，這個旗標是唯一的解釋。
+    metadata: truncated ? { textTruncated: "true", textChars: String(extractedText.length) } : {},
     createdAt: now,
     updatedAt: now,
   };

@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { PresentationProject, SourceAsset } from "@slide-maker/core";
+import { SOURCE_COUNT_LIMIT, type PresentationProject, type SourceAsset } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import type { WebSearchResult } from "../src/web-capture.js";
 
@@ -245,7 +245,7 @@ describe("貼上網址加入來源", () => {
     if (bindUnavailable) return;
     const project = await createProject();
     // 上限 100 份；先塞滿再貼網址。
-    for (let index = 0; index < 100; index += 1) {
+    for (let index = 0; index < SOURCE_COUNT_LIMIT; index += 1) {
       const query = new URLSearchParams({
         name: `filler-${index}.txt`,
         mediaType: "text/plain",
@@ -262,15 +262,20 @@ describe("貼上網址加入來源", () => {
       urls: ["https://example.com/overflow"],
     });
     expect(response.status).toBe(409);
-    // 一筆都塞不下才走 409；連這條路都要說清楚是哪個網址沒進去。
-    expect((await response.json()) as { error: string }).toEqual({
-      error: "SOURCE_PROJECT_LIMIT",
-      message: "專案來源已達上限，沒有任何網址被加入。",
-      failures: [{ url: "https://example.com/overflow", reason: "SOURCE_PROJECT_LIMIT" }],
-    });
+    // 一筆都塞不下才走 409；連這條路都要說清楚是哪個網址沒進去、以及撞到的是哪一種上限。
+    const body = (await response.json()) as {
+      error: string;
+      message: string;
+      failures: { url: string; reason: string }[];
+    };
+    expect(body.error).toBe("SOURCE_COUNT_LIMIT");
+    expect(body.message).toContain(String(SOURCE_COUNT_LIMIT));
+    expect(body.failures).toEqual([
+      { url: "https://example.com/overflow", reason: "SOURCE_COUNT_LIMIT" },
+    ]);
     const sources = (await (
       await fetch(`${baseUrl}/api/projects/${project.id}/sources`)
     ).json()) as SourceAsset[];
-    expect(sources).toHaveLength(100);
+    expect(sources).toHaveLength(SOURCE_COUNT_LIMIT);
   });
 });

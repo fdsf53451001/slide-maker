@@ -3,6 +3,7 @@ import { dirname, join, sep } from "node:path";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
 import sharp from "sharp";
+import { MAX_DECK_IMPORT_PAGES, MAX_UPLOAD_BYTES } from "@slide-maker/core";
 import type { EditableTextBox } from "@slide-maker/core";
 import {
   extractTitle,
@@ -27,9 +28,9 @@ import {
  * 由呼叫端落地存檔，且補上 `pdf-pages.ts` 沒有的單頁／總時限。
  */
 
-export const MAX_DECK_PDF_BYTES = 100 * 1024 * 1024;
+export const MAX_DECK_PDF_BYTES = MAX_UPLOAD_BYTES;
 /** 一次匯入最多幾頁；超過的頁在選檔階段就不列入。 */
-export const MAX_DECK_PAGES = 150;
+export const MAX_DECK_PAGES = MAX_DECK_IMPORT_PAGES;
 /** 只收 16:9：長寬比落在這個區間（含）才視為簡報頁。 */
 export const DECK_ASPECT_MIN = 1.7;
 export const DECK_ASPECT_MAX = 1.82;

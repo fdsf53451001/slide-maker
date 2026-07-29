@@ -116,7 +116,8 @@ describe("貼上網址對話框", () => {
         { url: "https://example.com/2", reason: "WEB_SOURCE_HASH_ROUTE_UNSUPPORTED" },
         { url: "https://example.com/3", reason: "WEB_SOURCE_RENDER_UNAVAILABLE" },
         { url: "https://example.com/4", reason: "WEB_SOURCE_BATCH_TIMEOUT" },
-        { url: "https://example.com/5", reason: "SOURCE_PROJECT_LIMIT" },
+        { url: "https://example.com/5", reason: "SOURCE_COUNT_LIMIT" },
+        { url: "https://example.com/6", reason: "SOURCE_SIZE_LIMIT" },
       ]),
     );
     paste("https://example.com/1\nhttps://example.com/ok");
@@ -126,7 +127,11 @@ describe("貼上網址對話框", () => {
     expect(screen.getByText(/單頁應用/)).toBeTruthy();
     expect(screen.getByText(/未啟用外部 render 服務/)).toBeTruthy();
     expect(screen.getByText(/分批再試/)).toBeTruthy();
-    expect(screen.getByText(/專案來源已達上限/)).toBeTruthy();
+    // 份數與容量是兩種上限、兩個下一步：刪幾份 vs 刪大的那幾份。收斂成同一句話的話，
+    // 使用者刪了十個小檔案卻發現還是加不進去。
+    expect(screen.getByText(/份數已達上限/)).toBeTruthy();
+    expect(screen.getByText(/總容量已達上限/)).toBeTruthy();
+    expect(screen.getByText(/較大的來源/)).toBeTruthy();
     expect(screen.queryByText(/抓不到網頁正文/)).toBeNull();
   });
 
@@ -249,17 +254,20 @@ describe("貼上網址對話框", () => {
     stubUrlSources(() =>
       Response.json(
         {
-          error: "SOURCE_PROJECT_LIMIT",
-          message: "專案來源已達上限，沒有任何網址被加入。",
-          failures: [{ url: "https://example.com/full", reason: "SOURCE_PROJECT_LIMIT" }],
+          error: "SOURCE_COUNT_LIMIT",
+          // 伺服器的訊息帶著實際數字，前端只負責顯示——這是唯一的一份真相。
+          message:
+            "專案來源已達 200 份上限（目前 200 份），請先刪掉一些來源再試。（這一批沒有任何網址被加入）",
+          failures: [{ url: "https://example.com/full", reason: "SOURCE_COUNT_LIMIT" }],
         },
         { status: 409 },
       ),
     );
     paste("https://example.com/full");
     fireEvent.click(submitButton());
-    expect(await screen.findByText(/專案來源已達上限，沒有任何網址被加入/)).toBeTruthy();
-    expect(screen.getByText(/請先刪掉一些來源/)).toBeTruthy();
+    expect(await screen.findByText(/專案來源已達 200 份上限（目前 200 份）/)).toBeTruthy();
+    // 逐筆那一行講的是「下一步做什麼」，與整批訊息的數字互補。
+    expect(screen.getByText(/份數已達上限/)).toBeTruthy();
     // 沒有謊稱是網頁的問題。
     expect(screen.queryByText(/抓不到網頁正文/)).toBeNull();
   });

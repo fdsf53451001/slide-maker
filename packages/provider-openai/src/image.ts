@@ -9,9 +9,9 @@ import {
   type ProviderPreflightResult,
 } from "@slide-maker/core";
 import { type OpenAiClientConfig, probeReady } from "./http.js";
-import { generateViaImagesApi } from "./image-api.js";
-import { generateViaChat } from "./image-chat.js";
-import { generateViaOpenRouter } from "./image-openrouter.js";
+import { generateViaImagesApi, MAX_IMAGES_REFERENCES } from "./image-api.js";
+import { generateViaChat, MAX_CHAT_REFERENCES } from "./image-chat.js";
+import { generateViaOpenRouter, MAX_OPENROUTER_REFERENCES } from "./image-openrouter.js";
 
 /**
  * Maintained image transports (Codex app-server lives in provider-codex):
@@ -49,6 +49,15 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
       imageEditing: true,
       maskedEditing: true,
       multipleReferenceImages: true,
+      // 上限依 transport 而異（chat／openrouter 卡 JSON body 大小＝8，images 卡端點自身的
+      // `image[]` 張數＝16）。宣告的必須是**這個實例真的會走的那一條**，否則 jobs.ts 會
+      // 依一個不存在的上限截斷（或不截斷而撞上 transport 的 throw）。
+      maxReferenceImages:
+        (options.apiShape ?? "images") === "chat"
+          ? MAX_CHAT_REFERENCES
+          : (options.apiShape ?? "images") === "openrouter-image"
+            ? MAX_OPENROUTER_REFERENCES
+            : MAX_IMAGES_REFERENCES,
       supportedSizes: [{ width: 1920, height: 1080 }],
       reproducibleParameters: [],
     };

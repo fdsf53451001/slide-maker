@@ -147,6 +147,7 @@ describe("大綱超標收斂的補充情境", () => {
     sourceIds: [],
   });
 
+  /** 同一份回覆同時滿足規劃（讀 purpose 與頁數）與寫作（讀 content 與 refs）兩個階段。 */
   const deckReply = (contents: string[]) => ({
     actualSlideCount: contents.length,
     rationale: "測試用",
@@ -155,10 +156,19 @@ describe("大綱超標收斂的補充情境", () => {
       content,
       narrative: "講者補充",
       layoutHint: "單欄重點",
+      sourceRefs: [],
+      imageRefs: [],
       sourceUrls: [],
     })),
     sources: [],
   });
+
+  /** 整份大綱是兩次獨立呼叫：第一次規劃，之後才是寫作與長度重試。 */
+  const stubDeck = (round: (attempt: number) => string[]) =>
+    stubTextProvider((attempt) => deckReply(round(Math.max(1, attempt - 1))));
+
+  /** 階段 2 第 n 輪的 prompt 在 prompts 裡的位置（0 是階段 1 的規劃）。 */
+  const draftPrompt = (round: number) => prompts[round]!;
 
   /** 重試指令與 previousAttempt 欄位的字面痕跡；第一輪的 prompt 一個都不該有。 */
   const RETRY_MARKERS = ["previousAttempt", "A previous attempt ran too long"];
@@ -185,14 +195,16 @@ describe("大綱超標收斂的補充情境", () => {
   it("整份大綱第一輪就通過時只呼叫一次，prompt 完全沒有新路徑的痕跡", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject();
-    stubTextProvider(() => deckReply([units(80), units(90)]));
+    stubDeck(() => [units(80), units(90)]);
     const readWarnings = captureWarnings();
 
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(200);
-    expect(prompts).toHaveLength(1);
-    for (const marker of RETRY_MARKERS) expect(prompts[0]).not.toContain(marker);
+    // 規劃 1 次 + 寫作 1 次；長度沒超標就不該有第三次呼叫。
+    expect(prompts).toHaveLength(2);
+    for (const marker of RETRY_MARKERS)
+      for (const prompt of prompts) expect(prompt).not.toContain(marker);
     expect(body.slides.map((item) => item.content)).toEqual([units(80), units(90)]);
     expect(
       readWarnings().filter((entry) => String(entry.event).startsWith("outline_content_overflow")),
@@ -208,13 +220,14 @@ describe("大綱超標收斂的補充情境", () => {
       [units(HARD_LIMIT + 40), units(30)],
       [units(HARD_LIMIT + 90), units(40)],
     ];
-    stubTextProvider((attempt) => deckReply(rounds[attempt - 1] ?? rounds[2]!));
+    stubDeck((round) => rounds[round - 1] ?? rounds[2]!);
     const readWarnings = captureWarnings();
 
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(200);
-    expect(prompts).toHaveLength(3);
+    // 1 次規劃 + 3 輪寫作。
+    expect(prompts).toHaveLength(4);
     expect(body.slides.map((item) => item.content)).toEqual([units(HARD_LIMIT + 40), units(30)]);
 
     const warnings = readWarnings();
@@ -244,42 +257,49 @@ describe("大綱超標收斂的補充情境", () => {
     const project = await createProject();
     const first = `${units(HARD_LIMIT + 20)}甲`;
     const third = `${units(HARD_LIMIT + 70)}乙`;
-    stubTextProvider((attempt) =>
-      attempt === 1
-        ? deckReply([first, units(10), third])
-        : deckReply([units(11), units(12), units(13)]),
+    stubDeck((round) =>
+      round === 1 ? [first, units(10), third] : [units(11), units(12), units(13)],
     );
     const readWarnings = captureWarnings();
 
     const { status } = await generateDeck(project.id);
 
     expect(status).toBe(200);
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toHaveLength(3);
     // 整份都餵回去（含沒超標的第 2 頁），超標與否逐頁標記，數字逐頁各自帶。
-    expect(untrustedPayload(prompts[1]!).previousAttempt).toEqual([
+    expect(untrustedPayload(draftPrompt(2)).previousAttempt).toEqual([
       {
+        planRef: "P1",
         purpose: "第 1 頁",
         content: first,
         narrative: "講者補充",
         layoutHint: "單欄重點",
+        sourceRefs: [],
+        imageRefs: [],
         sourceUrls: [],
         overflow: true,
         measuredUnits: HARD_LIMIT + 21,
         cutUnits: 21,
       },
       {
+        planRef: "P2",
         purpose: "第 2 頁",
         content: units(10),
         narrative: "講者補充",
         layoutHint: "單欄重點",
+        sourceRefs: [],
+        imageRefs: [],
         sourceUrls: [],
         overflow: false,
       },
       {
+        planRef: "P3",
         purpose: "第 3 頁",
         content: third,
         narrative: "講者補充",
         layoutHint: "單欄重點",
+        sourceRefs: [],
+        imageRefs: [],
         sourceUrls: [],
         overflow: true,
         measuredUnits: HARD_LIMIT + 71,
@@ -287,8 +307,8 @@ describe("大綱超標收斂的補充情境", () => {
       },
     ]);
     // 最長那頁的超額不得被編進指令句子：那會讓只超 21 的頁也被要求砍 71。
-    expect(prompts[1]).not.toContain(`measured ${HARD_LIMIT + 71} full-width units`);
-    expect(prompts[1]).not.toContain(`Cut at least 71 units`);
+    expect(draftPrompt(2)).not.toContain(`measured ${HARD_LIMIT + 71} full-width units`);
+    expect(draftPrompt(2)).not.toContain(`Cut at least 71 units`);
 
     const overflow = readWarnings().filter((entry) => entry.event === "outline_content_overflow");
     expect(overflow).toHaveLength(1);
@@ -301,46 +321,81 @@ describe("大綱超標收斂的補充情境", () => {
     });
   });
 
-  it("重試之間頁數改變時 previousAttempt 依當輪重算，不會沿用上一輪那份大綱", async (context) => {
+  it("重試之間 previousAttempt 依當輪重算，不會沿用上一輪那份大綱", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject();
     const firstRoundOverflow = `${units(HARD_LIMIT + 25)}甲`;
     const secondRoundOverflow = `${units(HARD_LIMIT + 15)}乙`;
-    stubTextProvider((attempt) => {
-      // 頁數在 min..max 之間可以改變（desired=2 → 1..4），第二輪回 3 頁且換成第 0 頁超標。
-      if (attempt === 1) return deckReply([units(10), firstRoundOverflow]);
-      if (attempt === 2) return deckReply([secondRoundOverflow, units(11), units(12)]);
-      return deckReply([units(13), units(14)]);
+    // 超標的頁在第二輪換到第 1 頁：沿用上一輪的陣列會讓模型收到「改第 2 頁」而改錯頁。
+    stubDeck((round) => {
+      if (round === 1) return [units(10), firstRoundOverflow];
+      if (round === 2) return [secondRoundOverflow, units(11)];
+      return [units(13), units(14)];
     });
     captureWarnings();
 
     const { status } = await generateDeck(project.id);
 
     expect(status).toBe(200);
-    expect(prompts).toHaveLength(3);
+    expect(prompts).toHaveLength(4);
     const entry = (
+      planRef: string,
       purpose: string,
       content: string,
       overflow?: { measuredUnits: number; cutUnits: number },
     ) => ({
+      // 錨點跟著回去，模型下一輪的回覆才驗得動順序。
+      planRef,
       purpose,
       content,
       narrative: "講者補充",
       layoutHint: "單欄重點",
+      sourceRefs: [],
+      imageRefs: [],
       sourceUrls: [],
       overflow: !!overflow,
       ...(overflow ?? {}),
     });
-    expect(untrustedPayload(prompts[1]!).previousAttempt).toEqual([
-      entry("第 1 頁", units(10)),
-      entry("第 2 頁", firstRoundOverflow, { measuredUnits: HARD_LIMIT + 26, cutUnits: 26 }),
+    expect(untrustedPayload(draftPrompt(2)).previousAttempt).toEqual([
+      entry("P1", "第 1 頁", units(10)),
+      entry("P2", "第 2 頁", firstRoundOverflow, { measuredUnits: HARD_LIMIT + 26, cutUnits: 26 }),
     ]);
-    // 第三輪帶的是第二輪那份三頁大綱：累積或沿用上一輪的陣列都會讓模型改錯頁。
-    expect(untrustedPayload(prompts[2]!).previousAttempt).toEqual([
-      entry("第 1 頁", secondRoundOverflow, { measuredUnits: HARD_LIMIT + 16, cutUnits: 16 }),
-      entry("第 2 頁", units(11)),
-      entry("第 3 頁", units(12)),
+    expect(untrustedPayload(draftPrompt(3)).previousAttempt).toEqual([
+      entry("P1", "第 1 頁", secondRoundOverflow, { measuredUnits: HARD_LIMIT + 16, cutUnits: 16 }),
+      entry("P2", "第 2 頁", units(11)),
     ]);
+  });
+
+  it("寫作階段回的頁數與規劃不符時整批失敗，不會讓 purpose 與 content 錯位", async (context) => {
+    if (bindUnavailable) return context.skip();
+    const project = await createProject();
+    const before = project.slides.map((item) => item.content);
+    // 頁數由階段 1 定下（這裡是 2 頁）；階段 2 多寫一頁，第 3 頁就會沒有 purpose，
+    // 而第 2 頁的 content 也可能被塞到別的 purpose 底下——只能整批擋下。
+    stubTextProvider((attempt) =>
+      attempt === 1
+        ? deckReply([units(10), units(11)])
+        : deckReply([units(10), units(11), units(12)]),
+    );
+    const errorLines: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errorLines.push(String(line));
+    });
+    restore.push(() => spy.mockRestore());
+
+    const { status, body } = await generateDeck(project.id);
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("CODEX_OUTLINE_COUNT_INVALID");
+    // 階段 2 不重試頁數：多跑兩輪只是白燒配額。
+    expect(prompts).toHaveLength(2);
+    const logs = errorLines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.event === "outline_count_invalid");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ requestedCount: 2, returnedCount: 3, attempt: 1 });
+    const after = await get<PresentationProject>(`/api/projects/${project.id}`);
+    expect(after.slides.map((item) => item.content)).toEqual(before);
   });
 
   it("單頁重生的某一輪回覆不合 schema 時整個請求失敗，不會默默落地上一輪的超標草稿", async (context) => {
@@ -367,14 +422,15 @@ describe("大綱超標收斂的補充情境", () => {
     const project = await createProject();
     const before = project.slides.map((item) => item.content);
     stubTextProvider((attempt) =>
-      attempt === 1 ? deckReply([units(HARD_LIMIT + 60), units(10)]) : { rationale: "缺了 slides" },
+      attempt <= 2 ? deckReply([units(HARD_LIMIT + 60), units(10)]) : { rationale: "缺了 slides" },
     );
     captureWarnings();
 
     const { status } = await generateDeck(project.id);
 
     expect(status).not.toBe(200);
-    expect(prompts).toHaveLength(2);
+    // 規劃 + 第一輪寫作（超標）+ 第二輪寫作（壞回覆）。
+    expect(prompts).toHaveLength(3);
     const after = await get<PresentationProject>(`/api/projects/${project.id}`);
     expect(after.slides.map((item) => item.content)).toEqual(before);
   });

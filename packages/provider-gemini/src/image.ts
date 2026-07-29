@@ -33,7 +33,7 @@ export interface GeminiImageOptions {
 }
 
 // 與 provider-openai 的 chat transport 對齊：單次請求塞太多張圖會撐爆 JSON body。
-const MAX_REFERENCES = 8;
+export const MAX_REFERENCES = 8;
 
 interface InlineDataPart {
   inlineData: { mimeType: string; data: string };
@@ -133,6 +133,9 @@ export class GeminiImageProvider implements ImageProvider {
       imageEditing: true,
       maskedEditing: true,
       multipleReferenceImages: true,
+      // 宣告出來，jobs.ts 才能在組 references 時就按優先序截斷；下面的 throw 仍留著當
+      // 最後一道防線（provider 被別的呼叫端直接使用時它是唯一的把關）。
+      maxReferenceImages: MAX_REFERENCES,
       supportedSizes: [{ width: 1920, height: 1080 }],
       reproducibleParameters: [],
     };

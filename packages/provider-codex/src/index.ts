@@ -399,6 +399,9 @@ function preflightCommand(executable: string, args: readonly string[]): Promise<
   });
 }
 
+/** Codex app-server 單次請求可附的影像張數上限（capabilities 與送出前的把關共用）。 */
+const MAX_CODEX_REFERENCES = 8;
+
 export class CodexImageSpikeProvider implements ImageProvider {
   readonly id: string;
   readonly name = "Codex 圖片生成（軟隔離）";
@@ -411,6 +414,7 @@ export class CodexImageSpikeProvider implements ImageProvider {
     imageEditing: true,
     maskedEditing: true,
     multipleReferenceImages: true,
+    maxReferenceImages: MAX_CODEX_REFERENCES,
     supportedSizes: [{ width: 1920, height: 1080 }],
     reproducibleParameters: [],
   };
@@ -522,8 +526,8 @@ export class CodexImageSpikeProvider implements ImageProvider {
       }
     }
     if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-    if (request.references.length > 8)
-      throw new Error("Codex accepts at most 8 reference images per slide");
+    if (request.references.length > MAX_CODEX_REFERENCES)
+      throw new Error(`Codex accepts at most ${MAX_CODEX_REFERENCES} reference images per slide`);
     if (Object.keys(request.parameters).length > 0)
       throw new Error("Codex soft-sandbox provider parameters are not supported");
     if (

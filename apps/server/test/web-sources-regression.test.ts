@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { PresentationProject, SourceAsset } from "@slide-maker/core";
+import { SOURCE_COUNT_LIMIT, type PresentationProject, type SourceAsset } from "@slide-maker/core";
 import { createApp, type AppDependencies } from "../src/app.js";
 import type { WebSearchResult } from "../src/web-capture.js";
 
@@ -217,8 +217,8 @@ describe("搜尋來源落地（既有路徑不得改變）", () => {
 
   it("撞上專案來源上限時，已落地但排不進去的來源資產目錄被回收（不留孤兒）", async () => {
     const project = await createProject();
-    // 先把專案填到 100 份來源（`current.sources.length >= 100` 的上限），每一份都要抓得到正文。
-    for (let batch = 0; batch < 5; batch += 1) {
+    // 先把專案填到上限（份數上限的常數就是伺服器用的那一份），每一份都要抓得到正文。
+    for (let batch = 0; batch < SOURCE_COUNT_LIMIT / 20; batch += 1) {
       const sources = Array.from({ length: 20 }, (_value, index) => {
         const n = batch * 20 + index;
         const url = `https://example.com/limit/${n}`;
@@ -229,19 +229,23 @@ describe("搜尋來源落地（既有路徑不得改變）", () => {
       expect(status).toBe(201);
     }
     const sourcesDir = join(dataRoot, "projects", project.id, "assets", "sources");
-    expect(await readdir(sourcesDir)).toHaveLength(100);
+    expect(await readdir(sourcesDir)).toHaveLength(SOURCE_COUNT_LIMIT);
 
-    // 第 101 份：materialize 會先把它寫到磁碟，交易再撞上上限整筆回滾（409 SOURCE_PROJECT_LIMIT）。
+    // 再一份：materialize 會先把它寫到磁碟，交易再撞上上限整筆回滾（409 SOURCE_COUNT_LIMIT）。
     const overflowUrl = "https://example.com/limit/overflow";
     bodyByUrl.set(overflowUrl, "這一份放不進去。");
     const response = await post(`/api/projects/${project.id}/web-sources`, {
       sources: [{ url: overflowUrl, title: "Overflow", summary: "摘要" }],
     });
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { error?: string }).error).toBe("SOURCE_PROJECT_LIMIT");
+    // 份數與容量分成兩個碼：撞到哪一條決定使用者的下一步（刪幾份 vs 刪大的那幾份）。
+    const failure = (await response.json()) as { error?: string; message?: string };
+    expect(failure.error).toBe("SOURCE_COUNT_LIMIT");
+    // 訊息要帶實際數字，前端不得自己再寫一份（舊版前端硬編的「100 份」就是這樣過期的）。
+    expect(failure.message).toContain(String(SOURCE_COUNT_LIMIT));
     // 那份已落地卻永遠進不了專案的資產目錄必須被回收：目錄數維持 100，沒有第 101 個孤兒
     // （每重試一次多一份的話，這裡會是 101、102…）。
-    expect(await readdir(sourcesDir)).toHaveLength(100);
+    expect(await readdir(sourcesDir)).toHaveLength(SOURCE_COUNT_LIMIT);
   });
 
   it("擷取後正規化成既有來源的網址：原地更新，不留孤兒資產", async () => {

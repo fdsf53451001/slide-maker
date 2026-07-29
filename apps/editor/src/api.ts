@@ -446,9 +446,11 @@ export const api = {
         body: file,
       },
     );
-    const body = (await response.json()) as PresentationProject | { error?: string };
-    if (!response.ok)
-      throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
+    const body = (await response.json()) as PresentationProject | ApiFailure;
+    // 用 `failureMessage()` 而不是只取 `error`：伺服器的上限訊息帶著實際數字（「已達 200
+    // 份上限（目前 200 份）」），只顯示錯誤碼等於把那份唯一的真相丟掉，前端就得自己再寫
+    // 一份數字——而那份必定跟著漂。
+    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
     return body as PresentationProject;
   },
   searchWebSources: (projectId: string, query: string, limit = 8, textEngine?: string) =>

@@ -19,7 +19,7 @@ import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.
  *  - 回傳：`data[0].b64_json`（媒體型別由 `data[0].media_type` 宣告，常見 image/jpeg 或 image/png）。
  */
 
-const MAX_OPENROUTER_REFERENCES = 8;
+export const MAX_OPENROUTER_REFERENCES = 8;
 
 interface OpenRouterReference {
   type: "image_url";

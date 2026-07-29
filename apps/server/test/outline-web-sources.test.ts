@@ -18,8 +18,17 @@ const MODEL_BODY_CANARY = "MODEL-OUTPUT-BODY-CANARY";
 
 interface OutlinePayload {
   topic: string;
-  sourceCatalog: { id: string; name: string; url?: string; summary: string }[];
-  uploadedSources: { id: string; name: string; url?: string; locator?: string; text: string }[];
+  sourceCatalog: { ref: string; name: string; kind: string; url?: string; summary: string }[];
+  /** 階段 2 才有：跨頁去重後的正文節錄，`source` 指回目錄的 ref。 */
+  uploadedSources?: {
+    ref: string;
+    source?: string;
+    name: string;
+    url?: string;
+    locator?: string;
+    text: string;
+  }[];
+  slides?: { purpose: string; sourceRefs: string[]; imageRefs: string[]; excerptRefs: string[] }[];
   searchedSources: Record<string, unknown>[];
 }
 
@@ -30,6 +39,15 @@ function untrustedPayload(prompt: string): OutlinePayload {
   expect(index).toBeGreaterThan(-1);
   return JSON.parse(prompt.slice(index + marker.length)) as OutlinePayload;
 }
+
+/**
+ * 大綱是兩次獨立呼叫：`prompts[0]` 是規劃（只有目錄），`prompts[1]` 之後才是寫作（帶節錄）。
+ * 兩份 payload 形狀不同，測試要指名自己驗的是哪一階段。
+ */
+const planPayload = (prompts: string[]) => untrustedPayload(prompts[0]!);
+const draftPayload = (prompts: string[], round = 1) => untrustedPayload(prompts[round]!);
+const excerptText = (payload: OutlinePayload) =>
+  (payload.uploadedSources ?? []).map((source) => source.text).join("\n");
 
 describe("大綱生成的來源資料流", () => {
   let appServer: Server | undefined;
@@ -53,8 +71,10 @@ describe("大綱生成的來源資料流", () => {
   let captureStatus: "full" | "summary-only" = "full";
   const searchCalls: string[] = [];
   const prompts: string[] = [];
-  let outlineOutputSchema:
-    { required?: string[]; properties?: Record<string, unknown> } | undefined;
+  /** 逐次記下 response_format 的 schema：兩個階段的 schema 不同，只留最後一份會驗錯階段。 */
+  const outputSchemas: (
+    { required?: string[]; properties?: Record<string, unknown> } | undefined
+  )[] = [];
   const savedEnv: Record<string, string | undefined> = {};
   // 逐 URL 覆寫抓取到的正文，用來分辨哪一頁的內容進了 prompt；沒覆寫的沿用 bodyText。
   const bodyByUrl = new Map<string, string>();
@@ -89,7 +109,7 @@ describe("大綱生成的來源資料流", () => {
             };
           };
         };
-        outlineOutputSchema = body.response_format?.json_schema?.schema;
+        outputSchemas.push(body.response_format?.json_schema?.schema);
         const user = body.messages?.find((message) => message.role === "user");
         const parts = Array.isArray(user?.content) ? (user.content as { text?: string }[]) : [];
         prompts.push(parts.map((part) => part.text ?? "").join(""));
@@ -100,9 +120,12 @@ describe("大綱生成的來源資料流", () => {
             : 1;
         const slides = Array.from({ length: returnedCount }, (_, index) => ({
           purpose: `市場概況 ${index + 1}`,
+          // 階段 2 要把計畫的錨點原樣回聲，伺服器才驗得動「第 N 筆 content 對應第 N 頁」。
+          planRef: `P${index + 1}`,
           // high 密度的硬上限是 270 個中文字寬，400 字必定超出並觸發重試。
           content:
-            outlineMode === "overflow-once" && attempt === 1
+            // 第 1 次呼叫是規劃（不看 content），寫作是第 2 次——超標要發生在那一輪。
+            outlineMode === "overflow-once" && attempt === 2
               ? "台灣電動車掛牌數持續成長。".repeat(31)
               : outlineMode === "declared-mismatch" ||
                   outlineMode === "declared-missing" ||
@@ -113,6 +136,10 @@ describe("大綱生成的來源資料流", () => {
                 : "台灣電動車掛牌數持續成長。",
           narrative: "先講規模再講基礎建設",
           layoutHint: "單欄重點",
+          // S1 一定存在（目錄以 S1…Sn 編號），模型「有挑到來源」才是常態路徑；
+          // 回空陣列會觸發 outline_refs_unmatched 的降級 log，那是另外一條測試在驗的。
+          sourceRefs: ["S1"],
+          imageRefs: [],
           sourceUrls: [SEARCH_URL],
         }));
         res.end(
@@ -198,7 +225,7 @@ describe("大綱生成的來源資料流", () => {
 
   beforeEach(() => {
     prompts.length = 0;
-    outlineOutputSchema = undefined;
+    outputSchemas.length = 0;
     searchCalls.length = 0;
     bodyByUrl.clear();
     outlineMode = "valid";
@@ -291,18 +318,20 @@ describe("大綱生成的來源資料流", () => {
     const project = await createProject();
     await generateOutline(project.id);
 
-    const payload = untrustedPayload(prompts[0]!);
-    const excerpts = payload.uploadedSources.map((source) => source.text).join("\n");
-    expect(excerpts).toContain(BODY_MARKER);
-    expect(payload.uploadedSources.every((source) => source.url === SEARCH_URL)).toBe(true);
-    expect(payload.sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
-    expect(outlineOutputSchema?.properties?.actualSlideCount).toEqual({
+    // 規劃那一輪只拿得到目錄；正文要等寫作那一輪。
+    expect(planPayload(prompts).uploadedSources).toBeUndefined();
+    expect(planPayload(prompts).sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
+    const draft = draftPayload(prompts);
+    expect(excerptText(draft)).toContain(BODY_MARKER);
+    expect((draft.uploadedSources ?? []).every((source) => source.url === SEARCH_URL)).toBe(true);
+    // 頁數契約掛在規劃那一階段（寫作階段照計畫寫，不再決定頁數）。
+    expect(outputSchemas[0]?.properties?.actualSlideCount).toEqual({
       type: ["integer", "null"],
       minimum: 1,
     });
-    expect(outlineOutputSchema?.required).toContain("actualSlideCount");
+    expect(outputSchemas[0]?.required).toContain("actualSlideCount");
     // 整份大綱 route 必須接上完整共用規則，不能自行複製一份日後逐漸分歧的版本。
-    expect(prompts[0]).toContain(outlineStructureInstruction());
+    expect(prompts[1]).toContain(outlineStructureInstruction());
   });
 
   it("摘要是空字串的來源（貼上網址就是這樣）在目錄裡改用正文開頭，不是一片空白", async (context) => {
@@ -314,7 +343,7 @@ describe("大綱生成的來源資料流", () => {
     const project = await createProject();
     await generateOutline(project.id);
 
-    const payload = untrustedPayload(prompts[0]!);
+    const payload = planPayload(prompts);
     const landed = payload.sourceCatalog.find((source) => source.url === SEARCH_URL);
     expect(landed).toBeDefined();
     expect(landed!.summary).toContain(BODY_MARKER);
@@ -325,10 +354,11 @@ describe("大綱生成的來源資料流", () => {
     const project = await createProject();
     await generateOutline(project.id);
 
-    const payload = untrustedPayload(prompts[0]!);
-    expect(payload.searchedSources).toEqual([{ url: SEARCH_URL, title: "電動車年報" }]);
-    for (const item of payload.searchedSources)
-      expect(Object.keys(item).sort()).toEqual(["title", "url"]);
+    for (const payload of [planPayload(prompts), draftPayload(prompts)]) {
+      expect(payload.searchedSources).toEqual([{ url: SEARCH_URL, title: "電動車年報" }]);
+      for (const item of payload.searchedSources)
+        expect(Object.keys(item).sort()).toEqual(["title", "url"]);
+    }
   });
 
   it("sourceUrls 仍對應得到 materialize 出來的來源 id", async (context) => {
@@ -348,11 +378,8 @@ describe("大綱生成的來源資料流", () => {
     const second = await generateOutline(project.id, true);
 
     expect(second.sources.filter((source) => source.metadata.url === SEARCH_URL)).toHaveLength(1);
-    expect(
-      untrustedPayload(prompts[1]!)
-        .uploadedSources.map((source) => source.text)
-        .join("\n"),
-    ).toContain(BODY_MARKER);
+    // prompts 依序是：第一次生成的規劃／寫作，第二次生成的規劃／寫作。
+    expect(excerptText(untrustedPayload(prompts[3]!))).toContain(BODY_MARKER);
   });
 
   it("多個 chunk 的長正文不是只送開頭一塊，文件後段也撈得到", async (context) => {
@@ -360,11 +387,11 @@ describe("大綱生成的來源資料流", () => {
     const project = await createProject();
     await generateOutline(project.id);
 
-    const payload = untrustedPayload(prompts[0]!);
-    expect(payload.uploadedSources.length).toBeGreaterThan(1);
-    const excerpts = payload.uploadedSources.map((source) => source.text).join("\n");
-    // 結尾落在第 50 幾塊，遠在保底名額（40）之外：撈得到就代表當次生成確實把剛
-    // materialize 出來的來源補進了索引，而不是靠「取前 N 塊」矇到。
+    const payload = draftPayload(prompts);
+    expect((payload.uploadedSources ?? []).length).toBeGreaterThan(1);
+    const excerpts = excerptText(payload);
+    // 結尾落在第 50 幾塊，遠在逐頁名額之外：撈得到就代表當次生成確實把剛 materialize
+    // 出來的來源補進了索引，而不是靠「取前 N 塊」矇到。
     expect(excerpts).toContain(BODY_TAIL_MARKER);
     expect(excerpts).toContain(BODY_MARKER);
   });
@@ -406,18 +433,15 @@ describe("大綱生成的來源資料流", () => {
 
     const outlined = await generateOutline(project.id);
 
-    expect(prompts).toHaveLength(2);
+    // 規劃 1 次 + 寫作 2 次。
+    expect(prompts).toHaveLength(3);
     // 搜尋與抓取都在重試迴圈之外。若哪天被搬進迴圈，配額會隨重試次數翻倍，
     // 而且每一輪都會再 materialize 一次同樣的網頁。
     expect(searchCalls).toHaveLength(1);
     expect(outlined.sources.filter((source) => source.metadata.url === SEARCH_URL)).toHaveLength(1);
     // 重試的 prompt 必須帶著同一批已抓下來的正文，而不是退回只有摘要的狀態。
-    expect(
-      untrustedPayload(prompts[1]!)
-        .uploadedSources.map((source) => source.text)
-        .join("\n"),
-    ).toContain(BODY_MARKER);
-    expect(prompts[1]).toContain("UNTRUSTED_INPUT");
+    expect(excerptText(draftPayload(prompts, 2))).toContain(BODY_MARKER);
+    expect(prompts[2]).toContain("UNTRUSTED_INPUT");
   });
 
   it("模型宣告頁數與實際陣列不一致但實際頁數有效時接受並記安全 warning", async (context) => {
@@ -610,9 +634,9 @@ describe("大綱生成的來源資料流", () => {
     const project = await createProject();
     await generateOutline(project.id);
 
-    const prompt = prompts[0]!;
+    const prompt = prompts[1]!;
     const instructions = prompt.slice(0, prompt.indexOf("\nUNTRUSTED_INPUT\n"));
-    // knownSourceContext 最多給 40 塊、每塊截在 1600 字，且每份來源還有配額上限。
+    // 每頁只給少數幾塊、每塊截在 1600 字，且每份來源還有配額上限。
     // 只要 prompt 宣稱模型手上有全文，它就會停止追問覆蓋範圍，把節錄當成資料的全部。
     expect(instructions).not.toMatch(/full text/i);
     expect(instructions).toContain("uploadedSources is the only source of content");
@@ -643,13 +667,16 @@ describe("大綱生成的來源資料流", () => {
     prompts.length = 0;
     await generateOutline(project.id, true);
 
-    const payload = untrustedPayload(prompts[0]!);
-    // 內容本來就被 knownSourceContext／sourceCatalog 濾掉了；網址若還留著，模型會引用一份
-    // 自己手上沒有內容的來源，等於憑標題編造引用。
-    expect(payload.searchedSources).toEqual([{ url: SEARCH_URL, title: "電動車年報" }]);
-    expect(payload.sourceCatalog.map((source) => source.url)).not.toContain(EXCLUDED_URL);
-    expect(payload.uploadedSources.map((source) => source.url)).not.toContain(EXCLUDED_URL);
-    expect(JSON.stringify(payload)).not.toContain("機密內部評估");
+    const plan = planPayload(prompts);
+    const draft = draftPayload(prompts);
+    // 內容本來就被檢索／目錄濾掉了；網址若還留著，模型會引用一份自己手上沒有內容的來源，
+    // 等於憑標題編造引用。
+    expect(plan.searchedSources).toEqual([{ url: SEARCH_URL, title: "電動車年報" }]);
+    expect(plan.sourceCatalog.map((source) => source.url)).not.toContain(EXCLUDED_URL);
+    expect(draft.sourceCatalog.map((source) => source.url)).not.toContain(EXCLUDED_URL);
+    expect((draft.uploadedSources ?? []).map((source) => source.url)).not.toContain(EXCLUDED_URL);
+    expect(JSON.stringify(plan)).not.toContain("機密內部評估");
+    expect(JSON.stringify(draft)).not.toContain("機密內部評估");
   });
 
   it("既有的本地來源與這次抓下來的網頁一起進 prompt，不是被網頁取代", async (context) => {
@@ -668,20 +695,26 @@ describe("大綱生成的來源資料流", () => {
 
     await generateOutline(project.id);
 
-    const payload = untrustedPayload(prompts[0]!);
-    const ids = payload.uploadedSources.map((source) => source.id);
+    const plan = planPayload(prompts);
     // before.sources 與 addedSources 的合併若寫錯，最典型的結果就是本地來源整份消失。
-    expect(ids).toContain(local.id);
-    expect(payload.uploadedSources.map((source) => source.text).join("\n")).toContain(
-      "內部銷售紀錄",
-    );
-    const web = payload.uploadedSources.filter((source) => source.url === SEARCH_URL);
-    expect(web.length).toBeGreaterThan(0);
-
-    const catalogIds = payload.sourceCatalog.map((source) => source.id);
-    expect(catalogIds).toContain(local.id);
-    expect(payload.sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
+    const catalogNames = plan.sourceCatalog.map((source) => source.name);
+    expect(catalogNames).toContain(local.name);
+    expect(plan.sourceCatalog.map((source) => source.url)).toContain(SEARCH_URL);
     // 合併用 id 覆蓋而不是無腦串接，同一份來源不該在目錄裡出現兩次。
-    expect(new Set(catalogIds).size).toBe(catalogIds.length);
+    // **不驗 ref 的唯一性**：ref 是照索引現編的 S1…Sn，本來就不可能重複，那個斷言恆真。
+    // 會因為重複合併而變的是筆數與名稱。
+    expect(plan.sourceCatalog).toHaveLength(2);
+    expect(new Set(catalogNames).size).toBe(catalogNames.length);
+    expect(plan.sourceCatalog.filter((source) => source.url === SEARCH_URL)).toHaveLength(1);
+
+    const draft = draftPayload(prompts);
+    // 節錄以 ref 指回目錄，不再帶 36 字元的 UUID；本地來源的正文仍必須進得了 prompt。
+    const localRef = plan.sourceCatalog.find((source) => source.name === local.name)?.ref;
+    expect(localRef).toBeDefined();
+    expect((draft.uploadedSources ?? []).map((source) => source.source)).toContain(localRef);
+    expect(excerptText(draft)).toContain("內部銷售紀錄");
+    expect(
+      (draft.uploadedSources ?? []).filter((source) => source.url === SEARCH_URL).length,
+    ).toBeGreaterThan(0);
   });
 });
