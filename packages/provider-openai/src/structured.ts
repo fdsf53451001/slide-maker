@@ -1,6 +1,9 @@
 import {
+  attachProviderCallFacts,
+  mergeUsage,
   type ProviderAvailability,
   type ProviderPreflightResult,
+  type ProviderUsage,
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
@@ -80,6 +83,15 @@ export class OpenAiStructuredTextProvider implements StructuredTextProvider {
       "OPENAI_TEXT_EMPTY",
       "OPENAI_TEXT_INVALID",
     ]);
+    /**
+     * **每一輪（含失敗輪）的用量都要併進來，而且要在丟棄 payload 之前併。**
+     *
+     * 這個迴圈的每一輪都是一個真的請求、一份完整的長 prompt：模型回了東西、只是不是合法
+     * JSON，輸出 token 照算。只回傳最後一輪等於把成本低估到三分之一，而且正好在重試跑滿的
+     * 那些最貴的情況低估最多。應用層的 `OUTLINE_MAX_ATTEMPTS` 也是三輪，兩層相乘後一次
+     * 「生成大綱」最壞是 9 個真實請求——帳本必須看得到全部。
+     */
+    let accumulated: ProviderUsage | undefined;
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
@@ -104,16 +116,27 @@ export class OpenAiStructuredTextProvider implements StructuredTextProvider {
           ...(request.signal ? { signal: request.signal } : {}),
         });
         // usage 與內容出自**同一份**已解析的 payload：先前只挑 `choices[0]` 而把它整個丟掉。
+        // 併進 accumulator 的動作必須排在解析之前——`extractContent`／`parseLooseJson` 正是
+        // 這條路上會 throw 的那兩個，排在它們之後就等於「失敗輪的用量照樣遺失」。
+        accumulated = mergeUsage(accumulated, parseChatCompletionsUsage(payload));
         return {
           value: parseLooseJson(extractContent(payload)),
-          usage: parseChatCompletionsUsage(payload),
+          usage: accumulated,
+          requests: attempt,
         };
       } catch (error) {
         lastError = error;
         const code = error instanceof SafeProviderError ? error.code : undefined;
-        if (attempt === 3 || !code || !transient.has(code)) throw error;
+        if (attempt === 3 || !code || !transient.has(code))
+          throw attachProviderCallFacts(error, {
+            ...(accumulated === undefined ? {} : { usage: accumulated }),
+            requests: attempt,
+          });
       }
     }
-    throw lastError;
+    throw attachProviderCallFacts(lastError, {
+      ...(accumulated === undefined ? {} : { usage: accumulated }),
+      requests: 3,
+    });
   }
 }

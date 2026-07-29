@@ -638,6 +638,62 @@ describe("structured text retry policy", () => {
     expect(calls).toHaveLength(3);
   });
 
+  /**
+   * 每一輪都是一個真的請求、一份完整的長 prompt（推理模型的 thoughts token 常是大宗），
+   * 所以**每一輪的 usageMetadata 都要累加**。只回報最後一輪會把成本低估到三分之一，
+   * 而應用層的 `OUTLINE_MAX_ATTEMPTS` 也是三輪——兩層相乘最壞是 9 個真實請求。
+   */
+  it("累加重試每一輪的 usageMetadata，並回報真實請求數", async () => {
+    let call = 0;
+    const calls = mockFetch(() => {
+      call += 1;
+      return {
+        json: {
+          candidates: [{ content: { parts: [{ text: call < 3 ? "不是 JSON" : "{}" }] } }],
+          usageMetadata: {
+            promptTokenCount: 100 * call,
+            candidatesTokenCount: 10 * call,
+            thoughtsTokenCount: call,
+            totalTokenCount: 111 * call,
+          },
+        },
+      };
+    });
+    const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
+    const result = await provider.runStructured({ prompt: "hi", outputSchema: {} });
+    expect(calls).toHaveLength(3);
+    expect(result.usage).toEqual({
+      inputTokens: 600,
+      outputTokens: 60,
+      reasoningTokens: 6,
+      totalTokens: 666,
+      reported: true,
+    });
+    expect(result.requests).toBe(3);
+  });
+
+  /** 三輪都失敗＝最貴的情況；用量必須跟著錯誤走，否則帳本上只剩一筆 reported:false。 */
+  it("三輪都失敗時，累加的用量掛在 SafeProviderError 上", async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return {
+        json: {
+          candidates: [{ content: { parts: [{ text: "不是 JSON" }] } }],
+          usageMetadata: { promptTokenCount: 100 * call, candidatesTokenCount: 10 * call },
+        },
+      };
+    });
+    const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
+    const error = (await provider
+      .runStructured({ prompt: "hi", outputSchema: {} })
+      .catch((thrown: unknown) => thrown)) as SafeProviderError;
+    expect(error).toBeInstanceOf(SafeProviderError);
+    expect(error.code).toBe("GEMINI_RESPONSE_INVALID");
+    expect(error.usage).toEqual({ inputTokens: 600, outputTokens: 60, reported: true });
+    expect(error.requests).toBe(3);
+  });
+
   it("does not retry a non-transient transport failure", async () => {
     const calls = mockFetch(() => ({ status: 429, json: { error: {} } }));
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
@@ -678,6 +734,39 @@ function grounded(chunks: unknown[], supports: unknown[]): unknown {
     ],
   };
 }
+
+describe("往返成功之後才失敗的搜尋", () => {
+  /**
+   * grounding 回應常是整個專案裡最大的單筆：整包燒完卻沒有一筆可驗證的候選，產出是零，
+   * 而使用者的直覺反應是再按一次。usage 必須跟著 `GEMINI_WEB_SEARCH_EMPTY` 一起上去。
+   */
+  it("GEMINI_WEB_SEARCH_EMPTY 帶著這次的用量", async () => {
+    mockFetch(() => ({
+      json: {
+        ...(grounded([], []) as { candidates: unknown[] }),
+        usageMetadata: {
+          promptTokenCount: 3_000,
+          candidatesTokenCount: 800,
+          thoughtsTokenCount: 1_200,
+          totalTokenCount: 5_000,
+        },
+      },
+    }));
+    const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
+    const error = (await provider
+      .search("q", 5, "zh-TW")
+      .catch((thrown: unknown) => thrown)) as SafeProviderError;
+    expect(error).toBeInstanceOf(SafeProviderError);
+    expect(error.code).toBe("GEMINI_WEB_SEARCH_EMPTY");
+    expect(error.usage).toEqual({
+      inputTokens: 3_000,
+      outputTokens: 800,
+      reasoningTokens: 1_200,
+      totalTokens: 5_000,
+      reported: true,
+    });
+  });
+});
 
 describe("grounding aggregation", () => {
   it("de-duplicates a segment that supports the same chunk twice", async () => {

@@ -259,7 +259,11 @@ describe("模型用量帳本與 API", () => {
       reportedCalls: 0,
       inputTokens: 0,
     });
-    expect(summary.unreportedCalls).toBeGreaterThanOrEqual(queued.length);
+    // mock provider 沒碰任何模型、沒燒配額，所以歸在 localCalls 而**不是** unreportedCalls
+    // （後者的語意是「燒了配額但不知道燒多少」）。
+    expect(summary.localCalls).toBeGreaterThanOrEqual(queued.length);
+    expect(summary.unreportedCalls).toBe(0);
+    expect(summary.byCapability.image?.localCalls).toBe(queued.length);
   }, 60_000);
 
   it("GET /usage 對不存在的專案回 404，對沒有帳本的專案回全零", async (context) => {

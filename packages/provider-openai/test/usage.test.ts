@@ -71,16 +71,25 @@ describe("parseChatCompletionsUsage（形狀 a）", () => {
   });
 
   /**
-   * 套錯解析器的實際後果比「整筆解不出來」更陰險：兩個形狀**只有 `total_tokens` 同名**，
-   * 所以它會回一個 `reported:true` 但缺了 input/output 的殘缺結果，聚合後看起來像
-   * 「這個模型只用了 total、沒有輸入輸出」。這一條就是釘住那個界線。
+   * 套錯解析器時**整筆不採信**。少了形狀判別的話，兩個形狀唯一同名的 `total_tokens` 會被
+   * 撿到，回一個 `reported:true` 但缺了 input/output 的殘缺結果——那看起來像「這個 gateway
+   * 只回了部分欄位」，比整筆解不出來更難察覺。所以判別不過時**不可**退而求其次去撿 total。
    */
-  it("套到 images 端點的形狀上只會撿到共用的 total，input/output 全部漏掉", () => {
+  it("套到 images 端點的形狀上一律 reported:false，連同名的 total 都不撿", () => {
     const usage = parseChatCompletionsUsage({ usage: IMAGES_API_USAGE });
-    expect(usage.inputTokens).toBeUndefined();
-    expect(usage.outputTokens).toBeUndefined();
-    expect(usage.imageTokens).toBeUndefined();
-    expect(usage.totalTokens).toBe(241);
+    expect(usage).toEqual({ reported: false });
+    expect(usage.totalTokens).toBeUndefined();
+  });
+
+  /**
+   * OpenRouter 只是另一個 base URL：設成文字／搜尋模型時走的就是這個解析器。`cost` 只在
+   * 影像那條讀的話，金額 UI 一開，文字那一大塊的錢會完全不見。
+   */
+  it("讀得到 OpenRouter 的 cost（同一個 /chat/completions 形狀，只是多一個欄位）", () => {
+    expect(parseChatCompletionsUsage({ usage: OPENROUTER_CHAT_USAGE }).cost).toEqual({
+      amount: 0.0123,
+      unit: "openrouter-credit",
+    });
   });
 });
 
@@ -103,15 +112,22 @@ describe("parseImagesApiUsage（形狀 b）", () => {
     expect(usage.inputTokens).toBe(12);
   });
 
-  it("反過來套到 chat 形狀上也一樣只撿得到共用的 total", () => {
-    const usage = parseImagesApiUsage({ usage: CHAT_COMPLETIONS_USAGE });
-    expect(usage.inputTokens).toBeUndefined();
-    expect(usage.outputTokens).toBeUndefined();
-    expect(usage.totalTokens).toBe(316);
+  it("反過來套到 chat 形狀上也一樣整筆不採信（理由同上）", () => {
+    expect(parseImagesApiUsage({ usage: CHAT_COMPLETIONS_USAGE })).toEqual({ reported: false });
+    expect(parseImagesApiUsage({ usage: OPENROUTER_IMAGE_USAGE })).toEqual({ reported: false });
   });
 });
 
-describe("parseOpenRouterUsage（形狀 c）", () => {
+/**
+ * `parseOpenRouterUsage` 是 `parseChatCompletionsUsage` 的別名：OpenRouter 就是另一個
+ * base URL 的 `/chat/completions`，`cost` 只是它多回的一個 optional 欄位。這一組測試因此
+ * 也順便釘住「兩者不得再分岔」。
+ */
+describe("parseOpenRouterUsage（chat 形狀＋cost）", () => {
+  it("與 chat 解析器是同一個函式", () => {
+    expect(parseOpenRouterUsage).toBe(parseChatCompletionsUsage);
+  });
+
   it("images 端點：token 之外還帶回 cost，且存原值不換算", () => {
     expect(parseOpenRouterUsage({ usage: OPENROUTER_IMAGE_USAGE })).toEqual({
       inputTokens: 0,

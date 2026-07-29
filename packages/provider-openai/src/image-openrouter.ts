@@ -3,6 +3,7 @@ import {
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
+  withProviderUsage,
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
@@ -101,14 +102,17 @@ export async function generateViaOpenRouter(
     },
     ...(signal ? { signal } : {}),
   });
-  const { mediaType, bytes } = extractOpenRouterImage(payload);
   // OpenRouter 的 images 端點雖然也叫 images，欄位名卻同 chat（prompt/completion_tokens）
-  // 且多一個 `cost`——所以它有自己的解析器，不與 (a)／(b) 共用。
+  // 且多一個 `cost`——那就是 (a) 的形狀，`parseOpenRouterUsage` 只是同一個函式的別名。
+  // 先解 usage 再解圖：解不出圖是往返成功之後才失敗的，token 已經燒掉了。
   const usage = parseOpenRouterUsage(payload);
-  // png 走結構驗證＋canvas 正規化；jpeg/webp 等改走 raster→canvas png 轉檔。
-  if (mediaType === "image/png") {
-    validatePngStructure(Buffer.from(bytes));
-    return { bytes: normalizePngToCanvas(bytes, request.width, request.height), usage };
-  }
-  return { bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height), usage };
+  return withProviderUsage(usage, () => {
+    const { mediaType, bytes } = extractOpenRouterImage(payload);
+    // png 走結構驗證＋canvas 正規化；jpeg/webp 等改走 raster→canvas png 轉檔。
+    if (mediaType === "image/png") {
+      validatePngStructure(Buffer.from(bytes));
+      return { bytes: normalizePngToCanvas(bytes, request.width, request.height), usage };
+    }
+    return { bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height), usage };
+  });
 }

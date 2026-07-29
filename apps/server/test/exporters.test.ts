@@ -16,6 +16,51 @@ import {
   withPageNumber,
 } from "../src/exporters.js";
 import { FileProjectRepository } from "../src/repository.js";
+import { UsageLedger } from "../src/usage-ledger.js";
+
+/**
+ * `.slide-project` 是使用者**分享出去**的檔案，而 `collectFiles()` 是無條件遞迴整個專案
+ * 目錄的——任何被放進那個目錄的東西都會跟著出門。用量帳本（模型名、每次呼叫的時間戳、
+ * token 數、實際扣款金額）因此刻意住在 `<DATA_ROOT>/usage/` 而不是專案目錄底下。
+ *
+ * 它在 zip 裡還是 100% 死重（匯入端只讀 `assets/` 前綴），並且會吃掉 CLAUDE.md 那條
+ * 32 MiB 的匯出預算。
+ */
+describe("slide-project 匯出不得夾帶用量帳本", () => {
+  it("帳本寫過之後匯出，zip 裡找不到任何一筆用量紀錄", async () => {
+    const repository = new FileProjectRepository(
+      await mkdtemp(join(tmpdir(), "slide-maker-usage-export-")),
+    );
+    await repository.initialize();
+    const project = createProject({ topic: "用量", brief: { desiredSlideCount: 1 } });
+    await repository.saveProject(project);
+    const ledger = new UsageLedger(repository);
+    await ledger.recordProject(project.id, {
+      capability: "text",
+      operation: "outline-generate",
+      model: "gpt-5.6-luna",
+      modelEntryId: "entry-1",
+      providerKind: "openai",
+      ok: true,
+      usage: {
+        inputTokens: 12_345,
+        reported: true,
+        cost: { amount: 0.42, unit: "openrouter-credit" },
+      },
+    });
+    await ledger.idle();
+
+    const bytes = await exportPresentation(repository, project, "slide-project");
+    const files = unzipSync(bytes);
+    expect(Object.keys(files)).not.toContain("usage.jsonl");
+    expect(Object.keys(files).some((name) => name.includes("usage"))).toBe(false);
+    // 解壓後逐檔確認（zip 是壓縮過的，比對原始位元組等於什麼都沒驗）：模型名、token 數
+    // 與扣款金額都不該出現在任何一個 entry 裡。
+    const decoded = Object.values(files).map((entry) => Buffer.from(entry).toString("utf8"));
+    for (const secret of ["gpt-5.6-luna", "12345", "openrouter-credit"])
+      expect(decoded.some((entry) => entry.includes(secret))).toBe(false);
+  });
+});
 
 describe("PPTX module interop", () => {
   it("accepts direct, wrapped, and double-wrapped constructors", () => {

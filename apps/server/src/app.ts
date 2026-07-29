@@ -37,6 +37,8 @@ import {
   type StructuredTextProvider,
   type StructuredTextResult,
   type StyleReferenceImage,
+  type ProviderUsage,
+  type WebSearchOutcome,
 } from "@slide-maker/core";
 import {
   informationDensityInstruction,
@@ -100,7 +102,9 @@ import {
   classifyImageDescriptionFailure,
   describeImage,
   imageDescriptionFields,
+  parseImageDescription,
   shouldDescribeImageSource,
+  type DescribeImageResult,
   type ImageDescriptionFailure,
 } from "./image-description.js";
 import {
@@ -126,6 +130,15 @@ import { UsageLedger, type UsageRecordInput } from "./usage-ledger.js";
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
 const OUTLINE_MAX_ATTEMPTS = 3;
+/**
+ * `GET /usage` 等待背景記帳收尾的上限。
+ *
+ * 記帳是 fire-and-forget 的，剛跑完的那一筆可能還在途中；等一下才不會少算。但這個等待
+ * **一定要有期限**：少算最後一筆是可接受的誤差，讓統計頁轉不完不是。
+ */
+const USAGE_SUMMARY_IDLE_MS = 500;
+/** 關機時 flush 帳本的上限（見 `app.locals.backgroundWork`）。 */
+const USAGE_SHUTDOWN_FLUSH_MS = 2_000;
 
 interface OutlineCountErrorDetails {
   projectId: string;
@@ -682,11 +695,40 @@ export async function createApp(
   };
 
   /**
+   * 一次 provider 呼叫的用量欄位（成功路徑）。
+   *
+   * `requests` 與 `usage` 分開帶：gateway 不回報用量時 usage 是空的，但「provider 自己
+   * 內部重試了幾次」仍然問得出來——那是 UI 上唯一能解釋成本的東西。
+   */
+  const usageCallFields = (outcome: {
+    usage?: ProviderUsage;
+    requests?: number;
+  }): Pick<UsageRecordInput, "usage" | "requests"> => ({
+    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...(outcome.requests === undefined ? {} : { requests: outcome.requests }),
+  });
+
+  /**
+   * 失敗的呼叫身上的用量欄位。
+   *
+   * `SafeProviderError` 會帶著「往返成功之後才失敗」那些路徑的用量（搜尋回了一整包
+   * grounding 卻沒有可驗證的候選、重試三輪都不是合法 JSON、影像解不出圖）。少了這一步，
+   * 那些**最貴又零產出**的呼叫在帳本上會與「這個 gateway 不回報用量」長得一模一樣。
+   * 錯誤物件上除了這兩個欄位以外的東西一律不碰——message 與 stack 可能夾帶正文。
+   */
+  const failedCallFields = (error: unknown): Pick<UsageRecordInput, "usage" | "requests"> =>
+    error instanceof SafeProviderError ? usageCallFields(error) : {};
+
+  /**
    * 跑一次結構化文字呼叫並記帳，回傳模型的輸出值。
    *
    * 成功與失敗都記——失敗一樣燒配額，只記成功的會系統性低估，而失敗（逾時、gateway 4xx、
-   * schema 對不上）恰恰是重試迴圈跑滿三輪的那些最貴的情況。記帳一律 `void`：帳本永不
+   * 模型回了但格式不對）恰恰是重試迴圈跑滿三輪的那些最貴的情況。記帳一律 `void`：帳本永不
    * reject，也不得插進呼叫端的時序。
+   *
+   * **記帳排在 schema parse 之前**（呼叫端拿到的是未驗證的 `value`）：`ok` 的語意是
+   * 「provider 往返成功、配額已經燒掉」，而 parse 失敗時 token 一樣花光了。八條記帳路徑
+   * 對這件事必須一致。
    */
   const recordStructuredUsage = async (
     projectId: string,
@@ -697,13 +739,17 @@ export async function createApp(
     try {
       outcome = await run();
     } catch (error) {
-      void usageLedger.recordProject(projectId, { ...fields, ok: false });
+      void usageLedger.recordProject(projectId, {
+        ...fields,
+        ok: false,
+        ...failedCallFields(error),
+      });
       throw error;
     }
     void usageLedger.recordProject(projectId, {
       ...fields,
       ok: true,
-      ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+      ...usageCallFields(outcome),
     });
     return outcome.value;
   };
@@ -828,7 +874,7 @@ export async function createApp(
           sourceId,
           ...usageModelFields(provider.id),
         };
-        let described;
+        let described: DescribeImageResult;
         try {
           described = await describeImage({
             provider,
@@ -838,15 +884,21 @@ export async function createApp(
             signal,
           });
         } catch (error) {
-          void usageLedger.recordProject(projectId, { ...usageFields, ok: false });
+          void usageLedger.recordProject(projectId, {
+            ...usageFields,
+            ok: false,
+            ...failedCallFields(error),
+          });
           throw error;
         }
-        const description = described.description;
+        // 記帳排在 parse 之前，與另外四條文字路徑一致：模型回了東西＝配額已經燒掉，
+        // 格式對不對是下一個問題（見 `UsageRecordInput.ok` 與 `DescribeImageResult`）。
         void usageLedger.recordProject(projectId, {
           ...usageFields,
           ok: true,
-          ...(described.usage === undefined ? {} : { usage: described.usage }),
+          ...usageCallFields(described),
         });
+        const description = parseImageDescription(described.value);
         const fields = imageDescriptionFields(sourceId, description);
         if (!fields) throw new Error("IMAGE_DESCRIPTION_EMPTY");
         const entry = runtime.library.models.find((model) => model.id === provider.id);
@@ -904,18 +956,24 @@ export async function createApp(
         operation: "search",
         ...usageModelFields(provider.id),
       };
-      let outcome;
+      let outcome: WebSearchOutcome;
       try {
         outcome = await provider.search(query, limit, target.brief.language);
       } catch (error) {
         // 搜尋的上游有重試迴圈，每一輪都是一次真的請求；失敗不記就會低估整整幾輪。
-        void usageLedger.recordProject(project.id, { ...usageFields, ok: false });
+        // `*_WEB_SEARCH_EMPTY` 更是這條路上最貴的失敗：整段帶 grounding 的長回應燒完卻
+        // 零產出，usage 就在錯誤物件身上（見 `failedCallFields`）。
+        void usageLedger.recordProject(project.id, {
+          ...usageFields,
+          ok: false,
+          ...failedCallFields(error),
+        });
         throw error;
       }
       void usageLedger.recordProject(project.id, {
         ...usageFields,
         ok: true,
-        ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+        ...usageCallFields(outcome),
       });
       return outcome.results;
     };
@@ -1138,7 +1196,18 @@ export async function createApp(
   app.locals.usageLedger = usageLedger;
   // `index.ts` 只交這一個給 installShutdownHandlers()：關機要收尾的背景工作有哪些，是
   // 這裡（知道自己建了什麼）的事，不是啟動腳本的事。
-  app.locals.backgroundWork = combineBackgroundWork(imageDescriptions, ocrQueue);
+  {
+    const background = combineBackgroundWork(imageDescriptions, ocrQueue);
+    app.locals.backgroundWork = {
+      // 帳本最後 flush，而且是**在**其他背景工作收尾之後：記帳是 fire-and-forget 的，
+      // 沒有這一步就沒有任何東西等它，SIGTERM 時剛跑完那幾筆最貴的呼叫最容易掉。
+      // 逾時是必要的——一個觀測用檔案不該有本事拖過關機期限。
+      shutdown: async () => {
+        await background.shutdown();
+        await usageLedger.idle(USAGE_SHUTDOWN_FLUSH_MS);
+      },
+    };
+  }
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "8mb" }));
@@ -1715,7 +1784,7 @@ export async function createApp(
       operation: "style-analysis",
       ...usageModelFields(structuredText.id),
     };
-    let outcome;
+    let outcome: StructuredTextResult;
     try {
       outcome = await structuredText.runStructured({
         timeoutMs: runtime.system.codexTimeoutMs,
@@ -1724,14 +1793,10 @@ export async function createApp(
         prompt: STYLE_ANALYSIS_PROMPT,
       });
     } catch (error) {
-      void usageLedger.recordGlobal({ ...usageFields, ok: false });
+      void usageLedger.recordGlobal({ ...usageFields, ok: false, ...failedCallFields(error) });
       throw error;
     }
-    void usageLedger.recordGlobal({
-      ...usageFields,
-      ok: true,
-      ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
-    });
+    void usageLedger.recordGlobal({ ...usageFields, ok: true, ...usageCallFields(outcome) });
     const result = styleAnalysisSchema.parse(outcome.value);
     return { designSystem: renderDesignSystem(result), avoid: result.avoid };
   }
@@ -2355,7 +2420,9 @@ export async function createApp(
     const project = await repository.loadProject(projectId);
     if (!project) return response.status(404).json({ error: "Project not found" });
     // 背景記帳（圖片描述、job）可能還在途中；等它收尾才不會讓剛跑完的呼叫少算一筆。
-    await usageLedger.idle();
+    // 但只等一小段：另一個專案的批次記帳不該讓這個查詢卡著，而聚合少算最後一筆遠比
+    // 一個轉不完的圈可以接受。
+    await usageLedger.idle(USAGE_SUMMARY_IDLE_MS);
     return response.json(await usageLedger.summarizeProject(projectId));
   });
 
@@ -2363,6 +2430,9 @@ export async function createApp(
     const projectId = idSchema.parse(request.params.projectId);
     await jobs.cancelProject(projectId).catch(() => undefined);
     await repository.deleteProject(projectId);
+    // 帳本在專案目錄之外（見 usage-ledger.ts 的 ④），所以要自己刪；排在取消 job 之後，
+    // 被取消的那幾筆記帳才不會在刪完之後又把檔案建回來。
+    await usageLedger.deleteProject(projectId);
     response.json({ ok: true });
   });
 

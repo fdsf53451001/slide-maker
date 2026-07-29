@@ -17,12 +17,24 @@ import type { ImageProviderSource } from "./readiness.js";
 import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite, unerasedImagePath } from "./text-layers.js";
-import type { UsageLedger } from "./usage-ledger.js";
+import type { UsageLedger, UsageRecordInput } from "./usage-ledger.js";
 
 /** JobRunner 記帳所需的兩件事：帳本本身，與「provider id → 模型識別欄位」的解析。 */
 export interface JobUsageRecording {
   ledger: UsageLedger;
   modelFields(providerId: string): { modelEntryId?: string; model?: string; providerKind?: string };
+}
+
+/**
+ * 失敗的 provider 呼叫身上的用量欄位。只碰這兩個欄位——例外的 message 與 stack 可能夾帶
+ * 正文（非嚴格 gateway 會把整包 request body 回聲回來），一個字都不該靠近帳本。
+ */
+function failedCallFacts(error: unknown): Pick<UsageRecordInput, "usage" | "requests"> {
+  if (!(error instanceof SafeProviderError)) return {};
+  return {
+    ...(error.usage === undefined ? {} : { usage: error.usage }),
+    ...(error.requests === undefined ? {} : { requests: error.requests }),
+  };
 }
 
 const PHASE_STEP = {
@@ -236,7 +248,7 @@ export class JobRunner {
     job: GenerationJob,
     providerId: string,
     ok: boolean,
-    usage?: GeneratedImage["usage"],
+    facts: Pick<UsageRecordInput, "usage" | "requests"> = {},
   ): void {
     if (!this.usage) return;
     try {
@@ -248,7 +260,7 @@ export class JobRunner {
         slideId: job.slideId,
         ok,
         ...this.usage.modelFields(providerId),
-        ...(usage === undefined ? {} : { usage }),
+        ...facts,
       });
     } catch {
       // modelFields 若因模型庫熱重建而 throw，也不能影響 job。
@@ -835,12 +847,18 @@ export class JobRunner {
           },
         );
       } catch (error) {
-        // 失敗（含取消）也記：請求已經送出去了，配額該燒的照燒。usage 拿不到，落成
-        // reported:false，那正是它與「這次沒花 token」要被分開的原因。
-        this.recordUsage(projectId, job, provider.id, false);
+        // 失敗（含取消）也記：請求已經送出去了，配額該燒的照燒。連 usage 都拿不到時落成
+        // reported:false，那正是它與「這次沒花 token」要被分開的原因——但「模型回了、只是
+        // 解不出圖」那條路的 usage 就在錯誤物件身上（見 `SafeProviderError.usage`），
+        // 那是影像通道最貴又零產出的失敗，不可以跟著錯誤一起丟掉。
+        this.recordUsage(projectId, job, provider.id, false, failedCallFacts(error));
         throw error;
       }
-      this.recordUsage(projectId, job, provider.id, true, result.usage);
+      // 記在輸出驗證之前：`ok` 的語意是「provider 往返成功、配額已經燒掉」（見
+      // `UsageRecordInput.ok`），而驗證不過的那張圖一樣是花錢畫出來的。
+      this.recordUsage(projectId, job, provider.id, true, {
+        ...(result.usage === undefined ? {} : { usage: result.usage }),
+      });
       if (controller.signal.aborted) throw new DOMException("Generation cancelled", "AbortError");
       let safe = validatedOutput(result, provider.id);
       if (

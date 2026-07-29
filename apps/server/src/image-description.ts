@@ -164,14 +164,27 @@ async function writeThumbnail(imagePath: string, directory: string): Promise<str
 }
 
 /**
- * 一次描述的結果：內容與這次呼叫的用量。
+ * 一次描述的結果：模型的**未驗證**輸出與這次呼叫的用量。
  *
  * 用量必須跟著結果一起往上走，呼叫端才記得了帳——描述是背景工作，這條路的配額消耗在
  * 前端完全看不見，漏掉它會讓「上傳十張圖」的成本憑空消失。
+ *
+ * **schema parse 刻意留給呼叫端做**（`parseImageDescription`），順序是「先記帳、後 parse」：
+ * 在這裡 parse 等於讓「模型回了但格式不對」把 usage 一起帶進墳墓，而那次呼叫的 token 早就
+ * 燒光了（每張圖都含一張 1024px 縮圖，input token 不小）。Gemini 系模型多包一層圍欄、
+ * 十張圖一起失敗時，帳本會集體落成「未回報」——與「這個 gateway 不回報用量」長得一模一樣。
+ * 另外四條文字路徑都是先記帳後 parse，這一條必須一致。
  */
 export interface DescribeImageResult {
-  description: ImageDescription;
+  /** 模型輸出的原始值，尚未過 {@link imageDescriptionSchema}。 */
+  value: unknown;
   usage?: ProviderUsage;
+  requests?: number;
+}
+
+/** 驗證模型輸出。失敗即丟（呼叫端已經記過帳）。 */
+export function parseImageDescription(value: unknown): ImageDescription {
+  return imageDescriptionSchema.parse(value);
 }
 
 /**
@@ -203,11 +216,11 @@ export async function describeImage(options: DescribeImageOptions): Promise<Desc
     const deadlineReached = abortion(signal);
     try {
       const outcome = await Promise.race([running, deadlineReached.promise]);
-      // schema parse 失敗時 usage 一起丟掉是可接受的：那條路呼叫端記的是 ok:false，
-      // 而「模型回了但格式不對」與「沒回」在配額上的差別，帳本靠 reported:false 已說得清。
+      // 原樣往上交，不在這裡 parse（見 DescribeImageResult：先記帳、後 parse）。
       return {
-        description: imageDescriptionSchema.parse(outcome.value),
+        value: outcome.value,
         ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+        ...(outcome.requests === undefined ? {} : { requests: outcome.requests }),
       };
     } finally {
       deadlineReached.dispose();

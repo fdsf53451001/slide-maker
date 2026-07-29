@@ -76,14 +76,43 @@ describe("UsageLedger 落地", () => {
     expect(line!.usage).toEqual({ reported: false });
   });
 
-  it("路徑走 projectRoot() 的 assertSafeSegment，不合法 id 不會寫出檔案也不會 throw", async () => {
+  it("路徑走 repository 那份 assertSafeSegment，不合法 id 不會寫出檔案也不會 throw", async () => {
     const { ledger: instance, root } = await ledger();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     restore.push(() => warn.mockRestore());
     await expect(instance.recordProject("../escape", input())).resolves.toBeUndefined();
-    await expect(stat(join(root, "projects", "..", "escape"))).rejects.toMatchObject({
+    await expect(stat(join(root, "usage", "..", "escape.jsonl"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+    await expect(stat(join(root, "escape.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  /**
+   * 帳本**不在專案目錄底下**（見 usage-ledger.ts 的 ④）：`exporters.ts` 的 `collectFiles()`
+   * 無條件遞迴整個專案目錄，放在裡面就會被打包進使用者分享出去的 `.slide-project`；而刪除
+   * 專案時被取消的 job 仍會走到記帳，競態下會把剛刪掉的專案目錄「復活」成一個只含帳本的
+   * 空殼。
+   */
+  it("帳本寫在 DATA_ROOT/usage 底下，專案目錄一個位元組都不多", async () => {
+    const { ledger: instance, root, path } = await ledger();
+    await instance.recordProject(PROJECT_ID, input());
+    await instance.idle();
+    expect(path).toBe(join(root, "usage", `${PROJECT_ID}.jsonl`));
+    await expect(stat(join(root, "projects", PROJECT_ID))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("刪除專案會一併刪掉帳本，且刪不掉也不會 throw", async () => {
+    const { ledger: instance, path } = await ledger();
+    await instance.recordProject(PROJECT_ID, input());
+    await instance.idle();
+    await expect(stat(path)).resolves.toBeDefined();
+    await instance.deleteProject(PROJECT_ID);
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    // 沒有帳本的專案（或不合法的 id）刪起來一樣安靜。
+    await expect(instance.deleteProject(PROJECT_ID)).resolves.toBeUndefined();
+    await expect(instance.deleteProject("../escape")).resolves.toBeUndefined();
   });
 
   it("無專案脈絡的呼叫寫進 DATA_ROOT/usage/global.jsonl", async () => {
@@ -139,7 +168,50 @@ describe("大小上限", () => {
     expect(lines.length).toBeGreaterThan(USAGE_LEDGER_MAX_LINES / 2 - 2);
     // 留下的是最新那一半：最後一筆還在，最舊那一筆不在。
     expect(lines.at(-1)?.attempt).toBe(USAGE_LEDGER_MAX_LINES + 1);
-    expect(lines[0]?.attempt).toBeGreaterThan(1);
+    // 第一行是截斷紀錄，第二行才是最舊的**留下來的**那一筆。
+    expect(lines[0]).toMatchObject({ truncated: true });
+    expect(lines[1]?.attempt).toBeGreaterThan(1);
+  });
+
+  /**
+   * 輪替會**永久**丟掉最舊的一半，而 UI 上的「本專案總計」正是使用者最可能拿去當頭條的
+   * 數字。沒有這個訊號的話，長壽專案的統計會是錯的、而且無從察覺——一個沒有標註的錯誤
+   * 數字比一個標著「已截斷」的數字糟得多。
+   */
+  it("輪替後統計帶著 truncated 與被丟掉的筆數，且第二次輪替會累加而不是歸零", async () => {
+    const { ledger: instance, path } = await ledger();
+    const seed = async (): Promise<void> => {
+      const seeded = Array.from({ length: USAGE_LEDGER_MAX_LINES + 1 }, (_, index) =>
+        JSON.stringify({
+          at: new Date(index + 1).toISOString(),
+          capability: "text",
+          operation: "outline-generate",
+          ok: true,
+          usage: { reported: false },
+        }),
+      );
+      const existing = await readFile(path, "utf8").catch(() => "");
+      await mkdir(join(path, ".."), { recursive: true });
+      await writeFile(path, `${existing}${seeded.join("\n")}\n`, "utf8");
+    };
+    await seed();
+    await instance.recordProject(PROJECT_ID, input());
+    await instance.idle();
+    const first = await instance.summarizeProject(PROJECT_ID);
+    expect(first.truncated).toBe(true);
+    expect(first.droppedRecords).toBeGreaterThan(USAGE_LEDGER_MAX_LINES / 2 - 2);
+    // 截斷紀錄本身不是一筆呼叫，不得混進統計。
+    expect(first.totalCalls).toBe((await readLines(path)).length - 1);
+    expect(first.malformedLines).toBe(0);
+
+    await seed();
+    await instance.recordProject(PROJECT_ID, input());
+    await instance.idle();
+    const second = await instance.summarizeProject(PROJECT_ID);
+    expect(second.truncated).toBe(true);
+    expect(second.droppedRecords).toBeGreaterThan(first.droppedRecords);
+    // 檔案裡永遠只有一筆截斷紀錄（新的那筆繼承了舊的數字）。
+    expect((await readLines(path)).filter((line) => line.truncated === true)).toHaveLength(1);
   });
 
   it("輪替後不留 .tmp 殘檔", async () => {
@@ -158,7 +230,7 @@ describe("大小上限", () => {
     await instance.recordProject(PROJECT_ID, input());
     await instance.idle();
     const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(join(root, "projects", PROJECT_ID));
+    const entries = await readdir(join(root, "usage"));
     expect(entries.filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
@@ -175,16 +247,81 @@ describe("寫入失敗", () => {
       warnings.push(String(line));
     });
     restore.push(() => warn.mockRestore());
-    const projectDirectory = join(root, "projects", PROJECT_ID);
-    await mkdir(projectDirectory, { recursive: true });
-    await chmod(projectDirectory, 0o500);
+    const ledgerDirectory = join(root, "usage");
+    await mkdir(ledgerDirectory, { recursive: true });
+    await chmod(ledgerDirectory, 0o500);
     try {
       await expect(instance.recordProject(PROJECT_ID, input())).resolves.toBeUndefined();
     } finally {
-      await chmod(projectDirectory, 0o700);
+      await chmod(ledgerDirectory, 0o700);
       await rm(root, { recursive: true, force: true });
     }
     expect(warnings.join("\n")).toContain("usage_ledger_write_failed");
+  });
+
+  /**
+   * CLAUDE.md 第 23 條：`logWarn` 的第三個參數會把 `error.message` 與 `stack` 整份序列化
+   * 進 log，而 fs 例外的訊息就是完整的伺服器絕對路徑。這條測試把一段**可辨識的字串**放進
+   * 路徑裡（mkdtemp 的前綴），再斷言 log 裡找不到它——`#warn` 一旦被改成
+   * `logWarn(event, fields, error)`，這裡就會紅。
+   */
+  it("寫入失敗的 log 不含路徑、例外訊息與 stack", async () => {
+    const CANARY = "leak-canary-9f3";
+    const root = await mkdtemp(join(tmpdir(), `slide-maker-${CANARY}-`));
+    const instance = new UsageLedger(new FileProjectRepository(root));
+    const path = instance.projectLedgerPath(PROJECT_ID);
+    // 帳本檔案位置變成目錄 → appendFile 丟 EISDIR，而 EISDIR 的 message 帶著完整路徑。
+    await mkdir(path, { recursive: true });
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      warnings.push(String(line));
+    });
+    restore.push(() => warn.mockRestore());
+
+    await expect(instance.recordProject(PROJECT_ID, input())).resolves.toBeUndefined();
+    await instance.idle();
+
+    const logged = warnings.join("\n");
+    // 判讀得出來：哪個專案、哪一種呼叫、什麼錯。
+    expect(logged).toContain("usage_ledger_write_failed");
+    expect(logged).toContain(PROJECT_ID);
+    expect(logged).toContain("EISDIR");
+    // 但路徑（含那段 canary）、例外訊息與 stack 一個字都不留。
+    expect(logged).not.toContain(CANARY);
+    expect(logged).not.toContain(path);
+    expect(logged).not.toContain("illegal operation");
+    expect(logged).not.toContain("stack");
+  });
+
+  /**
+   * **讀取端要有與寫入端同一份紀律。** 往上拋會讓 `GET /usage` 落到通用 handler 回 500，
+   * 而那個 handler 會把 `error.message`（EACCES 的訊息就是完整伺服器絕對路徑）整份序列化
+   * 進 log。一個觀測用檔案的權限問題不該讓統計頁掛掉，也不該換來一行路徑外洩。
+   */
+  it("帳本讀不出來時回空結果＋unreadable，不 throw、不洩漏路徑", async () => {
+    const CANARY = "read-canary-2b7";
+    const root = await mkdtemp(join(tmpdir(), `slide-maker-${CANARY}-`));
+    const instance = new UsageLedger(new FileProjectRepository(root));
+    const path = instance.projectLedgerPath(PROJECT_ID);
+    await mkdir(path, { recursive: true }); // 讀檔案讀到目錄 → EISDIR
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      warnings.push(String(line));
+    });
+    restore.push(() => warn.mockRestore());
+
+    const summary = await instance.summarizeProject(PROJECT_ID);
+    expect(summary.unreadable).toBe(true);
+    expect(summary.totalCalls).toBe(0);
+    // 沒有帳本的專案是 `unreadable:false`＋全零：那與「讀不出來」是兩件事，UI 要分得開。
+    expect((await instance.summarizeProject("project-without-ledger")).unreadable).toBe(false);
+
+    const logged = warnings.join("\n");
+    expect(logged).toContain("usage_ledger_read_failed");
+    expect(logged).toContain("EISDIR");
+    expect(logged).not.toContain(CANARY);
+    expect(logged).not.toContain(path);
+    expect(logged).not.toContain("illegal operation");
   });
 
   it("一行壞掉的 JSON 不會讓整份統計消失", async () => {
@@ -295,6 +432,89 @@ describe("聚合", () => {
     ]);
     expect(withCost.cost?.unit).toBe("openrouter-credit");
     expect(withCost.cost?.amount).toBeCloseTo(0.05, 10);
+  });
+
+  /**
+   * 回了 in/out 卻沒回 total 的 gateway（CLIProxyAPI 各家 translator 行為不一致）不可以讓
+   * `totalTokens` 少一截：那正是 UI 最可能拿去當頭條的數字，而它會錯得很安靜。
+   */
+  it("gateway 沒回 total 時退回 input+output，不重複加 reasoning", () => {
+    const summary = summarizeUsage([
+      record({
+        usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 15, reported: true },
+      }),
+    ]);
+    // 100 + 20；reasoning 已含在 OpenAI 的 completion_tokens 裡，再加一次會反過來高估。
+    expect(summary.totals.totalTokens).toBe(120);
+    // 端點自己回了 total 就以它為準（它含 thoughts，不可拿 in+out 反推）。
+    expect(
+      summarizeUsage([
+        record({ usage: { inputTokens: 10, outputTokens: 5, totalTokens: 99, reported: true } }),
+      ]).totals.totalTokens,
+    ).toBe(99);
+    // 未回報的那筆一個 token 都不加，退回值也不例外。
+    expect(summarizeUsage([record({ usage: { reported: false } })]).totals.totalTokens).toBe(0);
+  });
+
+  /**
+   * `local-inpaint`／`mock-image` 沒碰任何模型、沒燒任何配額。混進「未回報」會讓那個數字
+   * （語意是「燒了配額但不知道燒多少」）被批次抽字灌到看不出真正的問題在哪。
+   */
+  it("本機 provider 歸到 localCalls，不算未回報", () => {
+    const summary = summarizeUsage([
+      record({ providerKind: "local", modelEntryId: "local-inpaint", usage: { reported: false } }),
+      record({ providerKind: "mock", modelEntryId: "mock-image", usage: { reported: false } }),
+      // 真的沒回報的 gateway：這才是 unreportedCalls 要指出來的東西。
+      record({ providerKind: "openai", usage: { reported: false } }),
+      record(),
+    ]);
+    expect(summary.localCalls).toBe(2);
+    expect(summary.unreportedCalls).toBe(1);
+    expect(summary.reportedCalls).toBe(1);
+    expect(summary.totalCalls).toBe(4);
+    // 分組桶裡也看得到，UI 才有辦法在「這一組全是本機」時不顯示未回報警告。
+    expect(summary.byModel.find((bucket) => bucket.modelEntryId === "local-inpaint")).toMatchObject(
+      { localCalls: 1, reportedCalls: 0 },
+    );
+  });
+
+  /**
+   * `requests` 是「實際打了幾次 HTTP」（provider 內部重試會 > 1）。少了它，`calls` 只是
+   * 邏輯呼叫數，UI 上「到底重跑了幾次」問不出來。舊紀錄沒有這個欄位，一律當 1。
+   */
+  it("requests 一起聚合，缺席的舊紀錄當 1", () => {
+    const summary = summarizeUsage([record({ requests: 3 }), record(), record({ requests: 2 })]);
+    expect(summary.totalCalls).toBe(3);
+    expect(summary.totalRequests).toBe(6);
+    expect(summary.byOperation["outline-generate"]?.requests).toBe(6);
+  });
+
+  /**
+   * 模型庫改過名字之後，整組統計不該一直掛著舊名——使用者在模型庫裡已經找不到那個名字了。
+   */
+  it("byModel 的模型名取最近一筆，不是第一筆", () => {
+    const summary = summarizeUsage([
+      record({ at: "2026-07-01T00:00:00.000Z", model: "舊名", providerKind: "codex" }),
+      record({ at: "2026-07-20T00:00:00.000Z", model: "新名", providerKind: "openai" }),
+    ]);
+    expect(summary.byModel[0]).toMatchObject({
+      modelEntryId: "entry-1",
+      model: "新名",
+      providerKind: "openai",
+      calls: 2,
+    });
+  });
+
+  /**
+   * cost 與 token 走同一個閘門：`reported:false` 卻帶著 cost 的紀錄（目前產生不出來，但
+   * schema 允許）不可以偷偷被算進金額，否則同一份摘要裡會有兩套納入規則。
+   */
+  it("未回報的紀錄即使帶著 cost 也不算進金額", () => {
+    const summary = summarizeUsage([
+      record({ usage: { reported: false, cost: { amount: 9.99, unit: "openrouter-credit" } } }),
+      record({ usage: { reported: true, cost: { amount: 0.02, unit: "openrouter-credit" } } }),
+    ]);
+    expect(summary.cost?.amount).toBeCloseTo(0.02, 10);
   });
 
   it("空帳本回全零而不是 undefined", () => {
