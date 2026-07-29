@@ -150,12 +150,29 @@ export class ModelRuntime {
     return this.#library.defaultCombinationId;
   }
 
-  /** 解析文字 provider：無 project 時退回預設組合（如 style-analysis）。 */
+  /**
+   * 解析文字 provider：無 project 時退回預設組合（如 style-analysis）。
+   *
+   * registry miss 一定要轉成具名 {@link ModelLibraryError}：`ProviderRegistry.get()` 丟的是
+   * 裸 `Error("Unknown provider: …")`，錯誤中介層對它只能落到 500 `INTERNAL_SERVER_ERROR`
+   * ——沒有 message、沒有下一步，看起來像伺服器壞了。但這其實是**使用者自己改得掉的設定
+   * 問題**：`#buildText` 對 `providerKind` 是 `mock`／`local` 的 entry 回 undefined（不註冊
+   * 進 registry），而模型庫 UI 的種類清單含 `mock`、組合的文字下拉又只濾掉 `local`，所以
+   * 建一個「能力＝文字、種類＝mock」的 entry 綁進組合就踩得到；模型被刪掉但組合還引用著
+   * 也是同一條。
+   */
   resolveTextProvider(combinationId: string | undefined): StructuredTextProvider {
     const resolved = this.resolveCombination(combinationId);
     if (!resolved.textModelRef)
       throw new ModelLibraryError("COMBINATION_TEXT_MISSING", "此組合未設定文字模型。");
-    return this.#text.get(resolved.textModelRef);
+    try {
+      return this.#text.get(resolved.textModelRef);
+    } catch {
+      throw new ModelLibraryError(
+        "TEXT_MODEL_NOT_FOUND",
+        "此組合指定的文字模型無法使用：它可能已從模型庫刪除，或它的種類（例如 mock）本來就不會產生文字。請到模型庫改掉這個組合的文字模型。",
+      );
+    }
   }
 
   resolveSearchProvider(combinationId: string | undefined): WebSearchProvider {

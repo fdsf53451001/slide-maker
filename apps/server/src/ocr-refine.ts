@@ -808,6 +808,16 @@ export interface StyleRefinementOutcome {
   boxes: EditableTextBox[];
   /** 重解幾何失敗的原因；呼叫端必須記錄，不可靜默丟掉。 */
   resnapError?: string;
+  /**
+   * 真的被套上樣式的框數（模型回的 id 對得上現有框的那幾個）。
+   *
+   * 這個數字**要由這裡回傳**，不能讓呼叫端自己另外數一次：`ocrStyleRefinementSchema` 對
+   * `boxes` 只有上限、沒有下限也不比對 id，所以「回空陣列」與「自己編一組 id」都會 parse
+   * 成功、不 throw。少了這個計數，呼叫端只看得到「沒有例外」就回報樣式已套上，而整頁其實
+   * 停在 OCR 預設值（白字 Arial）——與樣式精修整段沒跑長得一模一樣。CLAUDE.md 明載非嚴格
+   * gateway（尤其 Gemini 系）不遵守 `json_schema`，這正是它們常見的失敗形狀。
+   */
+  matched: number;
 }
 
 /**
@@ -824,15 +834,19 @@ export async function applyStyleRefinement(
   inkGeometry: ReadonlyMap<string, InkGeometry>,
   options: { metrics?: TextMetricsProvider } = {},
 ): Promise<StyleRefinementOutcome> {
+  let matched = 0;
   const styled = boxes.map((box) => {
     const style = styles.get(box.id);
-    return style ? { ...box, ...style } : box;
+    if (!style) return box;
+    matched += 1;
+    return { ...box, ...style };
   });
   try {
-    return { boxes: await resnapWithFinalFonts(styled, inkGeometry, options) };
+    return { boxes: await resnapWithFinalFonts(styled, inkGeometry, options), matched };
   } catch (error) {
     return {
       boxes: styled,
+      matched,
       resnapError: error instanceof Error ? error.message : "UnknownError",
     };
   }

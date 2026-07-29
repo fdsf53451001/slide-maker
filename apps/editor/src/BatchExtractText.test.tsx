@@ -815,6 +815,120 @@ describe("批次抽離全部文字", () => {
     expect(errorToast()).toBeNull();
     expect(noticeToast()).toBeNull();
   });
+
+  /**
+   * 「成功但沒有風格」不算順利跑完。
+   *
+   * 這幾頁的框、幾何與抹字都做出來了，記成失敗會讓使用者整批重做；但它們的字色與字型全是
+   * `boxesFromOcr` 的預設（白字 Arial），完全不講的話 30 頁裡有 12 頁沒風格也沒人會發現。
+   * 所以走**非錯誤**的通知列，並列出是哪幾頁。
+   */
+  it("樣式精修被降級的頁要列進摘要（非錯誤通知列），成功的頁不列", async () => {
+    const project = projectWith("沒有風格", ["plain", "plain"]);
+    const stub = stubApi(project);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Editor />);
+    await openProjectPanel("沒有風格");
+
+    fireEvent.click(batchButton());
+    await waitFor(() => expect(stub.calls).toHaveLength(1));
+    // 第 1 頁：樣式精修沒套上。
+    stub.release({
+      status: 202,
+      payload: {
+        id: "job-1",
+        status: "queued",
+        textExtraction: {
+          originalVersionId: "v",
+          threshold: 0.75,
+          boxes: [],
+          styleRefinement: { applied: false, reason: "STYLE_REFINE_FAILED" },
+        },
+      },
+    });
+    await waitFor(() => expect(stub.calls).toHaveLength(2));
+    // 第 2 頁：正常套上。
+    stub.release({
+      status: 202,
+      payload: {
+        id: "job-2",
+        status: "queued",
+        textExtraction: {
+          originalVersionId: "v",
+          threshold: 0.75,
+          boxes: [],
+          styleRefinement: { applied: true },
+        },
+      },
+    });
+    await waitFor(() => expect(batchButton().textContent).toBe("批次抽離全部文字"));
+
+    const notice = await findNoticeToast();
+    expect(notice.textContent).toContain("成功 2 頁");
+    expect(notice.textContent).toContain("其中 1 頁的字色與字型是預設值（白字 Arial）");
+    expect(notice.textContent).toContain("第 1 頁：文字模型呼叫或回應解析失敗");
+    // 套上的那一頁不得被列進去。
+    expect(notice.textContent).not.toContain("第 2 頁");
+    // 沒有任何一頁失敗，所以不是紅色錯誤列。
+    expect(errorToast()).toBeNull();
+  });
+
+  /**
+   * 設定錯誤（組合被刪、組合沒設文字模型）擋在 OCR 之前，下一頁不會變好——整批停下來，
+   * 不要用 150 次註定失敗的往返把同一個錯誤重複 150 遍。
+   */
+  it("模型組合設定錯誤（409）整批停下，不繼續送下一頁", async () => {
+    const project = projectWith("組合不見了", ["plain", "plain", "plain"]);
+    const stub = stubApi(project);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Editor />);
+    await openProjectPanel("組合不見了");
+
+    fireEvent.click(batchButton());
+    await waitFor(() => expect(stub.calls).toHaveLength(1));
+    stub.release({
+      status: 409,
+      payload: {
+        error: "COMBINATION_NOT_FOUND",
+        message: "這個專案綁定的模型組合已經不存在，請到專案設定重新選一個模型組合，再抽一次。",
+      },
+    });
+    await waitFor(() => expect(batchButton().textContent).toBe("批次抽離全部文字"));
+    await settle();
+
+    // 第二頁一次都沒送。
+    expect(stub.calls).toHaveLength(1);
+    const toast = await findErrorToast();
+    expect(toast.textContent).toContain("批次抽離文字已中止");
+    expect(toast.textContent).toContain("重新選一個模型組合");
+    /*
+     * 三頁全都還沒抽。撞出中止的那一頁預設會被算成「已處理」（前提是它至少送出去過並
+     * 花掉了工作），但設定錯誤是**擋在 OCR 之前**的：那一頁一點事都沒發生。少算的話
+     * 使用者看到「還有 2 頁沒有送出」，重跑時卻會處理 3 頁。
+     */
+    expect(toast.textContent).toContain("還有 3 頁沒有送出");
+  });
+
+  /**
+   * 對照組：OCR 之後才發生的中止（伺服器 5xx）維持原本的算法——那一頁已經送出去、也已經
+   * 把 OCR 跑掉了，把它算進「沒有送出」等於謊報還有多少事要做。
+   */
+  it("OCR 之後才中止（5xx）時，撞出中止的那一頁仍算已處理", async () => {
+    const project = projectWith("伺服器掛了", ["plain", "plain", "plain"]);
+    const stub = stubApi(project);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<Editor />);
+    await openProjectPanel("伺服器掛了");
+
+    fireEvent.click(batchButton());
+    await waitFor(() => expect(stub.calls).toHaveLength(1));
+    stub.release({ status: 500, payload: { error: "INTERNAL_SERVER_ERROR" } });
+    await waitFor(() => expect(batchButton().textContent).toBe("批次抽離全部文字"));
+    await settle();
+
+    expect(stub.calls).toHaveLength(1);
+    expect((await findErrorToast()).textContent).toContain("還有 2 頁沒有送出");
+  });
 });
 
 /**

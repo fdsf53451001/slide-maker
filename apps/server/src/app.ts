@@ -218,6 +218,43 @@ const OCR_QUEUE_FAILURE: Record<string, { status: number; message: string }> = {
     message: "伺服器正在重新啟動，這次抽離文字沒有開始。請稍候再試一次。",
   },
 };
+
+/**
+ * 抽字端點解析不到「樣式精修」文字模型時的繁中說明（代碼 → 訊息）。
+ *
+ * 代碼刻意沿用 {@link ModelLibraryError} 既有的那幾個，前端才分辨得出是哪一種設定問題；
+ * 但訊息不能沿用——通用的「找不到模型組合：<id>」在這裡沒有下一步。這條路的取捨是
+ * **擋下而不是降級**：沒有文字模型時整頁字色與字型會停在 `boxesFromOcr` 的預設（白字
+ * Arial），而抽字是開新版本、跑抹字、燒配額的破壞性操作，做完才發現等於整趟白做。
+ */
+const TEXT_EXTRACTION_STYLE_MODEL_MESSAGE: Record<string, string> = {
+  COMBINATION_NOT_FOUND:
+    "這個專案綁定的模型組合已經不存在（多半是在模型庫裡被刪掉了）。抽離文字要靠文字模型從圖上估出字色與字型，沒有它整頁的字會全部變成預設的白字 Arial，所以先不動手。請到專案設定重新選一個模型組合，再抽一次。",
+  COMBINATION_TEXT_MISSING:
+    "這個專案綁定的模型組合沒有設定文字模型。抽離文字要靠它從圖上估出字色與字型，沒有它整頁的字會全部變成預設的白字 Arial，所以先不動手。請到模型庫替這個組合指定文字模型，或到專案設定換一個有文字模型的組合，再抽一次。",
+  NO_DEFAULT_COMBINATION:
+    "模型庫還沒有預設的模型組合，這個專案也沒有綁定組合。抽離文字要靠文字模型從圖上估出字色與字型，沒有它整頁的字會全部變成預設的白字 Arial，所以先不動手。請到模型庫建立一個組合並設為預設，或到專案設定選一個組合，再抽一次。",
+  TEXT_MODEL_NOT_FOUND:
+    "這個專案綁定的組合指定了一個用不了的文字模型：它可能已從模型庫刪除，或它的種類（例如 mock）本來就不會產生文字。抽離文字要靠它從圖上估出字色與字型，沒有它整頁的字會全部變成預設的白字 Arial，所以先不動手。請到模型庫改掉這個組合的文字模型，再抽一次。",
+};
+
+/**
+ * 樣式精修的例外裡「可以進 log」的那部分。
+ *
+ * **刻意不記 `message` 與 `stack`**：非嚴格 gateway 會把 request body 原樣回聲進 400 的
+ * message，而那份 body 含 `OCR_BOXES_JSON` 與每一框的正文；zod 的 `invalid_enum_value`
+ * 也會把收到的值夾進 `ZodError.message`。改記型別名、provider 的安全代碼與 zod 的欄位
+ * 路徑——診斷價值幾乎沒少，而正文一個字都出不去。
+ */
+function styleRefineErrorFields(error: unknown): Record<string, unknown> {
+  if (error instanceof SafeProviderError) return { errorName: error.name, errorCode: error.code };
+  if (error instanceof z.ZodError)
+    return {
+      errorName: "ZodError",
+      zodPaths: error.issues.slice(0, 8).map((issue) => issue.path.join(".")),
+    };
+  return { errorName: error instanceof Error ? error.name : typeof error };
+}
 /** 前端「選擇模型」步驟可覆寫文字／搜尋引擎；未指定時回退環境變數預設。 */
 const textEngineSchema = z.enum(["codex", "openai"]).optional();
 const aiOutlineSchema = z.object({
@@ -654,6 +691,11 @@ export async function createApp(
    * 這件事必須在回應 201 之前就知道：沒有可用模型時連 `parsing` 都不該標，否則前端會閃
    * 一下「分析中」再默默變回去。解析失敗（組合沒設文字模型、模型庫沒有預設組合）屬可選
    * 步驟的正常降級，安靜略過。`SLIDE_MAKER_IMAGE_DESCRIPTION=off` 時整條路直接不存在。
+   *
+   * 這裡的降級**刻意不比照抽字那條擋下**（那條見 `TEXT_EXTRACTION_STYLE_MODEL_MESSAGE`）：
+   * 沒有描述的圖片來源仍然完全可用（上傳成功、看得到、放得進頁面），差別只在 FTS 撈不到
+   * 它，而讓上傳因為模型組合沒設好就整批失敗是更糟的交換。但「安靜略過」不等於「不留
+   * 證據」：解析失敗照樣記一行代碼，否則「為什麼我的圖都沒有被讀」在伺服器端查無此事。
    */
   const imageDescriptionProvider = (
     project: PresentationProject,
@@ -662,7 +704,12 @@ export async function createApp(
     try {
       const provider = resolveStructuredText(project);
       return provider.availability.status === "available" ? provider : undefined;
-    } catch {
+    } catch (error) {
+      // 只記 id 與代碼：來源檔名、圖片內容、prompt 一律不進 log。
+      logWarn("image_description_model_unresolved", {
+        projectId: project.id,
+        code: error instanceof ModelLibraryError ? error.code : "UNKNOWN",
+      });
       return undefined;
     }
   };
@@ -2669,15 +2716,54 @@ export async function createApp(
     const ocrStatus = await ocr.status();
     if (!ocrStatus.available)
       return response.status(409).json({ error: "OCR_UNAVAILABLE", message: ocrStatus.message });
-    await readiness.assertCanGenerate(providerId, acceptUnknownReadiness);
-    const provider = runtime.imageProvider(providerId);
-    if (!provider.capabilities.imageEditing || !provider.capabilities.maskedEditing)
-      throw new Error("MASKED_EDITING_UNSUPPORTED");
     const project = await repository.loadProject(projectId);
     if (!project) throw new Error("Project not found");
     const slide = project.slides.find((candidate) => candidate.id === slideId);
     const currentVersion = slide?.versions.find((version) => version.id === slide.currentVersionId);
     if (!slide || !currentVersion) throw new Error("EDIT_BASE_VERSION_MISSING");
+    /*
+     * 樣式精修的**設定錯誤**要在這裡擋下——OCR 都還沒排隊、正規化 PNG 都還沒寫。
+     *
+     * 這一段以前是「可選步驟，解析不到就安靜略過」，實機上踩到的後果是：專案綁的組合被
+     * 刪掉之後，整頁 31 個框全部落在 `boxesFromOcr` 的預設值（白字 `#ffffff` ＋ Arial），
+     * 而伺服器一行 log 都沒有。抽字是**破壞性**操作（開新版本、跑抹字、燒 OCR 與可能的
+     * 影像模型配額），做出一份沒有風格的文字層等於整趟白做，使用者卻只看得到「字全白」。
+     * 這幾個碼講的都是「使用者現在就能修好的設定問題」，而且必然整頁無風格，所以擋，不降級。
+     * 執行期失敗（模型不可用、呼叫／解析失敗）另外處理：那種當下修不好，擋了也沒用。
+     *
+     * 位置在 `readiness.assertCanGenerate()` **之前**：這一段是純記憶體查表（模型庫已經在
+     * 記憶體裡），而 readiness 可能真的去打一次 provider preflight。註定要被擋下的請求不該
+     * 先付那一趟。
+     */
+    const styleRefinerResolution = ((): StructuredTextProvider | ModelLibraryError => {
+      try {
+        return resolveStructuredText(project);
+      } catch (error) {
+        if (error instanceof ModelLibraryError) return error;
+        throw error;
+      }
+    })();
+    if (styleRefinerResolution instanceof ModelLibraryError) {
+      // 只記 id 與代碼：組合名稱、模型名稱、頁面內文一律不進 log。
+      logWarn("text_extraction_style_model_unresolved", {
+        projectId,
+        slideId,
+        code: styleRefinerResolution.code,
+      });
+      return response.status(409).json({
+        error: styleRefinerResolution.code,
+        // 代碼沿用模型庫既有的那幾個（前端要能分辨是哪一種），但訊息換成抽字這條路自己的：
+        // 通用的「找不到模型組合：<id>」沒有下一步，而使用者在這裡要知道的是「去哪裡改」。
+        message:
+          TEXT_EXTRACTION_STYLE_MODEL_MESSAGE[styleRefinerResolution.code] ??
+          styleRefinerResolution.message,
+      });
+    }
+    const styleRefiner = styleRefinerResolution;
+    await readiness.assertCanGenerate(providerId, acceptUnknownReadiness);
+    const provider = runtime.imageProvider(providerId);
+    if (!provider.capabilities.imageEditing || !provider.capabilities.maskedEditing)
+      throw new Error("MASKED_EDITING_UNSUPPORTED");
     // 手動文字層（背景沒抹過字、框全是使用者手打的）在這條路上是「合併」而不是「重抽」：
     // 圖上原本的字還在，抽出來之後要與手打的框並存。
     const manual =
@@ -2809,16 +2895,47 @@ export async function createApp(
             : `這一頁辨識到 ${boxes.length} 個文字框，超過單一文字層 ${EDITABLE_TEXT_BOX_LIMIT} 個的上限。請把辨識門檻調高讓抽出來的框變少，再試一次。`,
         });
       }
-      // 視覺樣式精修為可選步驟：組合未設文字模型或不可用時安全略過。
-      const styleRefiner = (() => {
-        try {
-          return resolveStructuredText(project);
-        } catch {
-          return undefined;
-        }
-      })();
-
-      if (styleRefiner?.availability.status === "available" && boxes.length) {
+      /*
+       * 一個框都沒有就直接 422——這一段以前排在樣式精修**之後**，位置沒有道理：
+       * `applyStyleRefinement` 是逐框套樣式、不改變框數，所以提前判斷不影響任何結果，
+       * 卻省下一次註定無意義的文字模型呼叫，也不會留下一筆 `boxCount: 0` 的降級紀錄
+       * （那一次根本沒有產出文字層，記了只會讓「哪些頁沒有風格」的查詢對不上）。
+       */
+      if (!boxes.length)
+        return response.status(422).json({
+          error: "OCR_NO_TEXT",
+          message: "目前門檻沒有辨識到可抽離文字，請降低門檻後重試。",
+        });
+      /*
+       * 視覺樣式精修的**執行期**失敗：降級繼續，但不可靜默。
+       *
+       * 設定錯誤（組合不存在／未設文字模型／模型解析不到）在 OCR 之前就擋掉了，這裡剩下的
+       * 三種——模型當下不可用、呼叫或解析失敗、模型回了但一個 id 都對不上——使用者現在
+       * 修不好，擋下只是把已經跑完的 OCR 丟掉。但降級的代價是整層字色與字型退回
+       * `boxesFromOcr` 的預設（白字 Arial），所以兩件事一件都不能少：伺服器留下原因代碼，
+       * 前端從 job 的 `styleRefinement` 拿到結果。
+       */
+      let styleRefinementReason: string | undefined;
+      /** 降級時要一併帶給使用者的補充說明（provider 的可用性理由，靜態設定字串）。 */
+      let styleRefinementDetail: string | undefined;
+      /** 精修前的框數。`applyStyleRefinement` 不改變框數，但 `boxes` 會被整個換掉。 */
+      const ocrBoxCount = boxes.length;
+      if (styleRefiner.availability.status !== "available") {
+        styleRefinementReason = "TEXT_MODEL_UNAVAILABLE";
+        // provider 的 `reason` 是環境／設定層級的說明（CLI 沒裝、缺 API key、要開哪個環境
+        // 變數），不含憑證也不含頁面內容，所以既進得了 log 也回得了前端——本機最常見的
+        // 「需設定 SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1」那一句正是使用者的下一步。
+        styleRefinementDetail = styleRefiner.availability.reason;
+        // 其餘只記 id、代碼與數字：框裡的字與 prompt 一字不進 log。
+        logWarn("ocr_style_refine_skipped", {
+          projectId,
+          slideId,
+          reason: styleRefinementReason,
+          modelId: styleRefiner.id,
+          availabilityReason: styleRefinementDetail,
+          boxCount: ocrBoxCount,
+        });
+      } else {
         try {
           const styleRefinement = ocrStyleRefinementSchema.parse(
             await styleRefiner.runStructured({
@@ -2860,16 +2977,54 @@ export async function createApp(
               slideId,
               reason: applied.resnapError,
             });
+          /*
+           * 「沒有 throw」不等於「樣式套上了」。
+           *
+           * `ocrStyleRefinementSchema` 對 `boxes` 只有上限、沒有下限也不比對 id，所以
+           * `{"boxes": []}` 與「模型自己編一組 id」都會 parse 成功。少了這道檢查，job 會
+           * 回 `applied: true`、零 log、前端不提示，而整頁停在白字 Arial——與樣式精修整段
+           * 沒跑一模一樣，只是換了個入口。CLAUDE.md 明載非嚴格 gateway（尤其 Gemini 系）
+           * 不遵守 `json_schema`，這正是它們常見的失敗形狀，而且比 zod 直接爆掉更難察覺。
+           */
+          if (applied.matched === 0) {
+            styleRefinementReason = "STYLE_REFINE_EMPTY";
+            // 全是數字：回了幾筆、對上幾筆、原本幾框。內容一律不進 log。
+            logWarn("ocr_style_refine_empty", {
+              projectId,
+              slideId,
+              reason: styleRefinementReason,
+              modelId: styleRefiner.id,
+              matched: 0,
+              returnedCount: styleRefinement.boxes.length,
+              boxCount: ocrBoxCount,
+            });
+          } else if (applied.matched < ocrBoxCount) {
+            // 部分命中不算降級（多數框有風格），但要留下兩個數字：模型持續只回一半是
+            // 換模型的訊號，而畫面上只會看到「有幾個框特別白」。
+            logWarn("ocr_style_refine_partial", {
+              projectId,
+              slideId,
+              modelId: styleRefiner.id,
+              matched: applied.matched,
+              returnedCount: styleRefinement.boxes.length,
+              boxCount: ocrBoxCount,
+            });
+          }
         } catch (error) {
-          logWarn("ocr_style_refine_failed", { projectId, slideId }, error);
-          // OCR geometry remains usable if optional visual style refinement fails.
+          styleRefinementReason = "STYLE_REFINE_FAILED";
+          // OCR 的幾何仍然可用，所以繼續；但整層字色／字型會停在預設值，前端要講出來。
+          // 例外本身經 `styleRefineErrorFields()` 過濾（不記 message／stack）：這條 catch
+          // 同時罩住 provider 呼叫與 zod parse，兩邊的訊息都可能夾帶送進 prompt 的 OCR 正文。
+          logWarn("ocr_style_refine_failed", {
+            projectId,
+            slideId,
+            reason: styleRefinementReason,
+            modelId: styleRefiner.id,
+            boxCount: ocrBoxCount,
+            ...styleRefineErrorFields(error),
+          });
         }
       }
-      if (!boxes.length)
-        return response.status(422).json({
-          error: "OCR_NO_TEXT",
-          message: "目前門檻沒有辨識到可抽離文字，請降低門檻後重試。",
-        });
       const presentationBoxes = boxes.filter((box) => box.role === "presentation");
       if (!presentationBoxes.length)
         return response
@@ -2902,6 +3057,14 @@ export async function createApp(
           // 手動打的那一版整份丟掉，而合併後的新層是抽出來的（origin 留 undefined＝
           // extracted），再抽一次就回到現行的就地取代語意。
           ...(currentVersion.textLayer && !manual ? { replaceVersionId: currentVersion.id } : {}),
+          // 降級的事實跟著 job 一起回前端：`applied:false` 代表這一層的字色與字型是
+          // `boxesFromOcr` 的預設（白字 Arial），不是從圖上估出來的。
+          // `exactOptionalPropertyTypes`：`reason`／`detail` 只有在真的有值時才放進物件。
+          styleRefinement: {
+            applied: styleRefinementReason === undefined,
+            ...(styleRefinementReason === undefined ? {} : { reason: styleRefinementReason }),
+            ...(styleRefinementDetail === undefined ? {} : { detail: styleRefinementDetail }),
+          },
         },
       });
       return response.status(202).json(job);

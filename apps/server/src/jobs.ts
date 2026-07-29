@@ -243,6 +243,8 @@ export class JobRunner {
         replaceVersionId?: string;
         threshold: number;
         boxes: EditableTextBox[];
+        /** 樣式精修有沒有套上（見 `generationJobSchema`）；原樣寫進 job 供前端判讀。 */
+        styleRefinement?: { applied: boolean; reason?: string; detail?: string };
       };
     },
   ): Promise<GenerationJob> {

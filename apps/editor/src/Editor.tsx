@@ -17,6 +17,7 @@ import {
   pageNumberPositionSchema,
   pageNumberSlideLabel,
   type EditableTextBox,
+  type GenerationJob,
   type PageNumberSettings,
   type PresentationBrief,
   type PresentationProject,
@@ -837,13 +838,65 @@ export function hiddenSlideCount(slides: readonly { hidden?: boolean }[]): numbe
  * （繼續送只會讓別人的抽字也排不進去）、`OCR_UNAVAILABLE` 是 OCR 環境沒裝好、
  * `OCR_QUEUE_SHUTDOWN` 是伺服器正在重啟、`PROVIDER_PREFLIGHT_BLOCKED` 是 readiness 閘門
  * 擋下（`app.ts` 的 `assertCanGenerate` → 409）。硬跑下去只是把同一個失敗重複 N 次。
+ *
+ * {@link OCR_CONFIG_ABORT_CODES} 那幾個也在內：抽字端點在跑 OCR **之前**就擋下樣式精修的
+ * 設定錯誤，那是專案／模型庫層級的問題，下一頁不會變好，繼續送只是 N 次空轉。
  */
+const OCR_CONFIG_ABORT_CODES = new Set([
+  "COMBINATION_NOT_FOUND",
+  "COMBINATION_TEXT_MISSING",
+  "NO_DEFAULT_COMBINATION",
+  "TEXT_MODEL_NOT_FOUND",
+]);
 const OCR_BATCH_ABORT_CODES = new Set([
   "OCR_QUEUE_BUSY",
   "OCR_QUEUE_SHUTDOWN",
   "OCR_UNAVAILABLE",
   "PROVIDER_PREFLIGHT_BLOCKED",
+  ...OCR_CONFIG_ABORT_CODES,
 ]);
+
+/**
+ * 樣式精修沒套上時的原因代碼 → 使用者看得懂的說明。
+ *
+ * 這一條的存在理由：`applied === false` 的產物與「這一頁本來就是白字」在畫面上長得一模
+ * 一樣（`boxesFromOcr` 的預設就是 `#ffffff` ＋ Arial），不講出來使用者只會以為是抽字抽壞了。
+ */
+const STYLE_REFINEMENT_REASONS: Record<string, string> = {
+  TEXT_MODEL_UNAVAILABLE: "專案綁定組合的文字模型目前不可用",
+  STYLE_REFINE_FAILED: "文字模型呼叫或回應解析失敗",
+  STYLE_REFINE_EMPTY: "文字模型沒有回傳可用的樣式（回了空清單，或框的編號全對不上）",
+};
+
+/** 樣式精修降級的原因代碼與伺服器附的補充說明。 */
+interface StyleRefinementFailure {
+  reason: string;
+  /** provider 的可用性說明（例如「需設定 SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1」）。 */
+  detail?: string;
+}
+
+/** 樣式精修降級的說明句（單頁與批次共用同一份措辭）。 */
+function styleRefinementReasonText(failure: StyleRefinementFailure): string {
+  const base = STYLE_REFINEMENT_REASONS[failure.reason] ?? `原因代碼 ${failure.reason}`;
+  // 伺服器的補充說明往往就是下一步（缺哪個環境變數、缺哪把 key），接在原因後面照原樣顯示。
+  return failure.detail ? `${base}（${failure.detail}）` : base;
+}
+
+/**
+ * 這一次抽字有沒有降級成「沒有風格」？`undefined` 代表樣式精修有套上。
+ *
+ * 讀 job 而不是重新推論：前端不得鏡射伺服器組態（有沒有文字模型、模型可不可用）來猜這件
+ * 事，那必然漂移——答案只有伺服器知道，所以由它跟著 202 一起回來。舊 job 沒有這個欄位
+ * （schema 是 optional），當作有套上，行為與加入前一致。
+ */
+function styleRefinementFailure(job: GenerationJob): StyleRefinementFailure | undefined {
+  const refinement = job.textExtraction?.styleRefinement;
+  if (!refinement || refinement.applied) return undefined;
+  return {
+    reason: refinement.reason ?? "UNKNOWN",
+    ...(refinement.detail ? { detail: refinement.detail } : {}),
+  };
+}
 
 /**
  * 這個失敗是「伺服器現在整個不行」（整批停下），還是「這一頁的狀況」（跳過繼續跑）？
@@ -3851,10 +3904,18 @@ export function Editor() {
     const slideId = selected.id;
     trackTextLayerTask(slideId, "extract");
     setError(undefined);
+    /*
+     * 通知列也要清。
+     *
+     * 上一輪留下的「字色與字型是預設值」在使用者把模型組合修好、重抽成功之後**不會**自己
+     * 消失（成功路徑不寫訊息，而通知列只有點擊才關得掉），於是那句話會指著一份其實有風格
+     * 的產物。這一次的結果由這一次負責寫。
+     */
+    setImportNotice(undefined);
     try {
       const status = await api.ocrStatus();
       if (!status.available) throw new Error(status.message);
-      await api.extractText(
+      const job = await api.extractText(
         project.id,
         slideId,
         textExtractProviderId,
@@ -3864,6 +3925,18 @@ export function Editor() {
         traditionalize,
       );
       setProject(await api.getProject(project.id));
+      /*
+       * 樣式精修被降級掉的話一定要講出來，而且用**非錯誤**的通知列：抽字本身成功了
+       * （框、幾何、抹字都在），只是字色與字型停在預設值。使用者看到的是「整頁白字」，
+       * 與「這一頁本來就是白字」在畫面上分不出來——沒有這句話就只能靠反推。
+       */
+      const styleFailure = styleRefinementFailure(job);
+      if (styleFailure)
+        setImportNotice(
+          `這一頁的字色與字型是預設值（白字 Arial），不是從圖上估出來的：${styleRefinementReasonText(
+            styleFailure,
+          )}。文字與位置不受影響；修好模型組合的文字模型之後再抽一次，就會拿回從圖上估出來的樣式。`,
+        );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "文字抽離失敗");
     } finally {
@@ -3920,14 +3993,31 @@ export function Editor() {
       batchExtractStop.current === "left" || activeProjectId.current !== projectId;
     batchExtractStop.current = undefined;
     setError(undefined);
+    // 上一輪的降級提示由這一輪重寫（理由見 `startTextExtraction`）。
+    setImportNotice(undefined);
     // 立刻進「進行中」，不要等到第一頁真的送出去：`confirm()` 一關掉按鈕就會重新算 disabled，
     // 中間若空著一段（例如下面查 OCR 狀態的那趟往返），使用者連按兩下就開得起兩批。
     setBatchExtract({ current: 1, total: targets.length, stopping: false });
     const failures: { order: number; reason: string }[] = [];
+    /**
+     * 成功了、但樣式精修被降級掉的頁。
+     *
+     * 不列進 `failures`：那一頁的框、幾何與抹字都做出來了，記成失敗會讓使用者以為要重做。
+     * 但也不能不講——這幾頁的字色與字型全是預設的白字 Arial。
+     */
+    const styleSkipped: { order: number; failure: StyleRefinementFailure }[] = [];
     let succeeded = 0;
     /** 整批提前停下的原因；`undefined` ＝ 每一頁都送出去過了。 */
     let abortedBy: "user" | "server" | undefined;
     let abortMessage: string | undefined;
+    /**
+     * 中止的那一頁到底有沒有被「用掉」。
+     *
+     * `remaining`（還有幾頁沒送出）預設把它算成已處理，前提是它至少送出去過。但新的設定
+     * 錯誤是**擋在 OCR 之前**的：那一頁一點事都沒發生，仍然整頁待抽——算掉它的話，使用者
+     * 看到「還有 2 頁沒有送出」，實際重跑時會處理 3 頁。
+     */
+    let abortConsumedPage = true;
     /** 開跑前的準備就失敗了（查 OCR 狀態那一趟），連迴圈都沒有進去。 */
     let preflightMessage: string | undefined;
     try {
@@ -3962,7 +4052,7 @@ export function Editor() {
            * 必定整批爆掉；就算閘門放寬，單一 OCR 程序峰值約 4GB RSS 且並行零共享，那是直接
            * 把伺服器打到 OOM。這裡慢不是還沒優化，是規格。
            */
-          await api.extractText(
+          const job = await api.extractText(
             projectId,
             slide.id,
             textExtractProviderId,
@@ -3974,6 +4064,8 @@ export function Editor() {
           // 202 已經回來了＝這一頁抽字成功（抹字 job 已排進 project.json）。下面那趟重讀
           // 只是為了讓畫面跟上，**不是**成功與否的一部分。
           succeeded += 1;
+          const styleFailure = styleRefinementFailure(job);
+          if (styleFailure) styleSkipped.push({ order: slide.order + 1, failure: styleFailure });
           /*
            * 逐頁重讀專案，畫布與縮圖列才會一頁一頁亮起來，而不是整批跑完才一次跳完。
            *
@@ -3997,6 +4089,12 @@ export function Editor() {
             // 原因不在這一頁身上，所以不列進逐頁失敗清單，而是整批停下來。
             abortedBy = "server";
             abortMessage = message;
+            // 設定錯誤是在伺服器跑 OCR 之前擋下的：這一頁完全沒被碰過，仍要算進「沒有送出」。
+            abortConsumedPage = !(
+              reason instanceof ApiError &&
+              reason.code !== undefined &&
+              OCR_CONFIG_ABORT_CODES.has(reason.code)
+            );
             break;
           }
           failures.push({ order: slide.order + 1, reason: message });
@@ -4025,13 +4123,29 @@ export function Editor() {
       setError(preflightMessage);
       return;
     }
+    /*
+     * 樣式精修被降級掉的頁要單獨講：那幾頁「成功」了，但字色與字型全是預設的白字 Arial。
+     * 措辭與單頁那條同一份，只是換成頁號清單。
+     */
+    const styleDetail = styleSkipped.length
+      ? `其中 ${styleSkipped.length} 頁的字色與字型是預設值（白字 Arial），不是從圖上估出來的（${styleSkipped
+          .slice(0, 6)
+          .map((item) => `第 ${item.order} 頁：${styleRefinementReasonText(item.failure)}`)
+          .join("；")}${
+          styleSkipped.length > 6 ? `；另有 ${styleSkipped.length - 6} 頁` : ""
+        }）。文字與位置不受影響；修好模型組合的文字模型之後再抽一次即可。`
+      : "";
     // 全部順利跑完時不留任何訊息——畫面已經逐頁更新過了，一句「成功 12 頁」佔著通知列
-    // 反而像出了事。
-    if (failures.length === 0 && abortedBy === undefined) return;
-    // 「還沒送出」不含撞出中止的那一頁：它已經送過了，只是原因不在它身上所以沒有列進
-    // 逐頁清單。
+    // 反而像出了事。但「有頁面沒有風格」不算順利跑完，那一定要說。
+    if (failures.length === 0 && abortedBy === undefined && styleSkipped.length === 0) return;
+    // 「還沒送出」預設不含撞出中止的那一頁：它已經送過了，只是原因不在它身上所以沒有列進
+    // 逐頁清單。例外是被擋在 OCR 之前的設定錯誤（見 `abortConsumedPage`），那一頁完全沒
+    // 被碰過，仍然整頁待抽。
     const remaining =
-      targets.length - succeeded - failures.length - (abortedBy === "server" ? 1 : 0);
+      targets.length -
+      succeeded -
+      failures.length -
+      (abortedBy === "server" && abortConsumedPage ? 1 : 0);
     /*
      * 逐頁原因最多列 6 筆。通知列是一顆按鈕，把 100 頁的原因全串上去等於一面文字牆，
      * 而失敗多半是同一個原因重複，看前幾筆就夠判斷。
@@ -4053,7 +4167,8 @@ export function Editor() {
           : `批次抽離文字完成：成功 ${succeeded} 頁`;
     const summary =
       `${headline}${failureDetail}${remaining > 0 ? `，還有 ${remaining} 頁沒有送出` : ""}。` +
-      (abortMessage ? ` ${abortMessage}` : "");
+      (abortMessage ? ` ${abortMessage}` : "") +
+      (styleDetail ? ` ${styleDetail}` : "");
     /*
      * 沒有任何一頁失敗時走**非錯誤**的通知列（`importNotice` 那條，紅色的錯誤列留給真的
      * 出錯的情況）：使用者自己按的停止不是故障，用紅字回報等於在說他做錯了什麼。

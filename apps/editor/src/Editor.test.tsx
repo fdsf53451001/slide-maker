@@ -1994,7 +1994,17 @@ describe("Editor MVP navigation", () => {
     return project;
   };
 
-  const extractionFetchMock = (project: ReturnType<typeof createProject>, maskedEditing: boolean) =>
+  const extractionFetchMock = (
+    project: ReturnType<typeof createProject>,
+    maskedEditing: boolean,
+    /**
+     * 抽字端點回的 `textExtraction`（樣式精修有沒有套上）。不給就整塊都不帶，
+     * 模擬這個欄位加入之前落地的舊 job——那種一律當作「有套上」，行為與加入前一致。
+     */
+    styleRefinement?: { applied: boolean; reason?: string; detail?: string },
+    /** 讓抽字端點改回這個失敗（設定錯誤的 409 走這條）。 */
+    extractFailure?: { status: number; error: string; message: string },
+  ) =>
     vi.fn(async (input: string | URL | Request) => {
       const path =
         typeof input === "string"
@@ -2025,7 +2035,12 @@ describe("Editor MVP navigation", () => {
           expiresAt: now,
         });
       if (path === "/api/ocr/status") return Response.json({ available: true, message: "ok" });
-      if (path.endsWith("/extract-text"))
+      if (path.endsWith("/extract-text")) {
+        if (extractFailure)
+          return Response.json(
+            { error: extractFailure.error, message: extractFailure.message },
+            { status: extractFailure.status },
+          );
         return Response.json(
           {
             id: "extract-job",
@@ -2037,9 +2052,20 @@ describe("Editor MVP navigation", () => {
             attempt: 0,
             createdAt: now,
             updatedAt: now,
+            ...(styleRefinement
+              ? {
+                  textExtraction: {
+                    originalVersionId: "base-version",
+                    threshold: 0.75,
+                    boxes: [],
+                    styleRefinement,
+                  },
+                }
+              : {}),
           },
           { status: 202 },
         );
+      }
       return Response.json(project);
     });
 
@@ -2153,6 +2179,117 @@ describe("Editor MVP navigation", () => {
         expect.stringMatching(/\/extract-text$/),
         expect.objectContaining({ body: expect.stringContaining('"traditionalize":false') }),
       ),
+    );
+  });
+
+  /*
+   * 樣式精修被降級掉時，畫面上一定要有話講。
+   *
+   * 實機踩到的缺陷：專案綁到已刪除的模型組合，樣式精修整段沒跑，整頁的字全是
+   * `boxesFromOcr` 的預設值（白字 `#ffffff` ＋ Arial）。那與「這一頁本來就是白字」在畫面
+   * 上長得一模一樣——不講出來，使用者只能靠反推才知道發生了什麼事。
+   */
+  it("樣式精修沒套上時，抽字成功仍要說明字色與字型是預設值，並帶上伺服器的下一步", async () => {
+    const project = extractionProject();
+    const fetchMock = extractionFetchMock(project, false, {
+      applied: false,
+      reason: "TEXT_MODEL_UNAVAILABLE",
+      detail: "需設定 SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    const notice = await screen.findByText(/白字 Arial/);
+    // 原因也要講：只說「是預設值」沒有下一步。
+    expect(notice.textContent).toContain("文字模型目前不可用");
+    // provider 的可用性理由往往就是下一步（缺哪個環境變數），要原樣顯示。
+    expect(notice.textContent).toContain("SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1");
+    // 這不是失敗，所以走非錯誤的通知列（紅色錯誤列留給真的出錯的情況）。
+    expect(notice.className).toContain("import-report");
+  });
+
+  /**
+   * 模型「成功回覆」但一個 id 都對不上（回空陣列／自己編 id）與樣式精修整段沒跑，畫面上
+   * 是同一件事，所以也必須講出來——只是原因不同，措辭要能讓使用者分辨。
+   */
+  it("模型回了但一個框都沒對上（STYLE_REFINE_EMPTY）同樣要提示", async () => {
+    const project = extractionProject();
+    vi.stubGlobal(
+      "fetch",
+      extractionFetchMock(project, false, { applied: false, reason: "STYLE_REFINE_EMPTY" }),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    expect((await screen.findByText(/白字 Arial/)).textContent).toContain(
+      "文字模型沒有回傳可用的樣式",
+    );
+  });
+
+  /**
+   * 上一輪的降級提示不會自己消失：通知列只有點擊才關得掉，而成功路徑刻意不寫訊息。
+   * 不清的話，使用者把模型組合修好、重抽成功之後，那句「字色與字型是預設值」還留在畫面上
+   * 指著一份其實有風格的產物。
+   */
+  it("重抽成功時清掉上一輪的降級提示", async () => {
+    const project = extractionProject();
+    // 第一輪：降級。
+    vi.stubGlobal(
+      "fetch",
+      extractionFetchMock(project, false, { applied: false, reason: "TEXT_MODEL_UNAVAILABLE" }),
+    );
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    await screen.findByText(/白字 Arial/);
+
+    // 第二輪（使用者已把組合修好）：同一個畫面重抽，這次有風格。
+    vi.stubGlobal("fetch", extractionFetchMock(project, false, { applied: true }));
+    fireEvent.click(screen.getByRole("button", { name: "抽離文字" }));
+    await waitFor(() => expect(screen.queryByText(/白字 Arial/)).toBeNull());
+  });
+
+  it("樣式精修有套上（或舊 job 沒有這個欄位）時完全不多一句話", async () => {
+    const project = extractionProject();
+    // 第一輪：伺服器明講 applied:true。
+    vi.stubGlobal("fetch", extractionFetchMock(project, false, { applied: true }));
+    const applied = render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /抽離文字/ })).toBeTruthy());
+    expect(screen.queryByText(/白字 Arial/)).toBeNull();
+    applied.unmount();
+
+    // 第二輪：欄位加入之前落地的 job（整塊 textExtraction 都沒有）也不得誤報。
+    vi.stubGlobal("fetch", extractionFetchMock(project, false));
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /抽離文字/ })).toBeTruthy());
+    expect(screen.queryByText(/白字 Arial/)).toBeNull();
+  });
+
+  it("模型組合設定錯誤時，伺服器的 409 繁中說明會原樣顯示給使用者", async () => {
+    const project = extractionProject();
+    const message =
+      "這個專案綁定的模型組合已經不存在（多半是在模型庫裡被刪掉了）。請到專案設定重新選一個模型組合，再抽一次。";
+    vi.stubGlobal(
+      "fetch",
+      extractionFetchMock(project, false, undefined, {
+        status: 409,
+        error: "COMBINATION_NOT_FOUND",
+        message,
+      }),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("文字抽離測試專案"));
+    fireEvent.click(await screen.findByRole("button", { name: "抽離文字" }));
+    expect((await screen.findByText(new RegExp("重新選一個模型組合"))).className).toContain(
+      "error",
     );
   });
 

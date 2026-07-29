@@ -355,6 +355,31 @@ export const generationJobSchema = z.object({
       threshold: z.number().min(0.5).max(0.95),
       // 與 editableTextLayerSchema 同一個上限：這些框最後原封不動變成新版本的文字層。
       boxes: z.array(editableTextBoxSchema).max(EDITABLE_TEXT_BOX_LIMIT),
+      /**
+       * 視覺樣式精修（字色／字型／weight／對齊／role）到底有沒有套上去。
+       *
+       * `applied: false` 代表這些框的字色與字型全是 `boxesFromOcr` 的預設值（白字 Arial），
+       * 不是從圖上估出來的。這件事**必須**跟著 job 回到前端：使用者看到的是「整頁 31 個框
+       * 都是白字」，而那與「這一頁本來就是白字」在畫面上長得一模一樣，沒有這個欄位就只能
+       * 靠反推。`reason` 是伺服器的原因代碼（大寫底線），翻譯留在 UI 層。
+       *
+       * optional：這個欄位加入之前落地的 job 沒有它，舊專案檔要照樣讀得起來。
+       */
+      styleRefinement: z
+        .object({
+          applied: z.boolean(),
+          reason: z
+            .string()
+            .regex(/^[A-Z0-9_]+$/)
+            .optional(),
+          /**
+           * 給使用者看的補充說明，目前只有 `TEXT_MODEL_UNAVAILABLE` 會帶：provider 的
+           * `availability.reason`。那是**靜態設定字串**（CLI 沒裝、缺 API key、要開哪個環境
+           * 變數），不含憑證也不含頁面內容，而它往往正好就是使用者的下一步。
+           */
+          detail: z.string().max(500).optional(),
+        })
+        .optional(),
     })
     .optional(),
 });
