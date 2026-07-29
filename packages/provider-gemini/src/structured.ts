@@ -4,6 +4,7 @@ import {
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
+  type StructuredTextResult,
 } from "@slide-maker/core";
 import { parseDataUri, parseLooseJson, readImageAsDataUrl } from "@slide-maker/provider-openai";
 import {
@@ -14,6 +15,7 @@ import {
   rethrowAsGeminiError,
   type GeminiClientConfig,
 } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiStructuredTextOptions {
   config: GeminiClientConfig;
@@ -53,7 +55,7 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
     return { status: await probeReady(this.#options.config) };
   }
 
-  async runStructured(request: StructuredTextRequest): Promise<unknown> {
+  async runStructured(request: StructuredTextRequest): Promise<StructuredTextResult> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("GEMINI_TEXT_DISABLED", "Gemini 文字 provider 未設定。");
     const parts: ContentPart[] = [{ text: request.prompt }];
@@ -93,7 +95,8 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
           },
           request.signal,
         );
-        return parseJsonContent(extractText(payload));
+        // usage 與內容出自同一份 payload；先前只挑 candidates[0] 而把 usageMetadata 丟掉。
+        return { value: parseJsonContent(extractText(payload)), usage: parseGeminiUsage(payload) };
       } catch (error) {
         lastError = error;
         const code = error instanceof SafeProviderError ? error.code : undefined;

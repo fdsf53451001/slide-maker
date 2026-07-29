@@ -21,7 +21,7 @@ function fakeProvider(
   return {
     id: "fake-text",
     availability: { status: "available" },
-    runStructured: (request) => handler(request),
+    runStructured: async (request) => ({ value: await handler(request) }),
   };
 }
 
@@ -111,7 +111,7 @@ describe("送進模型之前先縮圖", () => {
       language: "zh-TW",
       timeoutMs: 10_000,
     });
-    expect(description.title).toBe("圖");
+    expect(description.description.title).toBe("圖");
     expect(sentSize).toEqual({ width: 1024, height: 512 });
     await expect(readdir(dirname(sent))).rejects.toMatchObject({ code: "ENOENT" });
   });

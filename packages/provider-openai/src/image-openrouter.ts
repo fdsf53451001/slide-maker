@@ -2,10 +2,12 @@ import {
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
+  type ProviderUsage,
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
+import { parseOpenRouterUsage } from "./usage.js";
 
 /**
  * OpenRouter 專用影像 transport。與 CLI2Proxy 的 images/chat adapter 並列為第三種形狀，
@@ -70,7 +72,7 @@ export async function generateViaOpenRouter(
   model: string,
   request: ImageGenerationRequest,
   signal?: AbortSignal,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   if (request.references.length > MAX_OPENROUTER_REFERENCES) {
     throw new SafeProviderError(
       "OPENAI_IMAGE_REFERENCES_LIMIT",
@@ -100,10 +102,13 @@ export async function generateViaOpenRouter(
     ...(signal ? { signal } : {}),
   });
   const { mediaType, bytes } = extractOpenRouterImage(payload);
+  // OpenRouter 的 images 端點雖然也叫 images，欄位名卻同 chat（prompt/completion_tokens）
+  // 且多一個 `cost`——所以它有自己的解析器，不與 (a)／(b) 共用。
+  const usage = parseOpenRouterUsage(payload);
   // png 走結構驗證＋canvas 正規化；jpeg/webp 等改走 raster→canvas png 轉檔。
   if (mediaType === "image/png") {
     validatePngStructure(Buffer.from(bytes));
-    return normalizePngToCanvas(bytes, request.width, request.height);
+    return { bytes: normalizePngToCanvas(bytes, request.width, request.height), usage };
   }
-  return rasterToCanvasPng(bytes, mediaType, request.width, request.height);
+  return { bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height), usage };
 }

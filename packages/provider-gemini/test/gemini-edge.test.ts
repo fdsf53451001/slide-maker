@@ -305,7 +305,7 @@ describe("part parsing", () => {
       json: { candidates: [{ content: { parts: [null, { text: "{}" }] } }] },
     }));
     const text = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await text.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({});
+    expect((await text.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({});
   });
 
   it("ignores candidates beyond the first and an absent content object", async () => {
@@ -340,7 +340,7 @@ describe("part parsing", () => {
       },
     }));
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
       a: 1,
       b: 2,
     });
@@ -696,7 +696,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.summary).toBe("同一段。\n另一段。");
   });
 
@@ -715,7 +715,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     // 沒有截斷就會撞上 webSearchResultSchema 的 max(4000)，整筆被 safeParse 丟掉。
     expect(results).toHaveLength(1);
     expect(results[0]!.summary.length).toBeLessThanOrEqual(4_000);
@@ -741,7 +741,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     // 第一筆沒有 title → 過不了 schema(min 1) → 捨棄，而不是整批爆掉。
     expect(results).toHaveLength(1);
     expect(results[0]!.title).toBe("example.com");
@@ -761,7 +761,7 @@ describe("grounding aggregation", () => {
         : { json: grounded(chunks, supports) },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.search("q", 2, "zh-TW")).toHaveLength(2);
+    expect((await provider.search("q", 2, "zh-TW")).results).toHaveLength(2);
     // 重導向改成一次併發解完（序列化 × 上游重試會累積成數百秒），所以解析數不再等於
     // limit：上限是 limit 的兩倍，留餘裕給「解開後其實是同一頁」而被去重掉的候選。
     expect(calls.filter((call) => call.url.startsWith(REDIRECT_PREFIX))).toHaveLength(4);
@@ -793,7 +793,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results.map((result) => result.url)).toEqual([
       "https://udn.com/story/1",
       "https://cna.com.tw/story/2",
@@ -839,7 +839,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results.map((result) => result.url)).toEqual(["https://ok.example/a"]);
   });
 
@@ -861,7 +861,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.summary).toBe("只有 A 支撐的話。\n（多來源共同支撐）兩家都支撐的話。");
     expect(results[1]!.summary).toBe("（多來源共同支撐）兩家都支撐的話。");
   });
@@ -905,7 +905,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://udn.com/news/story/7266/9487252");
   });
 
@@ -916,7 +916,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://vertexaisearch.cloud.google.com/real/article");
   });
 
@@ -925,7 +925,7 @@ describe("redirect resolution", () => {
       call.url.startsWith(REDIRECT_PREFIX) ? { status: 302 } : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
   });
 
@@ -936,7 +936,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
   });
 
@@ -953,7 +953,7 @@ describe("redirect resolution", () => {
           : { json: singleChunk() },
       );
       const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-      const results = await provider.search("q", 5, "zh-TW");
+      const { results } = await provider.search("q", 5, "zh-TW");
       expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
     }
   });
@@ -965,7 +965,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://loop.example/next");
     // generateContent 一次 + redirect 一次；不得對 loop.example 再發第二次。
     expect(calls).toHaveLength(2);

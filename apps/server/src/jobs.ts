@@ -4,6 +4,7 @@ import sharp from "sharp";
 import {
   SafeProviderError,
   logError,
+  type GeneratedImage,
   type GenerationJob,
   type EditableTextBox,
   type ImageGenerationProgress,
@@ -16,6 +17,13 @@ import type { ImageProviderSource } from "./readiness.js";
 import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite, unerasedImagePath } from "./text-layers.js";
+import type { UsageLedger } from "./usage-ledger.js";
+
+/** JobRunner 記帳所需的兩件事：帳本本身，與「provider id → 模型識別欄位」的解析。 */
+export interface JobUsageRecording {
+  ledger: UsageLedger;
+  modelFields(providerId: string): { modelEntryId?: string; model?: string; providerKind?: string };
+}
 
 const PHASE_STEP = {
   queued: 1,
@@ -215,7 +223,37 @@ export class JobRunner {
     private readonly repository: FileProjectRepository,
     private readonly providers: ImageProviderSource,
     private readonly styles?: FileStyleRepository,
+    private readonly usage?: JobUsageRecording,
   ) {}
+
+  /**
+   * 記一次影像呼叫。**成功與失敗都記**——失敗一樣燒配額，只記成功的會系統性低估。
+   *
+   * 整段包在 try/catch 裡再套一層 `void`：記帳是觀測，不得有本事影響 job 的結果或時序。
+   */
+  private recordUsage(
+    projectId: string,
+    job: GenerationJob,
+    providerId: string,
+    ok: boolean,
+    usage?: GeneratedImage["usage"],
+  ): void {
+    if (!this.usage) return;
+    try {
+      void this.usage.ledger.recordProject(projectId, {
+        capability: "image",
+        // job 的 operation 就是帳本的 operation（image／edit／extract-text 三種），
+        // 不另外分類——那三者消耗的是同一個影像模型，但成本結構完全不同。
+        operation: job.operation,
+        slideId: job.slideId,
+        ok,
+        ...this.usage.modelFields(providerId),
+        ...(usage === undefined ? {} : { usage }),
+      });
+    } catch {
+      // modelFields 若因模型庫熱重建而 throw，也不能影響 job。
+    }
+  }
 
   private controllerKey(projectId: string, jobId: string): string {
     return `${projectId}:${jobId}`;
@@ -776,24 +814,33 @@ export class JobRunner {
         throw new Error("STYLE_REFERENCES_UNSUPPORTED");
       if (supplementalReferences.length > 1 && !provider.capabilities.multipleReferenceImages)
         throw new Error("MULTIPLE_REFERENCES_UNSUPPORTED");
-      const result = await provider.generate(
-        {
-          projectId,
-          slide,
-          style: project.styleSnapshot,
-          width: project.canvas.width,
-          height: project.canvas.height,
-          references,
-          model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
-          parameters: {},
-          ...(edit ? { edit } : {}),
-        },
-        {
-          signal: controller.signal,
-          onProgress: async (progress) => this.updateProviderProgress(projectId, jobId, progress),
-          onLifecycle: async (event) => this.observeChildLifecycle(projectId, jobId, event),
-        },
-      );
+      let result: GeneratedImage;
+      try {
+        result = await provider.generate(
+          {
+            projectId,
+            slide,
+            style: project.styleSnapshot,
+            width: project.canvas.width,
+            height: project.canvas.height,
+            references,
+            model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
+            parameters: {},
+            ...(edit ? { edit } : {}),
+          },
+          {
+            signal: controller.signal,
+            onProgress: async (progress) => this.updateProviderProgress(projectId, jobId, progress),
+            onLifecycle: async (event) => this.observeChildLifecycle(projectId, jobId, event),
+          },
+        );
+      } catch (error) {
+        // 失敗（含取消）也記：請求已經送出去了，配額該燒的照燒。usage 拿不到，落成
+        // reported:false，那正是它與「這次沒花 token」要被分開的原因。
+        this.recordUsage(projectId, job, provider.id, false);
+        throw error;
+      }
+      this.recordUsage(projectId, job, provider.id, true, result.usage);
       if (controller.signal.aborted) throw new DOMException("Generation cancelled", "AbortError");
       let safe = validatedOutput(result, provider.id);
       if (

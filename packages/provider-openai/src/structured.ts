@@ -4,6 +4,7 @@ import {
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
+  type StructuredTextResult,
 } from "@slide-maker/core";
 import {
   type OpenAiClientConfig,
@@ -12,6 +13,7 @@ import {
   readImageAsDataUrl,
   requestJson,
 } from "./http.js";
+import { parseChatCompletionsUsage } from "./usage.js";
 
 export interface OpenAiStructuredTextOptions {
   config: OpenAiClientConfig;
@@ -58,7 +60,7 @@ export class OpenAiStructuredTextProvider implements StructuredTextProvider {
     return { status: await probeReady(this.#options.config) };
   }
 
-  async runStructured(request: StructuredTextRequest): Promise<unknown> {
+  async runStructured(request: StructuredTextRequest): Promise<StructuredTextResult> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("OPENAI_TEXT_DISABLED", "OpenAI 文字 provider 未設定。");
     const parts: ChatContentPart[] = [{ type: "text", text: request.prompt }];
@@ -101,7 +103,11 @@ export class OpenAiStructuredTextProvider implements StructuredTextProvider {
           },
           ...(request.signal ? { signal: request.signal } : {}),
         });
-        return parseLooseJson(extractContent(payload));
+        // usage 與內容出自**同一份**已解析的 payload：先前只挑 `choices[0]` 而把它整個丟掉。
+        return {
+          value: parseLooseJson(extractContent(payload)),
+          usage: parseChatCompletionsUsage(payload),
+        };
       } catch (error) {
         lastError = error;
         const code = error instanceof SafeProviderError ? error.code : undefined;

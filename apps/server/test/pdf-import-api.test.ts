@@ -257,7 +257,7 @@ describe("PDF deck import API", () => {
           status === "available"
             ? { status: "available" }
             : { status: "unavailable", reason: "stubbed off" },
-        runStructured: run,
+        runStructured: async () => ({ value: await run() }),
       } as StructuredTextProvider);
 
     const styleAssets = () => readdir(join(dataRoot, "styles", "assets"));

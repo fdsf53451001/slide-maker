@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
-import type { SourceAsset, StructuredTextProvider } from "@slide-maker/core";
+import type { ProviderUsage, SourceAsset, StructuredTextProvider } from "@slide-maker/core";
 import { SOURCE_IMAGE_TYPES, chunkSourceText } from "./sources.js";
 
 /**
@@ -164,10 +164,21 @@ async function writeThumbnail(imagePath: string, directory: string): Promise<str
 }
 
 /**
+ * 一次描述的結果：內容與這次呼叫的用量。
+ *
+ * 用量必須跟著結果一起往上走，呼叫端才記得了帳——描述是背景工作，這條路的配額消耗在
+ * 前端完全看不見，漏掉它會讓「上傳十張圖」的成本憑空消失。
+ */
+export interface DescribeImageResult {
+  description: ImageDescription;
+  usage?: ProviderUsage;
+}
+
+/**
  * 跑一次描述。縮圖寫進暫存目錄再把路徑交給 provider（provider 端自己讀檔），用完即刪。
  * 失敗一律往上丟，由呼叫端決定降級行為。
  */
-export async function describeImage(options: DescribeImageOptions): Promise<ImageDescription> {
+export async function describeImage(options: DescribeImageOptions): Promise<DescribeImageResult> {
   const directory = await mkdtemp(join(tmpdir(), "slide-maker-image-desc-"));
   // 實際期限取「呼叫端給的 timeoutMs」與「硬上限」之中較小的那個。timeoutMs 只是**建議**：
   // 只有 codex 的 provider 會讀它，openai／gemini 直接忽略。
@@ -191,7 +202,13 @@ export async function describeImage(options: DescribeImageOptions): Promise<Imag
     void running.catch(() => undefined);
     const deadlineReached = abortion(signal);
     try {
-      return imageDescriptionSchema.parse(await Promise.race([running, deadlineReached.promise]));
+      const outcome = await Promise.race([running, deadlineReached.promise]);
+      // schema parse 失敗時 usage 一起丟掉是可接受的：那條路呼叫端記的是 ok:false，
+      // 而「模型回了但格式不對」與「沒回」在配額上的差別，帳本靠 reported:false 已說得清。
+      return {
+        description: imageDescriptionSchema.parse(outcome.value),
+        ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+      };
     } finally {
       deadlineReached.dispose();
     }

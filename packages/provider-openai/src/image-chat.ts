@@ -2,9 +2,11 @@ import {
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
+  type ProviderUsage,
 } from "@slide-maker/core";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
+import { parseChatCompletionsUsage } from "./usage.js";
 
 type ChatImagePart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -66,7 +68,7 @@ export async function generateViaChat(
   model: string,
   request: ImageGenerationRequest,
   signal?: AbortSignal,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   if (request.references.length > MAX_CHAT_REFERENCES) {
     throw new SafeProviderError(
       "OPENAI_IMAGE_REFERENCES_LIMIT",
@@ -92,5 +94,9 @@ export async function generateViaChat(
     ...(signal ? { signal } : {}),
   });
   const { mediaType, bytes } = parseDataUri(extractChatImage(payload));
-  return rasterToCanvasPng(bytes, mediaType, request.width, request.height);
+  // 這條走的是 /chat/completions，usage 形狀與文字／搜尋相同（見 usage.ts 的 (a)）。
+  return {
+    bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height),
+    usage: parseChatCompletionsUsage(payload),
+  };
 }

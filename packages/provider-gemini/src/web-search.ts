@@ -2,6 +2,7 @@ import {
   type ProviderAvailability,
   type ProviderPreflightResult,
   SafeProviderError,
+  type WebSearchOutcome,
   type WebSearchProvider,
   type WebSearchResult,
   webSearchResultSchema,
@@ -12,6 +13,7 @@ import {
   isReadableWebUrl,
 } from "@slide-maker/core/url-safety";
 import { generateContent, probeReady, type GeminiClientConfig } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiWebSearchOptions {
   config: GeminiClientConfig;
@@ -189,7 +191,7 @@ export class GeminiWebSearchProvider implements WebSearchProvider {
     limit: number,
     language: string,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult[]> {
+  ): Promise<WebSearchOutcome> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("GEMINI_WEB_SEARCH_DISABLED", "Gemini 網路搜尋未設定。");
     const payload = await generateContent(
@@ -279,6 +281,6 @@ export class GeminiWebSearchProvider implements WebSearchProvider {
         "GEMINI_WEB_SEARCH_EMPTY",
         "Gemini 搜尋未回傳可驗證的網頁候選結果。",
       );
-    return results;
+    return { results, usage: parseGeminiUsage(payload) };
   }
 }

@@ -58,12 +58,43 @@ export interface ImageGenerationRequest {
   };
 }
 
+/**
+ * 一次模型呼叫回報的用量。
+ *
+ * 每個欄位都是 optional 的原因與 `reported` 的存在是同一件事：各家 wire 形狀回報的欄位
+ * 並不重疊（chat 端點沒有 `imageTokens`、images 端點沒有 `reasoningTokens`、Codex CLI
+ * 一個都沒有），把缺的欄位補 0 會讓「這條通道沒回報」與「這次真的沒用到」在聚合後永遠
+ * 分不開——而那兩者要採取的行動完全相反（前者是我們的解析壞了，後者是正常結果）。
+ * 所以：解析不到任何已知欄位一律 `{ reported: false }`，**絕不填 0**。
+ */
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  totalTokens?: number;
+  /** 影像輸出的 token（images 端點的 `output_tokens_details.image_tokens`）。 */
+  imageTokens?: number;
+  /**
+   * provider 有沒有真的回報用量。false ≠ 0——UI 必須分得出「這次沒用 token」與
+   * 「這條通道沒回報」。任何解析不到的情況一律 reported:false，絕不填 0。
+   */
+  reported: boolean;
+  /**
+   * 實際扣款（目前只有 OpenRouter 回）。金額 UI 尚未實作，但欄位現在就留、解析時順手
+   * 存進帳本，之後開 UI 就不必回頭改 provider 與帳本。存原值，不換算幣別。
+   */
+  cost?: { amount: number; unit: "openrouter-credit" };
+}
+
 export interface GeneratedImage {
   bytes: Uint8Array;
   mediaType: string;
   extension: string;
   model: string;
   parameters: Record<string, unknown>;
+  /** 這次生成的模型用量。provider 未回報時省略（見 {@link ProviderUsage}）。 */
+  usage?: ProviderUsage;
 }
 
 export type GenerationPhase = "launching" | "waiting_for_codex" | "validating_output";
@@ -148,6 +179,18 @@ export interface StructuredTextRequest {
 }
 
 /**
+ * 一次結構化文字呼叫的結果。
+ *
+ * 刻意把回傳型別從裸 `unknown` 換成這個信封，而不是加一個 `onUsage` callback：現在的毛病
+ * 就是「usage 靜默被丟掉」，callback 可以不接、型別不會提醒任何人，而換型別會讓每一個
+ * 呼叫點都被編譯器逼著正視它。
+ */
+export interface StructuredTextResult {
+  value: unknown;
+  usage?: ProviderUsage;
+}
+
+/**
  * 結構化文字生成（純推理，不瀏覽網路）。網路搜尋一律交由
  * {@link WebSearchProvider} 處理，再把來源餵進 prompt。
  */
@@ -155,7 +198,13 @@ export interface StructuredTextProvider {
   readonly id: string;
   readonly availability: ProviderAvailability;
   preflight?(): Promise<ProviderPreflightResult>;
-  runStructured(request: StructuredTextRequest): Promise<unknown>;
+  runStructured(request: StructuredTextRequest): Promise<StructuredTextResult>;
+}
+
+/** 一次網路搜尋呼叫的結果。信封化的理由同 {@link StructuredTextResult}。 */
+export interface WebSearchOutcome {
+  results: WebSearchResult[];
+  usage?: ProviderUsage;
 }
 
 /**
@@ -171,7 +220,7 @@ export interface WebSearchProvider {
     limit: number,
     language: string,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult[]>;
+  ): Promise<WebSearchOutcome>;
 }
 
 export interface SourceProvider {

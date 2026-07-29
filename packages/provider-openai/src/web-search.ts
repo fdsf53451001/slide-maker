@@ -2,12 +2,14 @@ import {
   type ProviderAvailability,
   type ProviderPreflightResult,
   SafeProviderError,
+  type WebSearchOutcome,
   type WebSearchProvider,
   type WebSearchResult,
   webSearchResultSchema,
 } from "@slide-maker/core";
 import { isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { type OpenAiClientConfig, parseLooseJson, probeReady, requestJson } from "./http.js";
+import { parseChatCompletionsUsage } from "./usage.js";
 
 export interface OpenAiWebSearchOptions {
   config: OpenAiClientConfig;
@@ -79,7 +81,7 @@ export class OpenAiWebSearchProvider implements WebSearchProvider {
     limit: number,
     language: string,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult[]> {
+  ): Promise<WebSearchOutcome> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("OPENAI_WEB_SEARCH_DISABLED", "OpenAI 網路搜尋未設定。");
     const payload = await requestJson(this.#options.config, {
@@ -119,6 +121,6 @@ export class OpenAiWebSearchProvider implements WebSearchProvider {
         "OPENAI_WEB_SEARCH_EMPTY",
         "Gemini 搜尋未回傳可驗證格式的網頁候選結果。",
       );
-    return results.slice(0, limit);
+    return { results: results.slice(0, limit), usage: parseChatCompletionsUsage(payload) };
   }
 }

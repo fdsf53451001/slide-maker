@@ -24,6 +24,7 @@ import {
   rethrowAsGeminiError,
   type GeminiClientConfig,
 } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiImageOptions {
   config: GeminiClientConfig;
@@ -202,6 +203,7 @@ export class GeminiImageProvider implements ImageProvider {
       extension: "png",
       model: this.#options.model,
       parameters: { ...request.parameters, transport: "gemini-generate-content" },
+      usage: parseGeminiUsage(payload),
     };
   }
 }
