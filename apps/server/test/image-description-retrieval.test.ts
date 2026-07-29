@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PresentationProject, SourceAsset } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
+import { imageSummaryNotice } from "../src/outline-sources.js";
 import { SqliteFtsRetriever } from "../src/retriever.js";
 import { knownSourceContext } from "../src/source-context.js";
 import {
@@ -31,8 +32,15 @@ const OUTLINE_TOPIC = "電池成本結構";
 
 interface OutlinePayload {
   topic: string;
-  sourceCatalog: { id: string; name: string; url?: string; summary: string }[];
-  uploadedSources: { id: string; name: string; locator?: string; text: string }[];
+  sourceCatalog: { ref: string; name: string; kind: string; url?: string; summary: string }[];
+  /** 階段 2（寫作）才有：跨頁去重後的節錄，`source` 指回目錄的 ref。 */
+  uploadedSources?: {
+    ref: string;
+    source?: string;
+    name: string;
+    locator?: string;
+    text: string;
+  }[];
   searchedSources: Record<string, unknown>[];
 }
 
@@ -121,6 +129,8 @@ describe("圖片描述接上檢索鏈", () => {
                         content: "磷酸鐵鋰與三元電池的每度成本差距。",
                         narrative: "先講結論再講數字",
                         layoutHint: "單欄重點",
+                        sourceRefs: ["S1"],
+                        imageRefs: [],
                         sourceUrls: [],
                       },
                     ],
@@ -272,17 +282,37 @@ describe("圖片描述接上檢索鏈", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ replace: true }),
     });
-    expect(outlinePrompts).toHaveLength(1);
-    const payload = untrustedPayload(outlinePrompts[0]!);
+    // 大綱是兩次呼叫：規劃（只有目錄）與寫作（帶節錄）。
+    expect(outlinePrompts).toHaveLength(2);
+    const plan = untrustedPayload(outlinePrompts[0]!);
 
-    const catalogued = payload.sourceCatalog.find((source) => source.id === image.id);
+    const catalogued = plan.sourceCatalog.find((source) => source.name === image.name);
     expect(catalogued).toBeDefined();
-    // 目錄摘要取 extractedText 的前 500 字，所以第一句必須是那條「這是模型產生的」聲明——
-    // 少了它，模型會把圖片描述當成與 PDF 正文同級的原文。
-    expect(catalogued!.summary.startsWith(IMAGE_DESCRIPTION_NOTICE.slice(0, 20))).toBe(true);
+    // 圖片要在目錄裡標成 image，模型才知道哪些 ref 能放進 imageRefs。
+    expect(catalogued!.kind).toBe("image");
+    // 出處聲明**不再逐份重複**：150 份就是 150 次同一句話（9150 字元、15% 的目錄預算），
+    // 改成整個來源區共用一次。條目本身騰出來的空間拿去放真的能判斷相關性的內容。
+    expect(catalogued!.summary).not.toContain(IMAGE_DESCRIPTION_NOTICE);
+    expect(catalogued!.summary).not.toContain(IMAGE_DESCRIPTION_NOTICE.slice(0, 20));
     expect(catalogued!.summary).toContain(IMAGE_MARKER);
+    // 但語意不能消失：兩個階段的 prompt 各講一次等價的集體聲明。
+    for (const prompt of outlinePrompts) {
+      expect(prompt).toContain(imageSummaryNotice());
+      expect(prompt.split(imageSummaryNotice())).toHaveLength(2);
+    }
+    // `extractedText` 自己的前綴是刻意設計的（使用者在來源詳情看到的就是那一句），
+    // 剝除只發生在目錄組裝時，來源本身一個字都不能動。
+    const stored = await json<PresentationProject>(`/api/projects/${project.id}`);
+    const storedImage = stored.sources.find((source) => source.id === image.id)!;
+    expect(storedImage.extractedText.startsWith(IMAGE_DESCRIPTION_NOTICE)).toBe(true);
+    // 寫回時就存下結構化摘要（標題＋一句話），目錄優先讀它。
+    expect(storedImage.metadata.summary).toBeTruthy();
+    expect(catalogued!.summary.startsWith(storedImage.metadata.summary!)).toBe(true);
 
-    const excerpts = payload.uploadedSources.filter((source) => source.id === image.id);
+    const draft = untrustedPayload(outlinePrompts[1]!);
+    const excerpts = (draft.uploadedSources ?? []).filter(
+      (source) => source.source === catalogued!.ref,
+    );
     expect(excerpts.length).toBeGreaterThan(0);
     expect(excerpts.map((source) => source.text).join("\n")).toContain(IMAGE_MARKER);
     expect(excerpts[0]!.text).toContain(IMAGE_DESCRIPTION_CHUNK_PREFIX);
@@ -317,10 +347,13 @@ describe("圖片描述接上檢索鏈", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ replace: true }),
     });
-    const payload = untrustedPayload(outlinePrompts[0]!);
-    const catalogued = payload.sourceCatalog.find((source) => source.id === styleSource.id);
+    const plan = untrustedPayload(outlinePrompts[0]!);
+    const catalogued = plan.sourceCatalog.find((source) => source.name === styleSource.name);
     // 這正是斷鏈的樣子：模型只被告知「有這個來源」，看不到任何內容，也就沒有理由引用它。
     expect(catalogued?.summary).toBe("");
-    expect(payload.uploadedSources.some((source) => source.id === styleSource.id)).toBe(false);
+    const draft = untrustedPayload(outlinePrompts[1]!);
+    expect((draft.uploadedSources ?? []).some((source) => source.source === catalogued?.ref)).toBe(
+      false,
+    );
   });
 });

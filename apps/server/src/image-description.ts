@@ -4,7 +4,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 import type { SourceAsset, StructuredTextProvider } from "@slide-maker/core";
-import { SOURCE_IMAGE_TYPES, chunkSourceText } from "./sources.js";
+import { SOURCE_IMAGE_TYPES, chunkSourceText, truncateAtBoundary } from "./sources.js";
 
 /**
  * 上傳的圖片來源 → 可檢索的內容描述。
@@ -54,6 +54,19 @@ export const IMAGE_DESCRIPTION_NOTICE =
 
 /** 每一塊 chunk 的前綴。chunk 會被單獨餵進 prompt，出處標註必須跟著它走。 */
 export const IMAGE_DESCRIPTION_CHUNK_PREFIX = "［AI 圖片描述·非原文］";
+
+/**
+ * 寫進 `metadata.summary` 的結構化摘要長度上限。
+ *
+ * 描述的產出本來就有結構（title 是短名稱、summary 是兩三句話），那正是大綱目錄要的東西。
+ * 不存的話目錄只能退回「截 extractedText 的前 N 字」——實測 100 份圖片來源全部走這條，
+ * 每一份的開頭都是同一句 61 字元的聲明，占掉 15% 的目錄預算卻沒有一個字幫得上選源。
+ *
+ * 160 而不是「能存多少存多少」：目錄的預算是 {@link OUTLINE_CATALOG_SUMMARY_CHARS}，
+ * 結構化摘要吃滿的話就沒有空間再補正文了，而正文（軸標籤、表格、實際數值）才是模型判斷
+ * 「這份來源撐不撐得起這一頁」的依據。留 80 字元給正文是刻意的。
+ */
+const IMAGE_DESCRIPTION_SUMMARY_CHARS = 160;
 
 /**
  * 描述正文的字數上限。
@@ -222,6 +235,14 @@ function abortion(signal: AbortSignal): { promise: Promise<never>; dispose: () =
 export interface ImageDescriptionFields {
   extractedText: string;
   chunks: SourceAsset["chunks"];
+  /**
+   * 寫進 `metadata.summary` 的結構化摘要（標題 ＋ 一句話摘要）。
+   *
+   * **舊資料沒有這個欄位**：這是後來才加的，既有專案的圖片來源全都沒有，而回填要嘛寫
+   * migration、要嘛重跑 vision 燒配額，兩個都不划算。大綱目錄因此永遠保留「剝掉聲明後
+   * 取正文」那條 fallback——不要假設 `metadata.summary` 一定存在。
+   */
+  summary: string;
 }
 
 /**
@@ -272,9 +293,12 @@ export function classifyImageDescriptionFailure(error: unknown): ImageDescriptio
 /**
  * 描述 → 可寫回 `SourceAsset` 的欄位。
  *
- * extractedText 的第一段固定是聲明句，因為大綱的 `sourceCatalog` 直接截它的前 500 字；
- * 少了這一句，模型會把圖片描述當成與 PDF 正文同級的原文。三欄全空代表模型實質沒有交出
- * 東西（非嚴格 gateway 常見），回 undefined 讓呼叫端當失敗處理，不寫一份只有聲明的空殼。
+ * extractedText 的第一段固定是聲明句：那是使用者在來源詳情看到的東西，也是「產物是模型
+ * 衍生物」這條的落地形式。**大綱目錄不再逐份重複它**（改成整個來源區共用一次集體聲明），
+ * 但這裡一個字都不能省——目錄那邊是組裝時剝掉，不是這裡少寫。
+ *
+ * 三欄全空代表模型實質沒有交出東西（非嚴格 gateway 常見），回 undefined 讓呼叫端當失敗
+ * 處理，不寫一份只有聲明的空殼。
  */
 export function imageDescriptionFields(
   sourceId: string,
@@ -294,6 +318,12 @@ export function imageDescriptionFields(
       locatorPrefix: "image-description",
       textPrefix: `${IMAGE_DESCRIPTION_CHUNK_PREFIX}\n`,
     }),
+    // 與 body 的開頭逐字相同（同樣是 title 換行 summary），目錄才能靠前綴比對把重複的
+    // 那一段從補進來的正文裡扣掉。
+    summary: truncateAtBoundary(
+      [title, summary].filter(Boolean).join("\n"),
+      IMAGE_DESCRIPTION_SUMMARY_CHARS,
+    ),
   };
 }
 

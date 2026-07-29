@@ -25,6 +25,7 @@ import {
   type SlideVersion,
   type SourceAsset,
   type StylePreset,
+  SOURCE_COUNT_LIMIT,
 } from "@slide-maker/core";
 import {
   api,
@@ -5545,7 +5546,13 @@ export function Editor() {
           <div className="panel-content sources-panel">
             <div className="inspector-heading">
               <span>SOURCES</span>
-              <b>{project.sources.length}/100</b>
+              {/*
+                分母來自 core 的常數，不是抄一份數字：使用者實測時看到的 `SOURCES 175/100`
+                就是抄出來的——伺服器早放寬到 200，畫面上還印著 100，而且沒有任何測試會紅。
+              */}
+              <b>
+                {project.sources.length}/{SOURCE_COUNT_LIMIT}
+              </b>
             </div>
             <SourcePanel project={project} onProject={setProject} onError={setError} />
           </div>

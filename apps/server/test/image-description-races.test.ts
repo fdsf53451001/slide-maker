@@ -366,6 +366,11 @@ describe("圖片描述寫回與併發、降級", () => {
       const described = await settled(project.id, image.id);
       // 使用者的設定是後寫的，背景那條路握著舊快照，不得把它翻回 true。
       expect(described?.allowModelAccess).toBe(false);
+      // 描述現在還會寫回一個模型衍生欄位（`metadata.summary`，給大綱目錄用）。早退擋在整個
+      // `target.metadata` 賦值之前，所以它同樣不該落地——多一個欄位就要多釘一次，否則
+      // 下一次有人把賦值搬到早退前面時，這條授權閘門只會缺一角而沒有任何測試變紅。
+      expect(described?.metadata.summary).toBeUndefined();
+      expect(described?.metadata.imageDescriptionProvider).toBeUndefined();
       // 不論描述有沒有落地，關鍵是它不能被餵進大綱：那正是這個勾選的語意。
       const context_ = knownSourceContext(
         new SqliteFtsRetriever(join(dataRoot, "index", "sources.sqlite")),

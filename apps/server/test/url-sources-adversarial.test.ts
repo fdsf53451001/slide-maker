@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PresentationProject, SourceAsset } from "@slide-maker/core";
+import { SOURCE_COUNT_LIMIT, type PresentationProject, type SourceAsset } from "@slide-maker/core";
 import { createApp, type AppDependencies } from "../src/app.js";
 import type { WebSearchResult } from "../src/web-capture.js";
 
@@ -276,7 +276,7 @@ describe("貼上網址：對抗性情境", () => {
 
   it("併發撞到最後一個名額時，交易內的重驗擋得住（不會兩筆都塞進去）", async () => {
     const project = await createProject();
-    for (let index = 0; index < 99; index += 1) {
+    for (let index = 0; index < SOURCE_COUNT_LIMIT - 1; index += 1) {
       const query = new URLSearchParams({
         name: `filler-${index}.txt`,
         mediaType: "text/plain",
@@ -295,7 +295,7 @@ describe("貼上網址：對抗性情境", () => {
       post(`/api/projects/${project.id}/url-sources`, { urls: ["https://example.com/race2"] }),
     ]);
     expect([first.status, second.status].sort()).toEqual([201, 409]);
-    expect(await listSources(project.id)).toHaveLength(100);
+    expect(await listSources(project.id)).toHaveLength(SOURCE_COUNT_LIMIT);
   });
 
   it("兩個請求併發貼不同網址，兩筆都留得下來", async () => {
@@ -358,8 +358,8 @@ describe("貼上網址：對抗性情境", () => {
 
   describe("專案來源上限", () => {
     /** 先塞到剩下一個名額，再貼兩個抓得到正文的網址。 */
-    const fillTo99 = async (projectId: string) => {
-      for (let index = 0; index < 99; index += 1) {
+    const fillToOneBelowLimit = async (projectId: string) => {
+      for (let index = 0; index < SOURCE_COUNT_LIMIT - 1; index += 1) {
         const query = new URLSearchParams({
           name: `filler-${index}.txt`,
           mediaType: "text/plain",
@@ -375,7 +375,7 @@ describe("貼上網址：對抗性情境", () => {
 
     it("一筆都塞不下時才回 409，並逐筆說明是哪些網址沒進去", async () => {
       const project = await createProject();
-      await fillTo99(project.id);
+      await fillToOneBelowLimit(project.id);
       // 先用掉最後一個名額，專案就滿了。
       bodyByUrl.set("https://example.com/last", "最後一個名額。");
       expect((await addUrls(project.id, ["https://example.com/last"])).status).toBe(201);
@@ -386,13 +386,13 @@ describe("貼上網址：對抗性情境", () => {
         "https://example.com/f2",
       ]);
       expect(status).toBe(409);
-      expect(body.error).toBe("SOURCE_PROJECT_LIMIT");
+      expect(body.error).toBe("SOURCE_COUNT_LIMIT");
       // 裸錯誤碼不夠：使用者要知道是哪幾筆、以及原因不是「抓不到正文」。
       expect(body.failures).toEqual([
-        { url: "https://example.com/f1", reason: "SOURCE_PROJECT_LIMIT" },
-        { url: "https://example.com/f2", reason: "SOURCE_PROJECT_LIMIT" },
+        { url: "https://example.com/f1", reason: "SOURCE_COUNT_LIMIT" },
+        { url: "https://example.com/f2", reason: "SOURCE_COUNT_LIMIT" },
       ]);
-      expect(await listSources(project.id)).toHaveLength(100);
+      expect(await listSources(project.id)).toHaveLength(SOURCE_COUNT_LIMIT);
     });
 
     /**
@@ -404,7 +404,7 @@ describe("貼上網址：對抗性情境", () => {
      */
     it("【缺陷 D4】排不進專案的擷取結果不該留下孤兒資產", async () => {
       const project = await createProject();
-      await fillTo99(project.id);
+      await fillToOneBelowLimit(project.id);
       bodyByUrl.set("https://example.com/g0", "用掉最後一個名額。");
       expect((await addUrls(project.id, ["https://example.com/g0"])).status).toBe(201);
       const dirsWhenFull = (await assetDirs(project.id)).length;
@@ -426,7 +426,7 @@ describe("貼上網址：對抗性情境", () => {
      */
     it("【缺陷 D5】剩一個名額時應該收下一筆並把另一筆列為失敗", async () => {
       const project = await createProject();
-      await fillTo99(project.id);
+      await fillToOneBelowLimit(project.id);
       bodyByUrl.set("https://example.com/h1", "正文 1。");
       bodyByUrl.set("https://example.com/h2", "正文 2。");
       const { status, body } = await addUrls(project.id, [
@@ -434,12 +434,12 @@ describe("貼上網址：對抗性情境", () => {
         "https://example.com/h2",
       ]);
       expect(status).toBe(201);
-      expect(body.project!.sources).toHaveLength(100);
+      expect(body.project!.sources).toHaveLength(SOURCE_COUNT_LIMIT);
       expect(body.failures).toEqual([
-        { url: "https://example.com/h2", reason: "SOURCE_PROJECT_LIMIT" },
+        { url: "https://example.com/h2", reason: "SOURCE_COUNT_LIMIT" },
       ]);
       // 塞不下的那一筆連資產也不留（D4 的不變量在部分成功時同樣成立）。
-      expect(await assetDirs(project.id)).toHaveLength(100);
+      expect(await assetDirs(project.id)).toHaveLength(SOURCE_COUNT_LIMIT);
     });
   });
 });

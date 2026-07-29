@@ -404,6 +404,8 @@ describe("GeminiImageProvider", () => {
     expect(provider.availability.status).toBe("unavailable");
     expect(provider.capabilities.maskedEditing).toBe(true);
     expect(provider.capabilities.multipleReferenceImages).toBe(true);
+    // 宣告出來 jobs.ts 才截得動；沒有它，超額只會在送出的最後一刻讓整個 job 失敗。
+    expect(provider.capabilities.maxReferenceImages).toBe(8);
   });
 });
 

@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
-import type { PresentationProject, SlideSpec, StylePreset } from "@slide-maker/core";
+import {
+  STYLE_REFERENCE_IMAGE_LIMIT,
+  type PresentationProject,
+  type SlideSpec,
+  type StylePreset,
+} from "@slide-maker/core";
 import { api, imageUrl } from "./api.js";
 
-/** 風格分析一次最多餵 4 張圖（`/api/style-analysis` 的上限）。 */
-export const MAX_ANALYSIS_PAGES = 4;
+/**
+ * 一次最多挑幾頁做風格分析。**等同一份風格能帶幾張參考圖**（伺服器的 `referenceIds`
+ * 與 `stylePresetSchema.referenceImages` 都是同一個上限），所以直接用 core 的常數，
+ * 不在這裡再寫一個 4——那個 4 原本散在四個檔案裡。
+ */
+export const MAX_ANALYSIS_PAGES = STYLE_REFERENCE_IMAGE_LIMIT;
 
 /**
  * 自動挑要送去分析的頁：第 1 頁（封面）、文字量最少的一頁（段落頁）、

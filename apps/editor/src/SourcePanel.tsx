@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { PresentationProject, SourceAsset } from "@slide-maker/core";
+import {
+  URL_SOURCE_BATCH_LIMIT,
+  type PresentationProject,
+  type SourceAsset,
+} from "@slide-maker/core";
 import { api, projectAssetUrl, type UrlSourceFailure, type WebSearchResult } from "./api.js";
 import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
 
@@ -413,8 +417,6 @@ function WebSourceDialog({
   );
 }
 
-const MAX_PASTED_URLS = 10;
-
 /**
  * 伺服器錯誤代碼 → 使用者看得懂的原因。沒對到的代碼原樣顯示，總比吞掉好。
  *
@@ -439,7 +441,11 @@ const URL_FAILURE_REASONS: Record<string, string> = {
   WEB_RENDER_URL_MISMATCH: "外部 render 服務回傳的是另一個網址的內容，已拒收",
   WEB_RENDER_WARNING: "外部 render 服務回報這個網址擷取有問題",
   WEB_RENDER_FAILED: "外部 render 服務失敗，稍後再試一次",
-  SOURCE_PROJECT_LIMIT: "專案來源已達上限（100 份），請先刪掉一些來源",
+  // 兩種上限分開：份數滿了是「刪幾份」，容量滿了是「刪大的那幾份」——下一步不同，所以
+  // 不能共用一句。**份數與容量的實際數字不寫在這裡**：那是伺服器訊息帶回來的唯一真相，
+  // 抄一份到前端就是第二份真相，改上限時必定漂掉（舊版硬編的「100 份」就是這樣過期的）。
+  SOURCE_COUNT_LIMIT: "專案來源份數已達上限，請先刪掉一些來源再加入",
+  SOURCE_SIZE_LIMIT: "專案來源總容量已達上限，請先刪掉一些較大的來源再加入",
 };
 
 function urlFailureReason(reason: string): string {
@@ -475,7 +481,7 @@ function UrlSourceDialog({
   const [failures, setFailures] = useState<UrlSourceFailure[]>([]);
   const [localError, setLocalError] = useState<string>();
   const urls = parsePastedUrls(value);
-  const tooMany = urls.length > MAX_PASTED_URLS;
+  const tooMany = urls.length > URL_SOURCE_BATCH_LIMIT;
   // portal 到 body，理由同 SourcePreviewDialog。
   return createPortal(
     <div
@@ -516,7 +522,7 @@ function UrlSourceDialog({
             <span className="section-label">PASTE URL SOURCE</span>
             <h2>貼上網址</h2>
             <p>
-              一行一個網址（最多 {MAX_PASTED_URLS} 筆）。系統會擷取網頁正文、建立索引並存回
+              一行一個網址（最多 {URL_SOURCE_BATCH_LIMIT} 筆）。系統會擷取網頁正文、建立索引並存回
               目前專案；抓不到正文的網址不會加入，也不會用網頁摘要充數。
             </p>
           </div>
@@ -536,8 +542,8 @@ function UrlSourceDialog({
           />
         </label>
         <small>
-          {urls.length} 個網址{tooMany ? ` · 超過上限 ${MAX_PASTED_URLS} 筆` : ""} · 動態網頁（需要
-          JavaScript 才顯示內容的網站）會改由外部 render 服務取得正文，
+          {urls.length} 個網址{tooMany ? ` · 超過上限 ${URL_SOURCE_BATCH_LIMIT} 筆` : ""} ·
+          動態網頁（需要 JavaScript 才顯示內容的網站）會改由外部 render 服務取得正文，
           該網址與其內容會送往第三方處理。
         </small>
         {localError && <div className="web-source-error">{localError}</div>}

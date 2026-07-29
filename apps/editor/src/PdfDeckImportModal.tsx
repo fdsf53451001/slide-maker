@@ -1,5 +1,9 @@
 import { useState } from "react";
-import type { PresentationProject } from "@slide-maker/core";
+import {
+  MAX_DECK_IMPORT_PAGES,
+  MAX_UPLOAD_BYTES,
+  type PresentationProject,
+} from "@slide-maker/core";
 import { api, type PdfDeckImportReport, type PdfDeckInspection } from "./api.js";
 
 /**
@@ -90,7 +94,9 @@ export function PdfDeckImportModal({
               }}
             />
             <small>
-              只收 16:9 的頁面，最多 150 頁、100MB。PowerPoint／Keynote 可先「另存為 PDF」再匯入。
+              只收 16:9 的頁面，最多 {MAX_DECK_IMPORT_PAGES} 頁、
+              {Math.round(MAX_UPLOAD_BYTES / 1024 ** 2)}MB。PowerPoint／Keynote 可先「另存為
+              PDF」再匯入。
             </small>
           </label>
         ) : (

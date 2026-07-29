@@ -30,8 +30,9 @@ describe("OpenAI web-search engine wiring", () => {
         const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
           response_format?: { json_schema?: { schema?: { properties?: Record<string, unknown> } } };
         };
+        // 大綱有兩個階段，只有規劃那一階段帶 actualSlideCount；用 slides 當判準才兩階段通吃。
         const isOutline = Boolean(
-          requestBody.response_format?.json_schema?.schema?.properties?.actualSlideCount,
+          requestBody.response_format?.json_schema?.schema?.properties?.slides,
         );
         res.end(
           JSON.stringify({
@@ -50,6 +51,8 @@ describe("OpenAI web-search engine wiring", () => {
                               narrative: "直接說明",
                               layoutHint: "單欄",
                               imagePrompt: "Minimal presentation slide",
+                              sourceRefs: [],
+                              imageRefs: [],
                               sourceUrls: [],
                             },
                           ],

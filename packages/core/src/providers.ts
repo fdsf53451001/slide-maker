@@ -19,6 +19,15 @@ export interface ImageProviderCapabilities {
   imageEditing: boolean;
   maskedEditing: boolean;
   multipleReferenceImages: boolean;
+  /**
+   * 單次請求最多附幾張影像（含編輯任務的 base／mask）。**未宣告＝沒有已知上限**。
+   *
+   * transport 自己也會擋（`GEMINI_IMAGE_REFERENCES_LIMIT` 之類），但那是在最後一刻整個
+   * job 失敗：2026-07-29 線上一份 20 頁專案每一頁都掛在這裡（3 張風格圖 + 12 張內容圖），
+   * 使用者只看到「全部生成失敗」。宣告出來，組 references 的那一端才有辦法在還救得回來
+   * 的時候按優先序截斷（見 jobs.ts 的 limitReferences）。
+   */
+  maxReferenceImages?: number;
   supportedSizes: ReadonlyArray<{ width: number; height: number }>;
   reproducibleParameters: ReadonlyArray<string>;
 }
