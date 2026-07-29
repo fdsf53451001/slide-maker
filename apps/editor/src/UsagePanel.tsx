@@ -70,6 +70,7 @@ const BUCKET_KEYS = [
   "calls",
   "requests",
   "reportedCalls",
+  "unreportedCalls",
   "localCalls",
   "failedCalls",
   "inputTokens",
@@ -155,13 +156,15 @@ function BucketRow({
         <span>{formatCount(bucket.totalTokens)} token</span>
       </div>
       {/*
-        分組層級刻意只並排伺服器給的兩個數字，不在這裡算「未回報 = calls − reported − local」。
+        分組層級的「未回報」直接讀伺服器的 `bucket.unreportedCalls`，**不在這裡算**
+        「calls − reported − local」（那正是伺服器把這一格也放進每個桶的理由）。
         那條規則屬於伺服器；前端補算它就等於維護第二份會漂移的定義。
       */}
       {bucket.reportedCalls < bucket.calls && (
-        <div className="usage-row-note">
+        <div className={`usage-row-note${bucket.unreportedCalls > 0 ? " warn" : ""}`}>
           已回報用量 {formatCount(bucket.reportedCalls)} / {formatCount(bucket.calls)} 次
-          {bucket.localCalls > 0 && `（含本機 ${formatCount(bucket.localCalls)} 次）`}
+          {bucket.unreportedCalls > 0 && `，未回報 ${formatCount(bucket.unreportedCalls)} 次`}
+          {bucket.localCalls > 0 && `（本機 ${formatCount(bucket.localCalls)} 次未耗配額）`}
         </div>
       )}
       {bucket.failedCalls > 0 && (
@@ -294,7 +297,21 @@ function UsageBreakdown({ summary }: { summary: UsageSummary }) {
   );
 }
 
-export function UsagePanel({ projectId }: { projectId: string }) {
+/**
+ * `refreshToken` 是呼叫端「現在值得重抓一次」的訊號：數字一變就重抓，值本身沒有意義。
+ *
+ * 目前唯一的來源是 `Editor.tsx` 的批次生成收尾（`jobsBusy` 由 true 變 false），而那正是
+ * 使用者最想看用量的一刻。**刻意不是「jobs 陣列變了就抓」**：批次生成每完成一頁都會讓
+ * jobs 變一次，而 `GET /usage` 會先 `await usageLedger.idle()`，那等於在生成最忙的時候
+ * 對它連打幾十次。時機的判斷屬於呼叫端（它才知道什麼算「一批跑完」），這裡只認訊號。
+ */
+export function UsagePanel({
+  projectId,
+  refreshToken = 0,
+}: {
+  projectId: string;
+  refreshToken?: number;
+}) {
   const [state, setState] = useState<UsageState>({ projectId, status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
   const [pending, setPending] = useState(true);
@@ -309,7 +326,8 @@ export function UsagePanel({ projectId }: { projectId: string }) {
   if (state.projectId !== projectId) setState({ projectId, status: "loading" });
 
   useEffect(() => {
-    // 切到「專案」分頁（元件掛載）時抓一次，加上使用者自己按「重新整理」。
+    // 切到「專案」分頁（元件掛載）時抓一次，加上使用者自己按「重新整理」，以及呼叫端
+    // 遞來的 `refreshToken`（目前只有批次生成收尾那一下）。
     // **刻意沒有定時器**：`Editor.tsx` 已經有專案輪詢，再加一條只會多打一份請求；
     // 生成跑完之後回到這個分頁就會重新掛載、自然拿到新數字。
     let abandoned = false;
@@ -343,7 +361,7 @@ export function UsagePanel({ projectId }: { projectId: string }) {
     return () => {
       abandoned = true;
     };
-  }, [projectId, reloadToken]);
+  }, [projectId, reloadToken, refreshToken]);
 
   const summary = state.status === "ready" ? state.summary : undefined;
   return (

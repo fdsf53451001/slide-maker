@@ -2994,6 +2994,31 @@ export function Editor() {
     );
     return () => clearInterval(timer);
   }, [project, jobsBusy, sourcesParsing]);
+  /**
+   * 批次生成收尾時讓用量面板重抓一次（`jobsBusy` 的 **false 邊緣**）。
+   *
+   * 那一刻正是使用者最想看用量的時候，而面板自己只在掛載與按下「重新整理」時抓——停在
+   * 「專案」分頁看著批次跑完的人，數字會停在開跑前。
+   *
+   * **不可以改成監聽 `project.jobs`**：批次生成每完成一頁就換一次專案物件（上面那條輪詢
+   * 每 700 毫秒拉一份），而 `GET /usage` 會先 `await usageLedger.idle()`——那等於在伺服器
+   * 最忙的時候對它連打幾十次。這裡也刻意**不開任何定時器**，輪詢只有上面那一條。
+   *
+   * 換專案時只重設邊緣、不觸發：`project.id` 一變，`UsagePanel` 就被 `key` 重建並自己抓
+   * 一次，這裡再遞一個訊號只是同一份資料多打一次；而「上一份專案忙完」對新專案的畫面
+   * 也不是有意義的事件。
+   */
+  const [usageRefreshToken, setUsageRefreshToken] = useState(0);
+  const usageBusyEdge = useRef<{ projectId: string | undefined; busy: boolean }>({
+    projectId: project?.id,
+    busy: jobsBusy,
+  });
+  useEffect(() => {
+    const previous = usageBusyEdge.current;
+    usageBusyEdge.current = { projectId: project?.id, busy: jobsBusy };
+    if (previous.projectId !== project?.id) return;
+    if (previous.busy && !jobsBusy) setUsageRefreshToken((token) => token + 1);
+  }, [project?.id, jobsBusy]);
   useEffect(() => {
     if (!activeJob) return;
     const timer = setInterval(() => setNow(Date.now()), 1_000);
@@ -5542,11 +5567,12 @@ export function Editor() {
             </div>
             {/*
               模型用量統計。面板自己抓資料（切到這個分頁＝掛載＝抓一次），**沒有輪詢**——
-              `Editor.tsx` 已經有一條專案輪詢，用量再加一條定時器只是多打請求。
+              `Editor.tsx` 已經有一條專案輪詢，用量再加一條定時器只是多打請求。批次生成
+              收尾時另外遞一個 `usageRefreshToken` 讓它重抓一次（見上面那條 effect）。
               `key` 是第二道保險：換專案時強制重建，上一份專案的數字不可能留在畫面上
               （元件內部另有一道 render 期的守衛，見 `UsagePanel.tsx`）。
             */}
-            <UsagePanel key={project.id} projectId={project.id} />
+            <UsagePanel key={project.id} projectId={project.id} refreshToken={usageRefreshToken} />
           </div>
         )}
         {panel === "sources" && (

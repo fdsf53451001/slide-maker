@@ -474,8 +474,79 @@ describe("聚合", () => {
     expect(summary.totalCalls).toBe(4);
     // 分組桶裡也看得到，UI 才有辦法在「這一組全是本機」時不顯示未回報警告。
     expect(summary.byModel.find((bucket) => bucket.modelEntryId === "local-inpaint")).toMatchObject(
-      { localCalls: 1, reportedCalls: 0 },
+      { localCalls: 1, reportedCalls: 0, unreportedCalls: 0 },
     );
+  });
+
+  /**
+   * 未回報數在**分組桶裡也要有**，而且與頂層是同一套規則（未回報且不是本機 provider）。
+   *
+   * 兩件事都靠它：前端不必也不可以自己算 `calls − reported − local`（那份規則必然漂移，
+   * 見 CLAUDE.md 與 `api.ts`），而頂層那個數字必須拆得回分組——否則使用者看到「其中 3 次
+   * 未回報」卻無從得知是哪一個模型或哪一種操作在不回報，這個面板就失去它唯一的用途。
+   */
+  it("每個分組桶都有 unreportedCalls，且與頂層同一套規則、加得回頂層", () => {
+    const summary = summarizeUsage([
+      // 未回報的 gateway：頂層與三種分組都要算它一次。
+      record({
+        capability: "image",
+        operation: "generate",
+        providerKind: "openai",
+        modelEntryId: "img",
+        model: "gpt-image-2",
+        usage: { reported: false },
+      }),
+      record({
+        capability: "image",
+        operation: "generate",
+        providerKind: "openai",
+        modelEntryId: "img",
+        model: "gpt-image-2",
+        usage: { reported: false },
+      }),
+      // 本機抹字：沒燒配額，三種分組裡一樣不可以混進未回報。
+      record({
+        capability: "image",
+        operation: "extract-text",
+        providerKind: "local",
+        modelEntryId: "local-inpaint",
+        model: "local-inpaint",
+        usage: { reported: false },
+      }),
+      // 正常回報的一筆。
+      record(),
+    ]);
+
+    expect(summary.unreportedCalls).toBe(2);
+    expect(summary.totals.unreportedCalls).toBe(2);
+    expect(summary.byCapability.image).toMatchObject({
+      calls: 3,
+      unreportedCalls: 2,
+      localCalls: 1,
+      reportedCalls: 0,
+    });
+    expect(summary.byCapability.text).toMatchObject({ calls: 1, unreportedCalls: 0 });
+    expect(summary.byOperation.generate).toMatchObject({ calls: 2, unreportedCalls: 2 });
+    // 本機那一組是 0 而不是 1：這正是「未回報」與「本機」不可混為一談的那一格。
+    expect(summary.byOperation["extract-text"]).toMatchObject({
+      calls: 1,
+      unreportedCalls: 0,
+      localCalls: 1,
+    });
+    expect(summary.byModel.find((bucket) => bucket.modelEntryId === "img")).toMatchObject({
+      calls: 2,
+      unreportedCalls: 2,
+    });
+
+    // 頂層拆得回分組：三種分組各自相加都要等於頂層那一個數字。
+    const sumOf = (buckets: { unreportedCalls: number }[]) =>
+      buckets.reduce((total, bucket) => total + bucket.unreportedCalls, 0);
+    expect(sumOf(Object.values(summary.byCapability))).toBe(summary.unreportedCalls);
+    expect(sumOf(Object.values(summary.byOperation))).toBe(summary.unreportedCalls);
+    expect(sumOf(summary.byModel)).toBe(summary.unreportedCalls);
+    // 桶內三個數字仍互補（頂層舊定義是這樣減出來的，現在改由 accumulate 直接算）。
+    for (const bucket of Object.values(summary.byCapability))
+      expect(bucket.reportedCalls + bucket.unreportedCalls + bucket.localCalls).toBe(bucket.calls);
   });
 
   /**

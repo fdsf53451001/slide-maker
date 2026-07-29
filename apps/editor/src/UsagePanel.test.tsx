@@ -29,6 +29,7 @@ function bucket(patch: Partial<UsageBucket> = {}): UsageBucket {
     calls: 0,
     requests: 0,
     reportedCalls: 0,
+    unreportedCalls: 0,
     localCalls: 0,
     failedCalls: 0,
     inputTokens: 0,
@@ -78,18 +79,32 @@ function richSummary(): UsageSummary {
       calls: 24,
       requests: 27,
       reportedCalls: 13,
+      unreportedCalls: 3,
       localCalls: 8,
       failedCalls: 2,
       inputTokens: 12345,
       outputTokens: 6789,
       totalTokens: 19134,
     }),
+    // 分組桶的 unreportedCalls 由伺服器算好（reported + unreported + local = calls）。
     byCapability: {
-      image: bucket({ calls: 5, requests: 6, reportedCalls: 2, totalTokens: 4000 }),
+      image: bucket({
+        calls: 5,
+        requests: 6,
+        reportedCalls: 2,
+        unreportedCalls: 3,
+        totalTokens: 4000,
+      }),
       text: bucket({ calls: 11, requests: 11, reportedCalls: 11, totalTokens: 15134 }),
     },
     byOperation: {
-      generate: bucket({ calls: 5, requests: 6, reportedCalls: 2, totalTokens: 4000 }),
+      generate: bucket({
+        calls: 5,
+        requests: 6,
+        reportedCalls: 2,
+        unreportedCalls: 3,
+        totalTokens: 4000,
+      }),
       "extract-text": bucket({ calls: 8, localCalls: 8 }),
     },
     byModel: [
@@ -100,6 +115,7 @@ function richSummary(): UsageSummary {
         calls: 5,
         requests: 6,
         reportedCalls: 2,
+        unreportedCalls: 3,
         failedCalls: 1,
         totalTokens: 4000,
       }),
@@ -162,7 +178,7 @@ describe("用量面板", () => {
     expect(text(".usage-retry")).toContain("重試");
   });
 
-  it("依能力與依模型各自成組，分組層級只並排伺服器給的兩個數字", async () => {
+  it("依能力與依模型各自成組，分組層級的數字全部取自伺服器欄位", async () => {
     stubUsage({ p1: richSummary() });
     render(<UsagePanel projectId="p1" />);
 
@@ -174,8 +190,46 @@ describe("用量面板", () => {
     expect(capability?.textContent).toContain("文字");
     expect(model?.textContent).toContain("gpt-image-2");
     expect(model?.textContent).toContain("openai");
-    // 「已回報 2 / 5」是兩個伺服器欄位並排，不是前端減出來的未回報數。
+    // 「已回報 2 / 5」是兩個伺服器欄位並排。
     expect(model?.textContent).toContain("2 / 5");
+  });
+
+  /**
+   * 分組層級的「未回報」必須**如實顯示**，而且是伺服器 `bucket.unreportedCalls` 那一格
+   * （前端不得拿 `calls − reported − local` 自己減，見 CLAUDE.md 與 `api.ts`）。
+   *
+   * 只寫「已回報 2 / 5」是不夠的：剩下的 3 次到底是燒了配額卻沒回報，還是根本沒碰模型的
+   * 本機呼叫？那正是使用者要在這一列裡分辨的事——而兩者在畫面上長得一樣就等於沒說。
+   */
+  it("分組列直接顯示伺服器給的未回報數，且本機那一組不會被說成未回報", async () => {
+    stubUsage({ p1: richSummary() });
+    render(<UsagePanel projectId="p1" />);
+
+    await screen.findByText("19,134");
+    const rows = [...(panel()?.querySelectorAll(".usage-row") ?? [])];
+    const note = (name: string) =>
+      rows
+        .find((row) => row.querySelector(".usage-row-name")?.textContent === name)
+        ?.querySelector(".usage-row-note")?.textContent ?? "";
+
+    // 影像：5 次呼叫、2 次有回報、3 次燒了配額卻沒回報。
+    expect(note("影像")).toContain("2 / 5");
+    expect(note("影像")).toContain("未回報 3 次");
+    expect(note("gpt-image-2")).toContain("未回報 3 次");
+    // 未回報是這一列上該警示的事（本機不是）。
+    const image = rows.find((row) => row.querySelector(".usage-row-name")?.textContent === "影像");
+    expect(image?.querySelector(".usage-row-note")?.className).toContain("warn");
+
+    // 抽離文字全是本機（折疊起來的「依操作」內容一樣在 DOM 裡）：不可以被寫成「未回報」，
+    // 那是完全相反的意思——一個燒了配額，一個根本沒碰模型。
+    expect(note("抽離文字")).toContain("本機 8 次");
+    expect(note("抽離文字")).not.toContain("未回報");
+
+    // 文字那一組全部有回報：一句多餘的話都不該出現。
+    const textRow = rows.find(
+      (row) => row.querySelector(".usage-row-name")?.textContent === "文字",
+    );
+    expect(textRow?.querySelector(".usage-row-note")).toBeNull();
   });
 
   it("依操作預設折疊", async () => {
@@ -389,4 +443,113 @@ describe("用量面板在編輯器裡的位置", () => {
     expect(usageCalls()).toBe(1);
     expect(panel()?.textContent).toContain("USAGE");
   });
+});
+
+/**
+ * 批次生成收尾（`jobsBusy` 由 true 變 false）自動重抓一次。
+ *
+ * 兩側都要釘，而且**第二側才是重點**：
+ *
+ * ① 跑完要更新——那一刻正是使用者最想看用量的時候，而面板本身只在掛載與按「重新整理」
+ *    時抓；停在「專案」分頁看著批次跑完的人，數字會停在開跑前。
+ * ② 跑的**過程中**不可以連打——批次生成每完成一頁就換一份專案物件（專案輪詢每 700 毫秒
+ *    拉一次），監聽 `project.jobs` 的話這裡就會變成對 `GET /usage` 的連續請求，而那支端點
+ *    會先 `await usageLedger.idle()`。所以下面刻意讓 jobs 陣列在生成期間變好幾次。
+ */
+describe("批次生成結束後自動重抓", () => {
+  function runningProject(topic: string): PresentationProject {
+    const project = createProject({ topic, brief: { desiredSlideCount: 1 } });
+    project.workflowStage = "editing";
+    const slide = project.slides[0]!;
+    project.jobs = [
+      {
+        id: "job-1",
+        projectId: project.id,
+        slideId: slide.id,
+        providerId: "mock-image",
+        status: "running",
+        attempt: 1,
+        progress: { step: 1, total: 6 },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    return project;
+  }
+
+  /** 每一次輪詢都回一份**新的**專案物件（jobs 陣列跟著換），由 `done()` 決定何時收工。 */
+  function stubGenerating(initial: PresentationProject, usage: UsageSummary) {
+    let step = 1;
+    let finished = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(raw, "http://local.test").pathname;
+      if (path === `/api/projects/${initial.id}/usage`) return Response.json(usage);
+      if (path === "/api/providers")
+        return Response.json([
+          {
+            id: "mock-image",
+            name: "Mock",
+            availability: { status: "available" },
+            capabilities: { fullSlideGeneration: true },
+          },
+        ]);
+      if (path === "/api/styles") return Response.json([createDefaultStyle()]);
+      if (path === "/api/model-library")
+        return Response.json({ connections: [], models: [], combinations: [] });
+      if (path === "/api/text-providers") return Response.json([]);
+      // 每次都是全新的物件與全新的 jobs 陣列，正如真的在跑的批次生成。
+      const snapshot = structuredClone(initial);
+      step += 1;
+      const job = snapshot.jobs[0]!;
+      if (finished) {
+        job.status = "completed";
+        job.progress = { step: 6, total: 6 };
+      } else {
+        job.progress = { step: Math.min(step, 5), total: 6 };
+      }
+      if (path === "/api/projects") return Response.json([snapshot]);
+      return Response.json(snapshot);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      usageCalls: () =>
+        fetchMock.mock.calls.filter(([input]) => String(input).includes("/usage")).length,
+      projectCalls: () =>
+        fetchMock.mock.calls.filter(
+          ([input]) =>
+            new URL(String(input), "http://local.test").pathname === `/api/projects/${initial.id}`,
+        ).length,
+      finish: () => {
+        finished = true;
+      },
+    };
+  }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("生成中不重抓、結束時剛好重抓一次", async () => {
+    const project = runningProject("批次生成用量");
+    const stub = stubGenerating(project, richSummary());
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("批次生成用量"));
+    await waitFor(() => expect(document.querySelector(".inspector-tabs")).not.toBeNull());
+    fireEvent.click(screen.getByText("專案"));
+    await screen.findByText("19,134");
+    expect(stub.usageCalls()).toBe(1);
+
+    // 生成期間：專案輪詢打了好幾次、jobs 每次都換了物件，用量端點仍然只被打過那一次。
+    await sleep(2_200);
+    expect(stub.projectCalls()).toBeGreaterThanOrEqual(2);
+    expect(stub.usageCalls()).toBe(1);
+
+    // 收工：下一次輪詢帶回 completed，busy 的 false 邊緣觸發一次重抓。
+    stub.finish();
+    await waitFor(() => expect(stub.usageCalls()).toBe(2), { timeout: 5_000 });
+
+    // 剛好一次：邊緣不可以變成另一條輪詢（面板刻意沒有定時器）。
+    await sleep(2_200);
+    expect(stub.usageCalls()).toBe(2);
+  }, 30_000);
 });

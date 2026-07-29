@@ -189,9 +189,12 @@ describe("模型用量帳本與 API", () => {
     expect(summary.unreportedCalls).toBe(1);
     expect(summary.totals.inputTokens).toBe(0);
     expect(summary.totals.outputTokens).toBe(0);
+    // 分組層級也帶著未回報數（前端因此不必、也不可以自己減）。
     expect(summary.byOperation["outline-regenerate"]).toMatchObject({
       calls: 1,
       reportedCalls: 0,
+      unreportedCalls: 1,
+      localCalls: 0,
       inputTokens: 0,
     });
   }, 60_000);
@@ -264,6 +267,8 @@ describe("模型用量帳本與 API", () => {
     expect(summary.localCalls).toBeGreaterThanOrEqual(queued.length);
     expect(summary.unreportedCalls).toBe(0);
     expect(summary.byCapability.image?.localCalls).toBe(queued.length);
+    // 分組桶跟著頂層走同一套規則：本機呼叫一筆都不可以掉進未回報。
+    expect(summary.byCapability.image?.unreportedCalls).toBe(0);
   }, 60_000);
 
   it("GET /usage 對不存在的專案回 404，對沒有帳本的專案回全零", async (context) => {

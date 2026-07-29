@@ -109,8 +109,8 @@ export interface TextProviderSummary {
  *
  * **前端不得自己重算任何一個聚合數字**：`unreportedCalls` 是伺服器明確算好給前端的（正是
  * 為了不讓前端拿 `calls - reportedCalls - localCalls` 自己減，那份規則必然漂移），未回報的
- * 呼叫也刻意一個 token 都沒有計進去。桶裡沒有 `unreportedCalls` 是刻意的：分組層級只顯示
- * 伺服器給的欄位（`calls` 與 `reportedCalls` 並排），不要在 UI 層補算。
+ * 呼叫也刻意一個 token 都沒有計進去。頂層與**每一個分組桶**都帶著這個欄位，而且是伺服器
+ * 同一段聚合程式碼算出來的，所以分組層級照樣直接讀欄位就好。
  */
 export interface UsageBucket {
   /** 邏輯呼叫數（一筆紀錄一次）。 */
@@ -119,6 +119,8 @@ export interface UsageBucket {
   requests: number;
   /** provider 真的回報了用量的筆數。 */
   reportedCalls: number;
+  /** 燒了配額、但模型端沒回報用了多少的筆數。**伺服器算好的，前端不得自己減。** */
+  unreportedCalls: number;
   /** 本機 provider（mock／local）的筆數：沒碰模型、沒燒配額。 */
   localCalls: number;
   failedCalls: number;
@@ -140,7 +142,10 @@ export interface UsageSummary {
   totalCalls: number;
   totalRequests: number;
   reportedCalls: number;
-  /** 燒了配額、但模型端沒有回報用了多少的呼叫數。**絕不可當成 0 併進總數。** */
+  /**
+   * 燒了配額、但模型端沒有回報用了多少的呼叫數。**絕不可當成 0 併進總數。**
+   * 與 `totals.unreportedCalls` 是同一個數字，也等於各分組桶相加。
+   */
   unreportedCalls: number;
   /** 本機 provider 的呼叫數（沒燒配額，與「未回報」是兩件事）。 */
   localCalls: number;

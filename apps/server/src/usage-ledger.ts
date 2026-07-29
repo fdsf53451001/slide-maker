@@ -549,6 +549,14 @@ export interface UsageBucket {
   requests: number;
   /** provider 真的回報了用量的筆數。 */
   reportedCalls: number;
+  /**
+   * 燒了配額、但模型端沒回報用了多少的筆數（`calls - reportedCalls - localCalls`）。
+   *
+   * **由伺服器算好給前端，而不是讓它自己減**（見 `UsageSummary.unreportedCalls`）：頂層與
+   * 分組走的是 `accumulate()` 裡**同一段**程式碼，所以頂層的未回報數必然等於各分組相加，
+   * 「拿分組拆解頂層數字」才驗得起來。前端補算等於維護第二份會漂移的定義。
+   */
+  unreportedCalls: number;
   /** 本機 provider（mock／local）的筆數：沒碰模型、沒燒配額，不算未回報。 */
   localCalls: number;
   failedCalls: number;
@@ -570,7 +578,10 @@ export interface UsageSummary {
   totalCalls: number;
   totalRequests: number;
   reportedCalls: number;
-  /** 明確算出來給前端，而不是要它自己減——前端不得鏡射伺服器的計算。 */
+  /**
+   * 明確算出來給前端，而不是要它自己減——前端不得鏡射伺服器的計算。
+   * 與 `totals.unreportedCalls` 是同一個數字（分組桶也有這一格，見 `UsageBucket`）。
+   */
   unreportedCalls: number;
   /** 本機 provider 的呼叫數（沒燒配額，與「未回報」是兩件事）。 */
   localCalls: number;
@@ -598,6 +609,7 @@ function emptyBucket(): UsageBucket {
     calls: 0,
     requests: 0,
     reportedCalls: 0,
+    unreportedCalls: 0,
     localCalls: 0,
     failedCalls: 0,
     inputTokens: 0,
@@ -623,8 +635,11 @@ function accumulate(bucket: UsageBucket, record: UsageRecord): void {
   if (!record.usage.reported) {
     // 本機 provider 與「回報不了的 gateway」要分開數，否則批次抽字會讓未回報數膨脹到
     // 看不出真正的問題在哪（見 LOCAL_PROVIDER_KINDS）。
+    // 未回報數在**這裡**算，頂層與每一個分組桶因此共用同一段程式碼——`UsageSummary`
+    // 的頂層欄位直接取自 `totals`，不另立第二條規則。
     if (record.providerKind !== undefined && LOCAL_PROVIDER_KINDS.has(record.providerKind))
       bucket.localCalls += 1;
+    else bucket.unreportedCalls += 1;
     return;
   }
   bucket.reportedCalls += 1;
@@ -716,7 +731,9 @@ export function summarizeUsage(input: readonly UsageRecord[] | UsageLedgerConten
     totalCalls: totals.calls,
     totalRequests: totals.requests,
     reportedCalls: totals.reportedCalls,
-    unreportedCalls: totals.calls - totals.reportedCalls - totals.localCalls,
+    // 頂層就是 `totals` 桶的那一格：與 `byCapability`／`byOperation`／`byModel` 走同一段
+    // `accumulate()`，頂層才拆得回分組（先前這裡自己減一次，等於同一個定義有兩份實作）。
+    unreportedCalls: totals.unreportedCalls,
     localCalls: totals.localCalls,
     failedCalls: totals.failedCalls,
     totals,
