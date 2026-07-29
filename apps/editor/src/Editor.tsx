@@ -38,6 +38,7 @@ import {
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
 import { SourcePanel, isDescribing, parsingExpired } from "./SourcePanel.js";
+import { UsagePanel } from "./UsagePanel.js";
 import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
 import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
@@ -5539,6 +5540,13 @@ export function Editor() {
                 )}
               </div>
             </div>
+            {/*
+              模型用量統計。面板自己抓資料（切到這個分頁＝掛載＝抓一次），**沒有輪詢**——
+              `Editor.tsx` 已經有一條專案輪詢，用量再加一條定時器只是多打請求。
+              `key` 是第二道保險：換專案時強制重建，上一份專案的數字不可能留在畫面上
+              （元件內部另有一道 render 期的守衛，見 `UsagePanel.tsx`）。
+            */}
+            <UsagePanel key={project.id} projectId={project.id} />
           </div>
         )}
         {panel === "sources" && (

@@ -100,6 +100,69 @@ export interface TextProviderSummary {
   isDefault: boolean;
 }
 
+/**
+ * `GET /api/projects/:id/usage` 的回應形狀。
+ *
+ * 真相在 `apps/server/src/usage-ledger.ts`（`UsageBucket`／`UsageModelBucket`／`UsageSummary`）；
+ * 那些型別住在 server 套件裡、editor 沒有相依，所以這裡只寫**最小必要的線上形狀**。
+ * 兩邊有落差時以伺服器那份為準。
+ *
+ * **前端不得自己重算任何一個聚合數字**：`unreportedCalls` 是伺服器明確算好給前端的（正是
+ * 為了不讓前端拿 `calls - reportedCalls - localCalls` 自己減，那份規則必然漂移），未回報的
+ * 呼叫也刻意一個 token 都沒有計進去。桶裡沒有 `unreportedCalls` 是刻意的：分組層級只顯示
+ * 伺服器給的欄位（`calls` 與 `reportedCalls` 並排），不要在 UI 層補算。
+ */
+export interface UsageBucket {
+  /** 邏輯呼叫數（一筆紀錄一次）。 */
+  calls: number;
+  /** 實際送出的 HTTP 請求數（含 provider 內部重試）。 */
+  requests: number;
+  /** provider 真的回報了用量的筆數。 */
+  reportedCalls: number;
+  /** 本機 provider（mock／local）的筆數：沒碰模型、沒燒配額。 */
+  localCalls: number;
+  failedCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  imageTokens: number;
+  totalTokens: number;
+}
+
+export interface UsageModelBucket extends UsageBucket {
+  modelEntryId: string;
+  model: string;
+  providerKind: string;
+}
+
+export interface UsageSummary {
+  totalCalls: number;
+  totalRequests: number;
+  reportedCalls: number;
+  /** 燒了配額、但模型端沒有回報用了多少的呼叫數。**絕不可當成 0 併進總數。** */
+  unreportedCalls: number;
+  /** 本機 provider 的呼叫數（沒燒配額，與「未回報」是兩件事）。 */
+  localCalls: number;
+  failedCalls: number;
+  totals: UsageBucket;
+  byCapability: Record<string, UsageBucket>;
+  byOperation: Record<string, UsageBucket>;
+  /** 伺服器已依 calls 由多到少排好序。 */
+  byModel: UsageModelBucket[];
+  /** 金額 UI 尚未實作；這次一個字都不顯示。 */
+  cost?: { unit: "openrouter-credit"; amount: number };
+  firstAt?: string;
+  lastAt?: string;
+  malformedLines: number;
+  /** 帳本輪替過：這份統計不是專案的全部歷史。 */
+  truncated: boolean;
+  /** 被輪替砍掉的紀錄數（累計）。 */
+  droppedRecords: number;
+  /** 帳本存在卻讀不出來：數字是空的，但那不代表沒有呼叫過。 */
+  unreadable: boolean;
+}
+
 type ApiFailure = {
   error?: string;
   message?: string;
@@ -198,6 +261,9 @@ export const api = {
     }),
   deleteProject: (projectId: string) =>
     request<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
+  /** 專案的模型用量統計；伺服器端已聚合完成，前端只負責顯示。 */
+  projectUsage: (projectId: string) =>
+    request<UsageSummary>(`/api/projects/${encodeURIComponent(projectId)}/usage`),
   textProviders: () => request<TextProviderSummary[]>("/api/text-providers"),
   regenerateOutline: (projectId: string, replace = false, textEngine?: string) =>
     request<PresentationProject>(`/api/projects/${encodeURIComponent(projectId)}/outline`, {
