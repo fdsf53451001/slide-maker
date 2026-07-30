@@ -1,4 +1,6 @@
 // 三個庫（簡報／風格庫／模型庫）共用的頂部導覽，避免各頁自己刻一份導致分頁不一致。
+import { RecentUpdatesButton } from "./RecentUpdates.js";
+
 export type LibraryTab = "decks" | "styles" | "models";
 
 export function LibraryHeader({
@@ -29,7 +31,7 @@ export function LibraryHeader({
           </button>
         ))}
       </nav>
-      <span className="dashboard-local">LOCAL-FIRST · IMAGE DECKS</span>
+      <RecentUpdatesButton />
     </header>
   );
 }

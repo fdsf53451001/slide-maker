@@ -773,14 +773,6 @@ button {
   font-size: 9px;
   vertical-align: top;
 }
-.dashboard-local {
-  margin-left: auto;
-  color: #66738a;
-  font:
-    9px "DM Mono",
-    monospace;
-  letter-spacing: 0.14em;
-}
 .dashboard-content {
   width: min(1280px, calc(100vw - 84px));
   margin: 0 auto;
@@ -4557,6 +4549,118 @@ header {
   color: var(--accent-soft);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* === 最近更新（CHANGE.md 面板）===
+   視覺調性沿用 .pdf-modal-*，但另立一組 class：那組是 PDF 匯入專用的，
+   共用會讓其中一邊的調整意外改到另一邊。 */
+.dashboard .recent-updates-trigger {
+  /* header 右緣唯一的東西，自己靠 auto 推過去；`flex: 0 0 auto` + nowrap 讓它在窄視窗
+     不被壓縮、也不把 header 擠成兩行（header 本身是 flex nowrap）。 */
+  margin-left: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dashboard .recent-updates-trigger:hover {
+  border-color: var(--accent);
+  color: var(--accent-soft);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+/* 覆蓋層 portal 到 body（見 RecentUpdates.tsx 的說明），所以 z-index 是跟**全頁**的浮層
+   比，不再是 dashboard 內部的 40：header 20、風格挑選 900、toast 940–970、放映 1000／
+   控制列 1001，取 1100 蓋過全部。 */
+.recent-updates-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 8, 15, 0.72);
+}
+.recent-updates-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: 82vh;
+  /* 內容捲動只發生在 .recent-updates-body，外框自身不捲。 */
+  overflow: hidden;
+  border: 1px solid var(--border-1);
+  border-radius: 10px;
+  /* 不透明，且與 .pdf-modal 同一個色值：面板疊在儀表板上，底色只要有一點透明度，
+     後面的專案縮圖與卡片就會從字底下透上來，整份更新紀錄變得讀不了。
+     刻意寫死而不是 var()：引用一個沒定義的自訂屬性會讓整條宣告在計算階段失效、
+     background-color 退回 transparent，而那種失效在 jsdom 與 typecheck 裡都是隱形的
+     （`--surface-card` 就這樣讓面板整片透明過一次，由 styles-tokens.test.ts 釘住）。 */
+  background: #0f1522;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
+  text-align: left;
+}
+.recent-updates-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #1c2536;
+}
+/* 不加 `.dashboard` 前綴：portal 之後這顆按鈕在 body 底下，`.welcome button` 那條通用
+   規則（原本要壓過的對象）根本選不到它，只需要贏過 `button { color: inherit }`。
+   還在 header 裡的 `.recent-updates-trigger` 則維持 `.dashboard` 前綴。 */
+/* 尺寸理由同 .pdf-modal-close：原本約 20×28 的裸文字，補到 32×32 的桌面底線。 */
+.recent-updates-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+.recent-updates-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 20px 20px;
+}
+.recent-updates-day {
+  padding-top: 16px;
+}
+.recent-updates-date {
+  margin: 0 0 8px;
+  color: var(--text-3);
+  font:
+    600 11px "DM Mono",
+    monospace;
+  letter-spacing: 0.14em;
+}
+.recent-updates-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+.recent-updates-list li {
+  margin-bottom: 6px;
+}
+.recent-updates-list strong {
+  color: var(--text-2);
+}
+.recent-updates-empty {
+  margin: 20px 0;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 /* === Interaction base ===

@@ -38,6 +38,9 @@ FROM deps AS build
 COPY tsconfig.base.json ./
 COPY packages packages
 COPY apps apps
+# editor 在建置期以 `?raw` import 這個檔（「最近更新」面板的資料來源），
+# 漏了它 vite build 會以「找不到模組」失敗，整個映像建置跟著失敗。
+COPY CHANGE.md ./
 # pnpm -r 依拓撲順序建置：core → providers → editor → server。
 RUN pnpm -r build
 
