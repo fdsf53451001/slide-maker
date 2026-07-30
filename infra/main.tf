@@ -173,11 +173,23 @@ resource "google_cloud_run_v2_service" "app" {
 
       resources {
         limits = {
-          cpu = "1"
+          # 2026-07-30：1 vCPU 那條線被踩過去了，7/27 記下的 p99 0.76 是它的前兆。
+          # 實測 4 天內 361 筆 429 `no available instance`（latency 0s＝請求根本沒
+          # 進到容器），其中約 300 筆擠在 02:49–02:56 的八分鐘裡，同時段正在跑
+          # extract-text；失敗的是畫布圖片、調整頁序與單頁大綱，全是輕量請求。
+          #
+          # 成因是 cgroup 的 CPU 配額被 OCR 與 inpaint 的 Python 子程序吃滿，Node
+          # 拿不到時間片、來不及回應，Cloud Run 判定實例不可用，而 max_instance=1
+          # 沒有第二個實例能接手。**子程序只隔離記憶體與崩潰，不隔離 CPU**——所以
+          # 多開執行緒或多開程序都無效，配額總量不變，唯一的辦法是把配額加大。
+          cpu = "2"
           # 2026-07-27 觀察近七天：記憶體 p99 逐時峰值 0.41（約 1.6 GiB / 4 GiB）
           # 從沒超過，於是從 4Gi 縮到 2Gi。CPU 反過來是 p99 0.76，已貼近 1 vCPU
           # 的上限，不要一起縮——而且 Cloud Run 的 0.5 vCPU 最多只能配 2 GiB，
           # 兩者是綁在一起的。
+          #
+          # 記憶體在 CPU 調到 2 的這一輪刻意不動：一次只改一個變數，429 有沒有消失
+          # 才歸因得到 CPU，而且至今一筆 OOM log 都沒有。
           #
           # 這個縮減是「觀察中」而非定案，OOM 的代價不對稱：max_instance=1，
           # 實例被殺等於 jobs.ts 記憶體 Map 裡的 job 追蹤全毀，進行中的生成工作
