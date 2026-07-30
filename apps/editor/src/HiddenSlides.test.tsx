@@ -406,35 +406,49 @@ describe("匯出面板講清楚哪些頁面會進成品", () => {
     // 「匯出」在頁面上不只一處（分頁按鈕以外還有別的文案），限定在 inspector 分頁列裡取。
     const tabs = document.querySelector<HTMLElement>(".inspector-tabs")!;
     fireEvent.click(within(tabs).getByText("匯出"));
-    return screen.findByText(/匯出會依目前頁面順序/);
+    await screen.findByText("當前頁面");
+    return document.querySelector<HTMLElement>(".export-panel")!;
   };
   const links = () =>
     Array.from(document.querySelectorAll<HTMLAnchorElement>(".export-panel a")).map((anchor) =>
       anchor.getAttribute("href"),
     );
 
-  it("有隱藏頁時就在下載點旁邊講出可見頁數，四個連結都還在", async () => {
+  it("有隱藏頁時就在下載點旁邊講出可見頁數，四個專案連結都還在", async () => {
     const state = { project: hiddenDeck("匯出說明", [1]) };
     stubApi(state);
     await enter("匯出說明");
 
     const text = (await openExportPanel()).textContent ?? "";
+    // 靜態的匯出通則已移除，但「這份簡報實際上有隱藏頁、pptx／pdf 的頁數與畫面不同」
+    // 是當下狀態，仍必須寫在下載點旁邊。
     expect(text).toMatch(/1\s*頁隱藏/);
-    expect(text).toMatch(/3 \/ 4/);
-    expect(text).toContain("pptx／pdf 只含可見頁");
-    expect(text).toContain("PNG 與專案備份收錄全部頁面");
-    expect(links()).toHaveLength(4);
+    expect(text).toContain("pptx／pdf 只含可見的");
+    expect(text).not.toContain("匯出會依目前頁面順序");
+    const hrefs = links();
+    expect(
+      hrefs.filter((href) => href?.includes("/export/") && !href.includes("/slides/")),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("/export/pptx"),
+        expect.stringContaining("/export/pdf"),
+        expect.stringContaining("/export/png.zip"),
+        expect.stringContaining("/export/slide-project"),
+      ]),
+    );
   });
 
-  it("沒有隱藏頁時仍講出規則，但不報張數（沒有可報的）", async () => {
+  it("沒有隱藏頁時完全不提隱藏，也不再有通則說明", async () => {
     const state = { project: hiddenDeck("匯出無隱藏") };
     stubApi(state);
     await enter("匯出無隱藏");
 
     const text = (await openExportPanel()).textContent ?? "";
-    expect(text).toContain("pptx／pdf 只含可見頁");
     expect(text).not.toMatch(/頁隱藏/);
-    expect(links()).toHaveLength(4);
+    expect(text).not.toContain("匯出會依目前頁面順序");
+    expect(text).not.toContain("PNG 與專案備份收錄全部頁面");
+    // 四個專案級 ＋ 一個當前頁面。
+    expect(links()).toHaveLength(5);
   });
 
   it("全部隱藏時 pptx／pdf 的連結整個不給，改成就地說明；另兩個仍在", async () => {
@@ -451,6 +465,9 @@ describe("匯出面板講清楚哪些頁面會進成品", () => {
     expect(hrefs.some((href) => href?.endsWith("/export/pdf"))).toBe(false);
     expect(hrefs.some((href) => href?.endsWith("/export/png.zip"))).toBe(true);
     expect(hrefs.some((href) => href?.endsWith("/export/slide-project"))).toBe(true);
+    // 當前頁面是隱藏頁，但單頁 PNG 照樣給：`hidden` 是「不上場」而不是「不要這張圖」，
+    // png.zip 也收錄它。跟著 pptx／pdf 一起消失才是不一致。
+    expect(hrefs.some((href) => href?.endsWith("/export/png"))).toBe(true);
   });
 });
 

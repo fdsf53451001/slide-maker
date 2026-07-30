@@ -120,6 +120,8 @@ import {
 import {
   exportFilename,
   exportPresentation,
+  exportSlideFilename,
+  exportSlidePng,
   parseProjectBundle,
   type ExportFormat,
 } from "./exporters.js";
@@ -242,6 +244,10 @@ const PDF_MESSAGES: Record<string, string> = {
   // 匯出連結是裸 `<a href>`：這條路上的錯誤碼會直接出現在瀏覽器分頁裡，沒有前端能翻譯它。
   EXPORT_NO_VISIBLE_SLIDES:
     "所有頁面都已隱藏，pptx／pdf 沒有可以匯出的頁面。請先取消隱藏至少一頁，或改用「下載每頁 PNG」／「備份完整專案」（兩者都會收錄隱藏頁）。",
+  // 單頁 PNG 也是裸 `<a href>`：前端在沒有圖片時就不給連結，這兩句是「畫面比伺服器舊」
+  // （另一個分頁剛把這一頁刪掉／把版本清掉）時使用者唯一看得到的說明。
+  EXPORT_SLIDE_NOT_FOUND: "找不到這一頁，可能已在別處被刪除。請重新整理後再試。",
+  EXPORT_SLIDE_IMAGE_MISSING: "這一頁還沒有圖片，沒有可以下載的 PNG。請先生成這一頁。",
   // `.slide-project.zip` 匯入與 PDF 匯入是同一個畫面上的兩顆按鈕，兩邊都不能只回錯誤碼。
   PROJECT_BUNDLE_INVALID:
     "這個檔案不是有效的專案封存。請選擇從「備份完整專案」下載的 .slide-project.zip。",
@@ -4665,6 +4671,24 @@ export async function createApp(
     );
     // 一定要走 chunked：`response.send()` 會補 Content-Length，Cloud Run 對這種
     // non-streamed 回應有 32 MiB 上限，大一點的簡報匯出必爆。詳見 sendChunked。
+    await sendChunked(response, bytes);
+  });
+
+  // 單頁 PNG。刻意不塞進上面那條 `:format`：那條的 format 是專案級格式的 enum，
+  // 單頁需要 slideId，掛成 query 參數會讓「哪些格式吃得下它」變成隱性知識。
+  app.get("/api/projects/:projectId/slides/:slideId/export/png", async (request, response) => {
+    const project = await repository.loadProject(idSchema.parse(request.params.projectId));
+    if (!project) throw new Error("Project not found");
+    const slideId = idSchema.parse(request.params.slideId);
+    const bytes = await exportSlidePng(repository, project, slideId);
+    const order = project.slides.find((slide) => slide.id === slideId)!.order;
+    response.setHeader("Content-Type", "image/png");
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(exportSlideFilename(project, order))}`,
+    );
+    // 單頁也走 chunked：無損 PNG 的 1920×1080 一般是幾 MB，但 PDF 匯入保真的原圖沒有上限，
+    // 而 `response.send()` 一旦補上 Content-Length，Cloud Run 的 32 MiB 天花板就回來了。
     await sendChunked(response, bytes);
   });
 

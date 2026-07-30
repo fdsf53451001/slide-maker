@@ -397,6 +397,34 @@ async function exportProject(
   return zipSync(entries, { level: 6 });
 }
 
+/**
+ * 單一頁面的 PNG（編輯器「當前頁面 · 下載此頁 PNG」）。
+ *
+ * 位元組與 `png.zip` 裡同一頁的那個 entry **完全相同**——同一條 `pngFor` ＋
+ * `withPageNumber`，沒有第二套頁碼幾何、也沒有第二種編碼。使用者拿一頁與拿整包，
+ * 得到的不該是兩張不一樣的圖。
+ *
+ * 隱藏頁照樣可以下載：語意是「這一頁不上場」而不是「不要這張圖」，而 `png.zip` 本來就
+ * 收錄它。頁碼由 `pageNumberSlideLabel()` 決定，隱藏頁不編號、於是原圖位元組原封不動
+ * 回傳（PDF 匯入的原圖保真承諾在這條路上一樣成立）。
+ *
+ * 兩種失敗都用 `EXPORT_` 前綴的具名碼，而不是沿用 `png.zip` 那條 `SLIDE_VERSION_MISSING:N`：
+ * 這是**單頁**的下載連結，頁號就是使用者剛剛看著的那一頁，訊息裡不需要序號；而錯誤碼要能
+ * 在中介層對到一句繁中說明——這條路和其他匯出一樣是裸 `<a href>`，回一段 JSON 到瀏覽器
+ * 分頁裡等於沒有錯誤處理。
+ */
+export async function exportSlidePng(
+  repository: FileProjectRepository,
+  project: PresentationProject,
+  slideId: string,
+): Promise<Uint8Array> {
+  const slide = project.slides.find((candidate) => candidate.id === slideId);
+  if (!slide) throw new Error("EXPORT_SLIDE_NOT_FOUND");
+  const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
+  if (!version) throw new Error("EXPORT_SLIDE_IMAGE_MISSING");
+  return withPageNumber(project, slide.order, await pngFor(repository, project, version.imagePath));
+}
+
 export async function exportPresentation(
   repository: FileProjectRepository,
   project: PresentationProject,
@@ -441,6 +469,15 @@ export function parseProjectBundle(bytes: Uint8Array): {
   return { project, assets };
 }
 
+/** 專案名稱洗成可以當檔名的字串；洗光了就退回 `presentation`。 */
+function safeProjectFilename(project: PresentationProject): string {
+  return (
+    basename(project.name)
+      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+      .replace(/^-+|-+$/g, "") || "presentation"
+  );
+}
+
 /**
  * 下載檔名。format 一律當副檔名用，唯一的例外是 `slide-project`：它的內容是 zip，
  * 但 `.slide-project` 這個副檔名在使用者的作業系統上沒有任何關聯程式，點兩下打不開，
@@ -448,10 +485,16 @@ export function parseProjectBundle(bytes: Uint8Array): {
  * URL 的 path segment 與 `ExportFormat` 型別不受影響，只有檔名不同。
  */
 export function exportFilename(project: PresentationProject, format: ExportFormat): string {
-  const safe =
-    basename(project.name)
-      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-      .replace(/^-+|-+$/g, "") || "presentation";
-  const extension = format === "slide-project" ? "slide-project.zip" : format;
-  return `${safe}.${extension}`;
+  return `${safeProjectFilename(project)}.${format === "slide-project" ? "slide-project.zip" : format}`;
+}
+
+/**
+ * 單頁 PNG 的下載檔名：`<專案>-003.png`。
+ *
+ * 序號用的是 `order + 1` 並補到三位，與 `png.zip` 裡的 entry 名同一條規則——使用者先抓了
+ * 整包、之後再單獨補抓某一頁時，兩個檔案在檔案總管裡才排在一起而不是各自命名。序號**不**
+ * 扣掉隱藏頁：那是頁碼（chrome）的規則，檔名要對得上的是專案裡的實際頁序。
+ */
+export function exportSlideFilename(project: PresentationProject, order: number): string {
+  return `${safeProjectFilename(project)}-${String(order + 1).padStart(3, "0")}.png`;
 }

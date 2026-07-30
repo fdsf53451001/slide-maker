@@ -3414,6 +3414,30 @@ header {
   font-size: 12px;
   line-height: 1.6;
 }
+/* 「專案」與「當前頁面」兩區：下載的作用範圍不同（整份 vs 手上這一頁），
+   而四個專案級連結長得一模一樣，沒有分組時使用者無從得知新增的那個只匯出一頁。 */
+.export-panel .export-group + .export-group {
+  margin-top: 22px;
+  padding-top: 4px;
+  border-top: 1px solid var(--surface-5);
+}
+.export-panel .export-group h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 14px 0 4px;
+  font-family: "DM Mono", monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  color: var(--accent-strong);
+}
+.export-panel .export-group h3 b {
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-dim-2);
+}
 .export-panel a {
   display: block;
   color: var(--text-bright);
