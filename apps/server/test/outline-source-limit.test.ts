@@ -40,7 +40,7 @@ describe("來源上限：份數與容量是兩條不同的路", () => {
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
         prompts.push(request.prompt);
-        return reply(prompts.length);
+        return { value: reply(prompts.length) };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());

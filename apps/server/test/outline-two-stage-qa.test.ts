@@ -89,7 +89,8 @@ describe("兩階段大綱的補充情境", () => {
         prompts.push(request.prompt);
         const result = reply(prompts.length, request.prompt);
         if (result instanceof Error) throw result;
-        return result;
+        // provider 合約是信封（`StructuredTextResult`）：模型的輸出在 `value`，用量在 `usage`。
+        return { value: result };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());
@@ -460,7 +461,7 @@ describe("階段 2 失敗時已落地的網頁來源被回收", () => {
         prompts.push(request.prompt);
         const result = reply(prompts.length);
         if (result instanceof Error) throw result;
-        return result;
+        return { value: result };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());

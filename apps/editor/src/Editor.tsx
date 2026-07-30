@@ -39,6 +39,7 @@ import {
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
 import { SourcePanel, isDescribing, parsingExpired } from "./SourcePanel.js";
+import { UsagePanel } from "./UsagePanel.js";
 import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
 import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
@@ -2994,6 +2995,55 @@ export function Editor() {
     );
     return () => clearInterval(timer);
   }, [project, jobsBusy, sourcesParsing]);
+  /**
+   * 批次生成收尾時讓用量面板重抓一次（`jobsBusy` 的 **false 邊緣**）。
+   *
+   * 那一刻正是使用者最想看用量的時候，而面板自己只在掛載與按下「重新整理」時抓——停在
+   * 「專案」分頁看著批次跑完的人，數字會停在開跑前。
+   *
+   * **不可以改成監聽 `project.jobs`**：批次生成每完成一頁就換一次專案物件（上面那條輪詢
+   * 每 700 毫秒拉一份），而 `GET /usage` 會先 `await usageLedger.idle()`——那等於在伺服器
+   * 最忙的時候對它連打幾十次。這裡也刻意**不開任何定時器**，輪詢只有上面那一條。
+   *
+   * 換專案時只重設邊緣、不觸發：`project.id` 一變，`UsagePanel` 就被 `key` 重建並自己抓
+   * 一次，這裡再遞一個訊號只是同一份資料多打一次；而「上一份專案忙完」對新專案的畫面
+   * 也不是有意義的事件。
+   *
+   * **批次抽字期間整條關掉**（`batchExtractBusy`）。批次**生成**只有一個邊緣：伺服器一次把
+   * 所有 job 排進佇列，`jobsBusy` 全程都是 true。批次**抽字**不是——它是前端的逐頁迴圈，每
+   * 一頁換來一個抹字 job，那個 job 往往在迴圈等下一頁 OCR 的時候就跑完了，`jobsBusy` 於是
+   * 一頁掉一次 false：20 頁就是約 20 次 `GET /usage`，每一次都要 `await usageLedger.idle()`
+   * 加一趟完整的專案載入與帳本解析，而抽字按鈕就在「專案」分頁上、面板全程掛著（畫面還會
+   * 跟著閃「更新中…」）。收尾補一次即可：批次結束時若還有 job 在飛就不補，等它自己的 false
+   * 邊緣，那一份數字才是完整的。
+   */
+  const [usageRefreshToken, setUsageRefreshToken] = useState(0);
+  const batchExtractBusy = batchExtract !== undefined;
+  const usageBusyEdge = useRef<{
+    projectId: string | undefined;
+    busy: boolean;
+    batching: boolean;
+  }>({
+    projectId: project?.id,
+    busy: jobsBusy,
+    batching: batchExtractBusy,
+  });
+  useEffect(() => {
+    const previous = usageBusyEdge.current;
+    usageBusyEdge.current = {
+      projectId: project?.id,
+      busy: jobsBusy,
+      batching: batchExtractBusy,
+    };
+    if (previous.projectId !== project?.id) return;
+    if (batchExtractBusy) return;
+    // 批次抽字剛收尾：期間的邊緣全被壓掉了，這裡補上那一次。
+    if (previous.batching) {
+      if (!jobsBusy) setUsageRefreshToken((token) => token + 1);
+      return;
+    }
+    if (previous.busy && !jobsBusy) setUsageRefreshToken((token) => token + 1);
+  }, [project?.id, jobsBusy, batchExtractBusy]);
   useEffect(() => {
     if (!activeJob) return;
     const timer = setInterval(() => setNow(Date.now()), 1_000);
@@ -5540,6 +5590,14 @@ export function Editor() {
                 )}
               </div>
             </div>
+            {/*
+              模型用量統計。面板自己抓資料（切到這個分頁＝掛載＝抓一次），**沒有輪詢**——
+              `Editor.tsx` 已經有一條專案輪詢，用量再加一條定時器只是多打請求。批次生成
+              收尾時另外遞一個 `usageRefreshToken` 讓它重抓一次（見上面那條 effect）。
+              `key` 是第二道保險：換專案時強制重建，上一份專案的數字不可能留在畫面上
+              （元件內部另有一道 render 期的守衛，見 `UsagePanel.tsx`）。
+            */}
+            <UsagePanel key={project.id} projectId={project.id} refreshToken={usageRefreshToken} />
           </div>
         )}
         {panel === "sources" && (

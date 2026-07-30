@@ -45,7 +45,7 @@ describe("大綱 content 超標的重試收斂與降級", () => {
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
         prompts.push(request.prompt);
-        return reply(prompts.length, request.prompt);
+        return { value: reply(prompts.length, request.prompt) };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());

@@ -2174,7 +2174,8 @@ header {
   font-size: 10px;
   line-height: 1.6;
 }
-.page-number-heading {
+/* 同 `.usage-heading`：不帶 `.panel-content` 就被 `.inspector-heading` 的 margin 簡寫吃掉。 */
+.panel-content .page-number-heading {
   margin-top: 18px;
 }
 .page-number-toggle {
@@ -2193,6 +2194,215 @@ header {
 }
 .page-number-fields input[type="range"] {
   padding: 0;
+}
+/* === 模型用量統計（UsagePanel）===
+   誠實優先於密度：未回報／本機／失敗這三行是這個區塊存在的理由，所以它們用的是可讀的
+   12px 正文尺寸，而不是旁邊那些一眼掃過的 10px 欄位標籤。 */
+/*
+ * 選擇器必須帶 `.panel-content`：`.panel-content .inspector-heading { margin: 0 -18px 16px }`
+ * 的特異性 (0,2,0) 勝過裸的 (0,1,0)，展開後的 `margin-top: 0` 永遠贏——單寫
+ * `.usage-heading` 是死 CSS，USAGE 標題會緊貼上一列（實測：貼著批次抽字那一列）。
+ */
+.panel-content .usage-heading {
+  margin-top: 22px;
+}
+.usage-refresh {
+  border: 1px solid var(--border-3);
+  border-radius: 4px;
+  background: var(--surface-4);
+  color: var(--text-3);
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.usage-refresh:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+.usage-loading,
+.usage-error,
+.usage-unreadable,
+.usage-truncated,
+.usage-malformed,
+.usage-range {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.usage-loading,
+.usage-malformed,
+.usage-range {
+  color: var(--text-dim);
+}
+.usage-error {
+  color: var(--danger);
+}
+.usage-unreadable,
+.usage-truncated {
+  padding: 9px 11px;
+  border: 1px solid #4a4331;
+  border-radius: 7px;
+  background: #1b1810;
+  color: var(--warning);
+}
+.usage-unreadable b,
+.usage-truncated b {
+  color: #ffe9bd;
+}
+.usage-figures {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.usage-figures > div {
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-1);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+.usage-figures .usage-figure-total {
+  grid-column: 1 / -1;
+  border-color: var(--border-3);
+}
+.usage-figures dt {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.usage-figures dd {
+  margin: 3px 0 0;
+  color: var(--text-bright);
+  font:
+    16px "DM Mono",
+    monospace;
+}
+.usage-retry {
+  margin: 0 0 10px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.usage-subtokens,
+.usage-signals {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.usage-subtokens li {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.usage-signals li {
+  padding-left: 11px;
+  border-left: 2px solid var(--border-3);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.usage-signals li.warn {
+  border-left-color: var(--warning);
+  color: #e4d5b6;
+}
+.usage-signals li b {
+  color: var(--warning);
+}
+.usage-section {
+  margin: 0 0 14px;
+}
+.usage-section h4 {
+  margin: 0 0 7px;
+  color: var(--text-dim);
+  font:
+    10px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+}
+.usage-operations > summary {
+  color: var(--text-dim);
+  font:
+    10px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  margin-bottom: 7px;
+}
+.usage-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border-1);
+}
+.usage-row-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.usage-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.usage-row-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-5);
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.usage-row-badge.cap-image {
+  border-color: rgba(122, 162, 255, 0.32);
+  background: rgba(122, 162, 255, 0.14);
+  color: var(--cap-image);
+}
+.usage-row-badge.cap-text {
+  border-color: rgba(105, 209, 155, 0.32);
+  background: rgba(105, 209, 155, 0.14);
+  color: var(--cap-text);
+}
+.usage-row-badge.cap-search {
+  border-color: rgba(255, 184, 77, 0.32);
+  background: rgba(255, 184, 77, 0.14);
+  color: var(--cap-search);
+}
+.usage-row-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font:
+    11px "DM Mono",
+    monospace;
+}
+.usage-row-note {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.usage-row-note.warn {
+  color: var(--warning);
+}
+.usage-empty {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding: 20px 14px;
+  border: 1px dashed #2e394e;
+  color: #758299;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.usage-empty b {
+  color: #b8c2d0;
 }
 .panel-actions {
   display: grid;

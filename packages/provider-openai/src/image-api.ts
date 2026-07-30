@@ -2,6 +2,8 @@ import {
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
+  type ProviderUsage,
+  withProviderUsage,
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
 import {
@@ -11,6 +13,7 @@ import {
   requestJson,
 } from "./http.js";
 import { flattenMaskToBlack, rasterToCanvasPng } from "./image-util.js";
+import { parseImagesApiUsage } from "./usage.js";
 
 /**
  * `image[]` 的張數上限。
@@ -163,12 +166,16 @@ export async function generateViaImagesApi(
   request: ImageGenerationRequest,
   size: string,
   signal?: AbortSignal,
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   assertReferenceLimit(request);
   const payload = request.edit
     ? await requestEdit(config, model, request, size, signal)
     : await requestGeneration(config, model, request, size, signal);
-  const raw = decodeB64Image(payload);
+  // images 端點的 usage 欄位名與 /chat/completions **完全不同**（input_tokens 而非
+  // prompt_tokens）；套錯解析器會讓整條影像通道靜默落成 reported:false。
+  // 先解 usage 再解圖：解不出圖是往返成功之後才失敗的，token 已經燒掉了。
+  const usage = parseImagesApiUsage(payload);
+  const raw = withProviderUsage(usage, () => decodeB64Image(payload));
   // gateway 不保證回 PNG（實測 gpt-image gateway 會回 jpeg/webp）。比照 chat／openrouter
   // 通道：png 走結構驗證＋canvas 正規化；其餘 raster 走 rasterToCanvasPng 轉成 canvas PNG。
   // 認不得的格式丟具名 SafeProviderError，而非讓 validatePngStructure 以標著「Codex」的裸
@@ -176,8 +183,11 @@ export async function generateViaImagesApi(
   const mediaType = detectImageMediaType(raw);
   if (mediaType === "image/png") {
     validatePngStructure(Buffer.from(raw));
-    return normalizePngToCanvas(raw, request.width, request.height);
+    return { bytes: normalizePngToCanvas(raw, request.width, request.height), usage };
   }
-  if (mediaType) return rasterToCanvasPng(raw, mediaType, request.width, request.height);
-  throw new SafeProviderError("OPENAI_IMAGE_INVALID", "Images API 回應的影像格式無法辨識。");
+  if (mediaType)
+    return { bytes: rasterToCanvasPng(raw, mediaType, request.width, request.height), usage };
+  throw new SafeProviderError("OPENAI_IMAGE_INVALID", "Images API 回應的影像格式無法辨識。", {
+    usage,
+  });
 }

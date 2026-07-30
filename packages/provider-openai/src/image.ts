@@ -86,7 +86,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     const shape = this.#options.apiShape ?? "images";
     const size = this.#options.requestSize ?? "1536x1024";
     await context?.onProgress?.({ phase: "launching" });
-    const bytes =
+    const generated =
       shape === "chat"
         ? await generateViaChat(this.#options.config, this.#options.model, request, context?.signal)
         : shape === "openrouter-image"
@@ -111,7 +111,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
           ? "openrouter-image"
           : "openai-images";
     return {
-      bytes,
+      bytes: generated.bytes,
       mediaType: "image/png",
       extension: "png",
       model: this.#options.model,
@@ -120,6 +120,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
         transport,
         ...(shape === "images" ? { size } : {}),
       },
+      usage: generated.usage,
     };
   }
 }

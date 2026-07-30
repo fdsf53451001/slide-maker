@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   type ProviderAvailability,
   SafeProviderError,
+  type WebSearchOutcome,
   type WebSearchProvider,
   type WebSearchResult,
   webSearchResultSchema,
@@ -68,7 +69,7 @@ export class CodexWebSearchProvider implements WebSearchProvider {
     limit: number,
     language: string,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult[]> {
+  ): Promise<WebSearchOutcome> {
     if (!this.#options.allowExecution)
       throw new SafeProviderError("CODEX_WEB_SEARCH_DISABLED", "Codex 網路搜尋未啟用。");
     const timeoutMs = this.#options.timeoutMs;
@@ -94,6 +95,7 @@ export class CodexWebSearchProvider implements WebSearchProvider {
       const parsed = webSearchResultSchema.safeParse(row);
       if (parsed.success && readableWebResult(parsed.data)) results.push(parsed.data);
     }
-    return results.slice(0, limit);
+    // Codex CLI 不回報 token 用量（同 CodexStructuredTextProvider）：省略而非填 0。
+    return { results: results.slice(0, limit) };
   }
 }

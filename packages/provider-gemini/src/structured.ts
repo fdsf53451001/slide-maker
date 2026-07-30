@@ -1,9 +1,13 @@
 import {
+  attachProviderCallFacts,
+  mergeUsage,
   type ProviderAvailability,
   type ProviderPreflightResult,
+  type ProviderUsage,
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
+  type StructuredTextResult,
 } from "@slide-maker/core";
 import { parseDataUri, parseLooseJson, readImageAsDataUrl } from "@slide-maker/provider-openai";
 import {
@@ -14,6 +18,7 @@ import {
   rethrowAsGeminiError,
   type GeminiClientConfig,
 } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiStructuredTextOptions {
   config: GeminiClientConfig;
@@ -53,7 +58,7 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
     return { status: await probeReady(this.#options.config) };
   }
 
-  async runStructured(request: StructuredTextRequest): Promise<unknown> {
+  async runStructured(request: StructuredTextRequest): Promise<StructuredTextResult> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("GEMINI_TEXT_DISABLED", "Gemini 文字 provider 未設定。");
     const parts: ContentPart[] = [{ text: request.prompt }];
@@ -80,6 +85,13 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
     // 推理模型偶發回非 JSON／空內容（例如整個 candidate 只剩 thought part），
     // 故對「解析失敗」這類暫時性錯誤重試數次。
     const transient = new Set(["GEMINI_RESPONSE_INVALID", "GEMINI_TEXT_EMPTY"]);
+    /**
+     * 逐輪累加，理由與 `provider-openai/src/structured.ts` 的同名 accumulator 完全相同：
+     * 每一輪都是一個真的請求、一份完整的長 prompt，只回報最後一輪會把成本低估到三分之一。
+     * 推理模型尤其嚴重——`thoughtsTokenCount` 常常是整包輸出的大宗，而「整個 candidate
+     * 只剩 thought part」正是這個迴圈要重試的那種失敗。
+     */
+    let accumulated: ProviderUsage | undefined;
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
@@ -93,14 +105,29 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
           },
           request.signal,
         );
-        return parseJsonContent(extractText(payload));
+        // usage 與內容出自同一份 payload；先前只挑 candidates[0] 而把 usageMetadata 丟掉。
+        // 併進 accumulator 要排在 `extractText`／`parseJsonContent` 之前：它們正是這條路上
+        // 會 throw 的那兩個，排在後面就等於失敗輪的用量照樣遺失。
+        accumulated = mergeUsage(accumulated, parseGeminiUsage(payload));
+        return {
+          value: parseJsonContent(extractText(payload)),
+          usage: accumulated,
+          requests: attempt,
+        };
       } catch (error) {
         lastError = error;
         const code = error instanceof SafeProviderError ? error.code : undefined;
-        if (attempt === 3 || !code || !transient.has(code)) throw error;
+        if (attempt === 3 || !code || !transient.has(code))
+          throw attachProviderCallFacts(error, {
+            ...(accumulated === undefined ? {} : { usage: accumulated }),
+            requests: attempt,
+          });
       }
     }
-    throw lastError;
+    throw attachProviderCallFacts(lastError, {
+      ...(accumulated === undefined ? {} : { usage: accumulated }),
+      requests: 3,
+    });
   }
 }
 

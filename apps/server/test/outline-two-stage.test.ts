@@ -70,7 +70,8 @@ describe("兩階段大綱的來源歸屬", () => {
         prompts.push(request.prompt);
         const result = reply(prompts.length, request.prompt);
         if (result instanceof Error) throw result;
-        return result;
+        // provider 合約是信封（`StructuredTextResult`）：模型的輸出在 `value`，用量在 `usage`。
+        return { value: result };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());

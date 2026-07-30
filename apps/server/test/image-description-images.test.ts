@@ -40,7 +40,7 @@ function capturingProvider(sink: { value?: Captured }): StructuredTextProvider {
         orientation: metadata.orientation,
         bytes: (await image.toBuffer()).length,
       };
-      return { title: "t", summary: "s", fullText: "f" };
+      return { value: { title: "t", summary: "s", fullText: "f" } };
     },
   };
 }

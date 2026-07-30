@@ -5,6 +5,7 @@ import {
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
+  type StructuredTextResult,
 } from "@slide-maker/core";
 import { runCodexStructured } from "./structured.js";
 
@@ -37,11 +38,16 @@ export class CodexStructuredTextProvider implements StructuredTextProvider {
         };
   }
 
-  async runStructured(request: StructuredTextRequest): Promise<unknown> {
+  /**
+   * Codex CLI 的 app-server 協定不回報 token 用量，故 `usage` 一律省略——由帳本正規化成
+   * `reported:false`。**不可**填 0：那會讓「Codex 這條通道天生沒有數字」看起來像「這次
+   * 真的沒花 token」，而 Codex 正是最耗配額的那一條。
+   */
+  async runStructured(request: StructuredTextRequest): Promise<StructuredTextResult> {
     if (!this.#options.allowExecution)
       throw new SafeProviderError("CODEX_DISABLED", "Codex 文字生成未啟用。");
     const timeoutMs = request.timeoutMs ?? this.#options.timeoutMs;
-    return runCodexStructured({
+    const value = await runCodexStructured({
       workspaceRoot: this.#options.workspaceRoot ?? join(tmpdir(), "slide-maker-codex-structured"),
       webSearchMode: "disabled",
       outputSchema: request.outputSchema,
@@ -51,5 +57,6 @@ export class CodexStructuredTextProvider implements StructuredTextProvider {
       ...(this.#options.executable ? { executable: this.#options.executable } : {}),
       ...(request.signal ? { signal: request.signal } : {}),
     });
+    return { value };
   }
 }

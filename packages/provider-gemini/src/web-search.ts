@@ -2,6 +2,7 @@ import {
   type ProviderAvailability,
   type ProviderPreflightResult,
   SafeProviderError,
+  type WebSearchOutcome,
   type WebSearchProvider,
   type WebSearchResult,
   webSearchResultSchema,
@@ -12,6 +13,7 @@ import {
   isReadableWebUrl,
 } from "@slide-maker/core/url-safety";
 import { generateContent, probeReady, type GeminiClientConfig } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiWebSearchOptions {
   config: GeminiClientConfig;
@@ -189,7 +191,7 @@ export class GeminiWebSearchProvider implements WebSearchProvider {
     limit: number,
     language: string,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult[]> {
+  ): Promise<WebSearchOutcome> {
     if (this.availability.status !== "available")
       throw new SafeProviderError("GEMINI_WEB_SEARCH_DISABLED", "Gemini 網路搜尋未設定。");
     const payload = await generateContent(
@@ -274,11 +276,15 @@ export class GeminiWebSearchProvider implements WebSearchProvider {
       // 檢查把關（非文字型別會停在 summary_only，不會進來源）。
       if (candidate.success && isReadableWebUrl(candidate.data.url)) results.push(candidate.data);
     }
+    // 往返已經成功、token 已經燒光（grounding 回應常是專案裡最大的單筆），只是一筆可驗證
+    // 的候選都沒留下。usage 必須跟著錯誤走，否則這種「最貴又零產出」的呼叫在帳本上不存在。
+    const usage = parseGeminiUsage(payload);
     if (results.length === 0)
       throw new SafeProviderError(
         "GEMINI_WEB_SEARCH_EMPTY",
         "Gemini 搜尋未回傳可驗證的網頁候選結果。",
+        { usage },
       );
-    return results;
+    return { results, usage };
   }
 }
