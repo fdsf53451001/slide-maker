@@ -429,7 +429,7 @@ describe("GeminiStructuredTextProvider", () => {
       prompt: "hi",
       outputSchema: { type: "object", additionalProperties: false },
     });
-    expect(result).toEqual({ ok: true, items: [1, 2] });
+    expect(result.value).toEqual({ ok: true, items: [1, 2] });
 
     const call = calls[0]!;
     expect(call.url).toBe("https://gemini.test/v1beta/models/gemini-3.6-flash:generateContent");
@@ -449,7 +449,9 @@ describe("GeminiStructuredTextProvider", () => {
       json: { candidates: [{ content: { parts: [{ text: '```json\n{ "value": 42 }\n```' }] } }] },
     }));
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({ value: 42 });
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
+      value: 42,
+    });
   });
 
   it("retries a candidate that carries no text part and eventually succeeds", async () => {
@@ -461,7 +463,9 @@ describe("GeminiStructuredTextProvider", () => {
         : { json: { candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }] } };
     });
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({ ok: true });
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
+      ok: true,
+    });
     expect(calls).toHaveLength(3);
   });
 
@@ -513,7 +517,7 @@ describe("GeminiWebSearchProvider", () => {
       return { json: groundedPayload() };
     });
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("高鐵 票價", 8, "zh-TW");
+    const { results } = await provider.search("高鐵 票價", 8, "zh-TW");
 
     const body = calls[0]!.body as {
       tools: { googleSearch: object }[];
@@ -563,7 +567,7 @@ describe("GeminiWebSearchProvider", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("query", 8, "zh-TW");
+    const { results } = await provider.search("query", 8, "zh-TW");
     expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}AAA`);
   });
 
@@ -597,7 +601,7 @@ describe("GeminiWebSearchProvider", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("query", 8, "zh-TW");
+    const { results } = await provider.search("query", 8, "zh-TW");
     // 私有位址解析失敗 → 退回原重導向網址（下游 captureWebPage 仍會自行做安全檢查）；
     // PDF 目標則被 readableWebResult 濾掉。
     expect(results).toHaveLength(1);
@@ -611,7 +615,7 @@ describe("GeminiWebSearchProvider", () => {
         : { json: groundedPayload() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.search("query", 1, "zh-TW")).toHaveLength(1);
+    expect((await provider.search("query", 1, "zh-TW")).results).toHaveLength(1);
   });
 
   it("throws GEMINI_WEB_SEARCH_EMPTY when no chunk can be grounded", async () => {

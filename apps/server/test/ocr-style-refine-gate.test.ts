@@ -224,14 +224,16 @@ describe("抽字的樣式精修失敗契約", () => {
       id: "stub-text",
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => ({
-        boxes: promptBoxIds(request.prompt).map((id) => ({
-          id,
-          role: "presentation",
-          fontFamily: "Noto Sans TC",
-          fontWeight: 700,
-          color: "#111111",
-          align: "left",
-        })),
+        value: {
+          boxes: promptBoxIds(request.prompt).map((id) => ({
+            id,
+            role: "presentation",
+            fontFamily: "Noto Sans TC",
+            fontWeight: 700,
+            color: "#111111",
+            align: "left",
+          })),
+        },
       }),
     }) as unknown as StructuredTextProvider;
 
@@ -399,7 +401,7 @@ describe("抽字的樣式精修失敗契約", () => {
           id: "stub-text",
           availability: { status: "available" },
           // 少了 `boxes`，`ocrStyleRefinementSchema.parse` 會丟。
-          runStructured: async () => ({ nonsense: true }),
+          runStructured: async () => ({ value: { nonsense: true } }),
         }) as unknown as StructuredTextProvider,
     );
     const response = await context.extract();
@@ -444,7 +446,7 @@ describe("抽字的樣式精修失敗契約", () => {
           ({
             id: "stub-text",
             availability: { status: "available" },
-            runStructured: async () => ({ boxes: boxes() }),
+            runStructured: async () => ({ value: { boxes: boxes() } }),
           }) as unknown as StructuredTextProvider,
       );
       const response = await context.extract();
@@ -481,16 +483,18 @@ describe("抽字的樣式精修失敗契約", () => {
           id: "stub-text",
           availability: { status: "available" },
           runStructured: async (request: StructuredTextRequest) => ({
-            boxes: promptBoxIds(request.prompt)
-              .slice(0, 1)
-              .map((id) => ({
-                id,
-                role: "presentation",
-                fontFamily: "Noto Sans TC",
-                fontWeight: 700,
-                color: "#111111",
-                align: "left",
-              })),
+            value: {
+              boxes: promptBoxIds(request.prompt)
+                .slice(0, 1)
+                .map((id) => ({
+                  id,
+                  role: "presentation",
+                  fontFamily: "Noto Sans TC",
+                  fontWeight: 700,
+                  color: "#111111",
+                  align: "left",
+                })),
+            },
           }),
         }) as unknown as StructuredTextProvider,
     );
@@ -521,7 +525,7 @@ describe("抽字的樣式精修失敗契約", () => {
           availability: { status: "unavailable", reason: "找不到 codex CLI" },
           runStructured: async () => {
             calls += 1;
-            return { boxes: [] };
+            return { value: { boxes: [] } };
           },
         }) as unknown as StructuredTextProvider,
     );
@@ -573,14 +577,16 @@ describe("抽字的樣式精修失敗契約", () => {
           // `role` 是 enum：`invalid_enum_value` 的 issue 會把收到的值寫進 ZodError.message。
           // 模型把 OCR 正文回填到欄位裡並不罕見，這裡直接模擬那個形狀。
           runStructured: async (request: StructuredTextRequest) => ({
-            boxes: promptBoxIds(request.prompt).map((id) => ({
-              id,
-              role: SECRET_TEXT,
-              fontFamily: "Arial",
-              fontWeight: 400,
-              color: "#ffffff",
-              align: "left",
-            })),
+            value: {
+              boxes: promptBoxIds(request.prompt).map((id) => ({
+                id,
+                role: SECRET_TEXT,
+                fontFamily: "Arial",
+                fontWeight: 400,
+                color: "#ffffff",
+                align: "left",
+              })),
+            },
           }),
         }) as unknown as StructuredTextProvider,
     );

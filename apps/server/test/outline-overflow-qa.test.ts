@@ -51,7 +51,7 @@ describe("大綱超標收斂的補充情境", () => {
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
         prompts.push(request.prompt);
-        return reply(prompts.length, request.prompt);
+        return { value: reply(prompts.length, request.prompt) };
       },
     } as StructuredTextProvider);
     restore.push(() => spy.mockRestore());

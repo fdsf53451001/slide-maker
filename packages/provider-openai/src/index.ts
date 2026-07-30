@@ -20,3 +20,5 @@ export {
 } from "./image-util.js";
 export { OpenAiStructuredTextProvider, type OpenAiStructuredTextOptions } from "./structured.js";
 export { OpenAiWebSearchProvider, type OpenAiWebSearchOptions } from "./web-search.js";
+// 三種 wire 形狀各自的用量解析器（界線落在形狀上，不是落在套件上——見 usage.ts 的說明）。
+export { parseChatCompletionsUsage, parseImagesApiUsage, parseOpenRouterUsage } from "./usage.js";

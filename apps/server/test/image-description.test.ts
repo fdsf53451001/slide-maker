@@ -10,6 +10,7 @@ import {
   IMAGE_DESCRIPTION_NOTICE,
   ImageDescriptionQueue,
   describeImage,
+  parseImageDescription,
   imageDescriptionFields,
   imageDescriptionPrompt,
   shouldDescribeImageSource,
@@ -21,7 +22,7 @@ function fakeProvider(
   return {
     id: "fake-text",
     availability: { status: "available" },
-    runStructured: (request) => handler(request),
+    runStructured: async (request) => ({ value: await handler(request) }),
   };
 }
 
@@ -105,13 +106,15 @@ describe("送進模型之前先縮圖", () => {
       expect(sent).not.toBe(path);
       return { title: "圖", summary: "摘要", fullText: "全文" };
     });
-    const description = await describeImage({
+    const described = await describeImage({
       provider,
       imagePath: path,
       language: "zh-TW",
       timeoutMs: 10_000,
     });
-    expect(description.title).toBe("圖");
+    // `describeImage` 回的是**未驗證**的模型輸出：schema parse 留給呼叫端，
+    // 先記帳、後 parse（見 `DescribeImageResult`）。
+    expect(parseImageDescription(described.value).title).toBe("圖");
     expect(sentSize).toEqual({ width: 1024, height: 512 });
     await expect(readdir(dirname(sent))).rejects.toMatchObject({ code: "ENOENT" });
   });

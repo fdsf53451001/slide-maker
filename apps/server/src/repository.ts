@@ -5,7 +5,13 @@ import { parseProject, type PresentationProject, type StorageAdapter } from "@sl
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
-function assertSafeSegment(value: string): void {
+/**
+ * 路徑片段（專案 id 等）的唯一守門員。
+ *
+ * 匯出是為了讓**不在專案目錄底下**的儲存體（`usage-ledger.ts` 的帳本）也用同一份規則，
+ * 而不是各自寫一條正規表示式——兩份規則遲早會分岔，而分岔的那一天是路徑穿越。
+ */
+export function assertSafeSegment(value: string): void {
   if (!SAFE_ID.test(value)) throw new Error(`Unsafe path segment: ${value}`);
 }
 

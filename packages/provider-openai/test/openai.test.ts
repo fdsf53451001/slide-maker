@@ -960,7 +960,7 @@ describe("OpenAiStructuredTextProvider", () => {
       prompt: "hi",
       outputSchema: { type: "object" },
     });
-    expect(result).toEqual({ ok: true, items: [1, 2] });
+    expect(result.value).toEqual({ ok: true, items: [1, 2] });
     const call = active.requests[0]!;
     expect(call.path).toBe("/v1/chat/completions");
     const body = call.body as { response_format?: { type?: string }; messages?: unknown[] };
@@ -976,7 +976,9 @@ describe("OpenAiStructuredTextProvider", () => {
       },
     }));
     const provider = new OpenAiStructuredTextProvider({ config: active.config, model: "gemini" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({ value: 42 });
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
+      value: 42,
+    });
   });
 
   it("retries transient non-JSON responses and eventually succeeds", async () => {
@@ -987,7 +989,9 @@ describe("OpenAiStructuredTextProvider", () => {
       return { status: 200, json: { choices: [{ message: { content } }] } };
     });
     const provider = new OpenAiStructuredTextProvider({ config: active.config, model: "gemini" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({ ok: true });
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
+      ok: true,
+    });
     expect(active.requests.length).toBe(3);
   });
 
@@ -1023,7 +1027,7 @@ describe("OpenAiWebSearchProvider", () => {
       },
     }));
     const provider = new OpenAiWebSearchProvider({ config: active.config, model: "gpt-5-search" });
-    const results = await provider.search("query", 8, "zh-TW");
+    const { results } = await provider.search("query", 8, "zh-TW");
     expect(results).toEqual([{ url: "https://example.com/a", title: "A", summary: "sa" }]);
     const body = active.requests[0]!.body as { tools?: { type?: string }[] };
     expect(body.tools?.[0]?.type).toBe("web_search");
@@ -1049,9 +1053,9 @@ describe("OpenAiWebSearchProvider", () => {
       model: "gemini-3-flash-agent",
     });
 
-    await expect(provider.search("query", 8, "zh-TW")).resolves.toEqual([
-      { url: "https://example.com/gemini", title: "Gemini", summary: "grounded" },
-    ]);
+    await expect(provider.search("query", 8, "zh-TW")).resolves.toMatchObject({
+      results: [{ url: "https://example.com/gemini", title: "Gemini", summary: "grounded" }],
+    });
     const body = active.requests[0]!.body as {
       tools?: { google_search?: object }[];
       tool_choice?: unknown;
@@ -1077,5 +1081,131 @@ describe("OpenAiWebSearchProvider", () => {
       model: "",
     });
     expect(provider.availability.status).toBe("unavailable");
+  });
+});
+
+/**
+ * 用量的**接線**測試：解析器本身在 `usage.test.ts` 有各自的 fixture，這裡釘的是另一半
+ * ——每條通道有沒有接上**自己那個**解析器。少了這一組，把三條都接成
+ * `parseChatCompletionsUsage` 的實作會全綠，而 images 通道會在正式環境靜默落成
+ * `reported:false`（症狀與 gateway 真的沒回報一模一樣）。
+ */
+describe("用量沿著每條通道傳到呼叫端", () => {
+  it("images 通道帶回 input/output_tokens 與輸出側 image_tokens", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({
+      status: 200,
+      json: {
+        data: [{ b64_json: b64 }],
+        usage: {
+          input_tokens: 12,
+          input_tokens_details: { image_tokens: 0, text_tokens: 12 },
+          output_tokens: 229,
+          output_tokens_details: { image_tokens: 229, text_tokens: 0 },
+          total_tokens: 241,
+        },
+      },
+    }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+    });
+    const image = await provider.generate(imageRequest());
+    expect(image.usage).toEqual({
+      inputTokens: 12,
+      outputTokens: 229,
+      totalTokens: 241,
+      imageTokens: 229,
+      reported: true,
+    });
+  });
+
+  it("openrouter 通道帶回 cost", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({
+      status: 200,
+      json: {
+        data: [{ b64_json: b64, media_type: "image/png" }],
+        usage: { prompt_tokens: 0, completion_tokens: 4175, total_tokens: 4175, cost: 0.04 },
+      },
+    }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "google/gemini-image",
+      apiShape: "openrouter-image",
+    });
+    const image = await provider.generate(imageRequest());
+    expect(image.usage).toEqual({
+      inputTokens: 0,
+      outputTokens: 4175,
+      totalTokens: 4175,
+      reported: true,
+      cost: { amount: 0.04, unit: "openrouter-credit" },
+    });
+  });
+
+  it("結構化文字帶回 chat 形狀的用量，且與內容出自同一份回應", async () => {
+    active = await startFake(() => ({
+      status: 200,
+      json: {
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: {
+          prompt_tokens: 303,
+          completion_tokens: 13,
+          total_tokens: 316,
+          prompt_tokens_details: { cached_tokens: 0 },
+          completion_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    }));
+    const provider = new OpenAiStructuredTextProvider({ config: active.config, model: "gpt-5" });
+    const result = await provider.runStructured({ prompt: "hi", outputSchema: {} });
+    expect(result.value).toEqual({ ok: true });
+    expect(result.usage).toEqual({
+      inputTokens: 303,
+      outputTokens: 13,
+      totalTokens: 316,
+      cachedTokens: 0,
+      reasoningTokens: 0,
+      reported: true,
+    });
+  });
+
+  it("gateway 完全沒回 usage 時是 reported:false，而不是一堆 0", async () => {
+    active = await startFake(() => ({
+      status: 200,
+      json: { choices: [{ message: { content: '{"ok":true}' } }] },
+    }));
+    const provider = new OpenAiStructuredTextProvider({ config: active.config, model: "gpt-5" });
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).usage).toEqual({
+      reported: false,
+    });
+  });
+
+  it("網路搜尋也帶回用量", async () => {
+    active = await startFake(() => ({
+      status: 200,
+      json: {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                results: [{ url: "https://example.com/a", title: "A", summary: "sa" }],
+              }),
+            },
+          },
+        ],
+        usage: { prompt_tokens: 40, completion_tokens: 60, total_tokens: 100 },
+      },
+    }));
+    const provider = new OpenAiWebSearchProvider({ config: active.config, model: "gpt-5-search" });
+    const outcome = await provider.search("query", 8, "zh-TW");
+    expect(outcome.results).toHaveLength(1);
+    expect(outcome.usage).toEqual({
+      inputTokens: 40,
+      outputTokens: 60,
+      totalTokens: 100,
+      reported: true,
+    });
   });
 });

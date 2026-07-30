@@ -8,6 +8,7 @@ import {
   type ImageProviderCapabilities,
   type ProviderAvailability,
   type ProviderPreflightResult,
+  withProviderUsage,
 } from "@slide-maker/core";
 import {
   maskAwareDataUrl,
@@ -24,6 +25,7 @@ import {
   rethrowAsGeminiError,
   type GeminiClientConfig,
 } from "./http.js";
+import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiImageOptions {
   config: GeminiClientConfig;
@@ -192,7 +194,10 @@ export class GeminiImageProvider implements ImageProvider {
     await context?.onProgress?.({ phase: "validating_output" });
     // 回應可能是 JPEG 或 PNG（依模型而異，實測 1376×768），一律交給共用的 cover
     // 正規化轉成 canvas 尺寸的 PNG。
-    const { mediaType, bytes } = extractInlineImage(payload);
+    // usage 先解出來，解圖再包進 withProviderUsage：`GEMINI_IMAGE_MISSING`（模型不支援
+    // 圖片輸出、只回了文字）是**往返成功之後**才失敗的，token 已經燒掉，錯誤必須把它帶走。
+    const usage = parseGeminiUsage(payload);
+    const { mediaType, bytes } = withProviderUsage(usage, () => extractInlineImage(payload));
     let png: Uint8Array;
     try {
       png = rasterToCanvasPng(bytes, mediaType, request.width, request.height);
@@ -205,6 +210,7 @@ export class GeminiImageProvider implements ImageProvider {
       extension: "png",
       model: this.#options.model,
       parameters: { ...request.parameters, transport: "gemini-generate-content" },
+      usage,
     };
   }
 }

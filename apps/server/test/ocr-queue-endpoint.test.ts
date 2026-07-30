@@ -549,14 +549,16 @@ describe("extract-text 既有同步錯誤契約（迴歸）", () => {
           }[]
         ).map((box) => box.id);
         return {
-          boxes: ids.map((id) => ({
-            id,
-            role: "logo",
-            fontFamily: "Arial",
-            fontWeight: 400,
-            color: "#ffffff",
-            align: "left",
-          })),
+          value: {
+            boxes: ids.map((id) => ({
+              id,
+              role: "logo",
+              fontFamily: "Arial",
+              fontWeight: 400,
+              color: "#ffffff",
+              align: "left",
+            })),
+          },
         };
       },
     } as unknown as StructuredTextProvider);
@@ -720,14 +722,16 @@ describe("extract-text 的 ocr-input 中間產物清理", () => {
           }[]
         ).map((box) => box.id);
         return {
-          boxes: ids.map((id) => ({
-            id,
-            role: "logo",
-            fontFamily: "Arial",
-            fontWeight: 400,
-            color: "#ffffff",
-            align: "left",
-          })),
+          value: {
+            boxes: ids.map((id) => ({
+              id,
+              role: "logo",
+              fontFamily: "Arial",
+              fontWeight: 400,
+              color: "#ffffff",
+              align: "left",
+            })),
+          },
         };
       },
     } as unknown as StructuredTextProvider);

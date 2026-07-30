@@ -305,7 +305,7 @@ describe("part parsing", () => {
       json: { candidates: [{ content: { parts: [null, { text: "{}" }] } }] },
     }));
     const text = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await text.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({});
+    expect((await text.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({});
   });
 
   it("ignores candidates beyond the first and an absent content object", async () => {
@@ -340,7 +340,7 @@ describe("part parsing", () => {
       },
     }));
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.runStructured({ prompt: "hi", outputSchema: {} })).toEqual({
+    expect((await provider.runStructured({ prompt: "hi", outputSchema: {} })).value).toEqual({
       a: 1,
       b: 2,
     });
@@ -638,6 +638,62 @@ describe("structured text retry policy", () => {
     expect(calls).toHaveLength(3);
   });
 
+  /**
+   * 每一輪都是一個真的請求、一份完整的長 prompt（推理模型的 thoughts token 常是大宗），
+   * 所以**每一輪的 usageMetadata 都要累加**。只回報最後一輪會把成本低估到三分之一，
+   * 而應用層的 `OUTLINE_MAX_ATTEMPTS` 也是三輪——兩層相乘最壞是 9 個真實請求。
+   */
+  it("累加重試每一輪的 usageMetadata，並回報真實請求數", async () => {
+    let call = 0;
+    const calls = mockFetch(() => {
+      call += 1;
+      return {
+        json: {
+          candidates: [{ content: { parts: [{ text: call < 3 ? "不是 JSON" : "{}" }] } }],
+          usageMetadata: {
+            promptTokenCount: 100 * call,
+            candidatesTokenCount: 10 * call,
+            thoughtsTokenCount: call,
+            totalTokenCount: 111 * call,
+          },
+        },
+      };
+    });
+    const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
+    const result = await provider.runStructured({ prompt: "hi", outputSchema: {} });
+    expect(calls).toHaveLength(3);
+    expect(result.usage).toEqual({
+      inputTokens: 600,
+      outputTokens: 60,
+      reasoningTokens: 6,
+      totalTokens: 666,
+      reported: true,
+    });
+    expect(result.requests).toBe(3);
+  });
+
+  /** 三輪都失敗＝最貴的情況；用量必須跟著錯誤走，否則帳本上只剩一筆 reported:false。 */
+  it("三輪都失敗時，累加的用量掛在 SafeProviderError 上", async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return {
+        json: {
+          candidates: [{ content: { parts: [{ text: "不是 JSON" }] } }],
+          usageMetadata: { promptTokenCount: 100 * call, candidatesTokenCount: 10 * call },
+        },
+      };
+    });
+    const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
+    const error = (await provider
+      .runStructured({ prompt: "hi", outputSchema: {} })
+      .catch((thrown: unknown) => thrown)) as SafeProviderError;
+    expect(error).toBeInstanceOf(SafeProviderError);
+    expect(error.code).toBe("GEMINI_RESPONSE_INVALID");
+    expect(error.usage).toEqual({ inputTokens: 600, outputTokens: 60, reported: true });
+    expect(error.requests).toBe(3);
+  });
+
   it("does not retry a non-transient transport failure", async () => {
     const calls = mockFetch(() => ({ status: 429, json: { error: {} } }));
     const provider = new GeminiStructuredTextProvider({ config, model: "gemini-3.6-flash" });
@@ -679,6 +735,39 @@ function grounded(chunks: unknown[], supports: unknown[]): unknown {
   };
 }
 
+describe("往返成功之後才失敗的搜尋", () => {
+  /**
+   * grounding 回應常是整個專案裡最大的單筆：整包燒完卻沒有一筆可驗證的候選，產出是零，
+   * 而使用者的直覺反應是再按一次。usage 必須跟著 `GEMINI_WEB_SEARCH_EMPTY` 一起上去。
+   */
+  it("GEMINI_WEB_SEARCH_EMPTY 帶著這次的用量", async () => {
+    mockFetch(() => ({
+      json: {
+        ...(grounded([], []) as { candidates: unknown[] }),
+        usageMetadata: {
+          promptTokenCount: 3_000,
+          candidatesTokenCount: 800,
+          thoughtsTokenCount: 1_200,
+          totalTokenCount: 5_000,
+        },
+      },
+    }));
+    const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
+    const error = (await provider
+      .search("q", 5, "zh-TW")
+      .catch((thrown: unknown) => thrown)) as SafeProviderError;
+    expect(error).toBeInstanceOf(SafeProviderError);
+    expect(error.code).toBe("GEMINI_WEB_SEARCH_EMPTY");
+    expect(error.usage).toEqual({
+      inputTokens: 3_000,
+      outputTokens: 800,
+      reasoningTokens: 1_200,
+      totalTokens: 5_000,
+      reported: true,
+    });
+  });
+});
+
 describe("grounding aggregation", () => {
   it("de-duplicates a segment that supports the same chunk twice", async () => {
     mockFetch((call) =>
@@ -696,7 +785,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.summary).toBe("同一段。\n另一段。");
   });
 
@@ -715,7 +804,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     // 沒有截斷就會撞上 webSearchResultSchema 的 max(4000)，整筆被 safeParse 丟掉。
     expect(results).toHaveLength(1);
     expect(results[0]!.summary.length).toBeLessThanOrEqual(4_000);
@@ -741,7 +830,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     // 第一筆沒有 title → 過不了 schema(min 1) → 捨棄，而不是整批爆掉。
     expect(results).toHaveLength(1);
     expect(results[0]!.title).toBe("example.com");
@@ -761,7 +850,7 @@ describe("grounding aggregation", () => {
         : { json: grounded(chunks, supports) },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    expect(await provider.search("q", 2, "zh-TW")).toHaveLength(2);
+    expect((await provider.search("q", 2, "zh-TW")).results).toHaveLength(2);
     // 重導向改成一次併發解完（序列化 × 上游重試會累積成數百秒），所以解析數不再等於
     // limit：上限是 limit 的兩倍，留餘裕給「解開後其實是同一頁」而被去重掉的候選。
     expect(calls.filter((call) => call.url.startsWith(REDIRECT_PREFIX))).toHaveLength(4);
@@ -793,7 +882,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results.map((result) => result.url)).toEqual([
       "https://udn.com/story/1",
       "https://cna.com.tw/story/2",
@@ -839,7 +928,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results.map((result) => result.url)).toEqual(["https://ok.example/a"]);
   });
 
@@ -861,7 +950,7 @@ describe("grounding aggregation", () => {
           },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.summary).toBe("只有 A 支撐的話。\n（多來源共同支撐）兩家都支撐的話。");
     expect(results[1]!.summary).toBe("（多來源共同支撐）兩家都支撐的話。");
   });
@@ -905,7 +994,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://udn.com/news/story/7266/9487252");
   });
 
@@ -916,7 +1005,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://vertexaisearch.cloud.google.com/real/article");
   });
 
@@ -925,7 +1014,7 @@ describe("redirect resolution", () => {
       call.url.startsWith(REDIRECT_PREFIX) ? { status: 302 } : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
   });
 
@@ -936,7 +1025,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
   });
 
@@ -953,7 +1042,7 @@ describe("redirect resolution", () => {
           : { json: singleChunk() },
       );
       const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-      const results = await provider.search("q", 5, "zh-TW");
+      const { results } = await provider.search("q", 5, "zh-TW");
       expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
     }
   });
@@ -965,7 +1054,7 @@ describe("redirect resolution", () => {
         : { json: singleChunk() },
     );
     const provider = new GeminiWebSearchProvider({ config, model: "gemini-3.6-flash" });
-    const results = await provider.search("q", 5, "zh-TW");
+    const { results } = await provider.search("q", 5, "zh-TW");
     expect(results[0]!.url).toBe("https://loop.example/next");
     // generateContent 一次 + redirect 一次；不得對 loop.example 再發第二次。
     expect(calls).toHaveLength(2);
