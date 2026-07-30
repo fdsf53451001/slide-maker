@@ -9,6 +9,10 @@
   --accent-soft: #ff9b79; /* lighter accent text on dark */
   --accent-strong: #ff885c; /* denser accent for emphasis */
   --accent-rgb: 255, 117, 69; /* for rgba(var(--accent-rgb), α) tints */
+  /* accent 底上的深色墨水。原本同一件事寫了六個值（#120d0a、#111、#180a05、#150e0b、
+     #14121a、#16100d），對比度全落在 6.97–7.27 之間——差異看不出來，卻讓「品牌色換掉之後
+     墨水要跟著調多深」變成要在六個地方各判斷一次。收成一個 token，改色只需改這裡。 */
+  --on-accent: #16100d;
 
   /* Backgrounds & surfaces, dark → light (elevation scale) */
   --bg: #090d16;
@@ -17,21 +21,67 @@
   --surface-3: #121a29;
   --surface-4: #151d2c;
   --surface-5: #20293a;
+  /* 「漸層頁面上的卡片」自成一級，不在 surface-1..5 那條線上：它要比背後的徑向漸層亮一點點
+     才浮得起來，但又不能亮到像 surface-2 那種面板。風格編輯器、設定卡、PDF 對話框、
+     最近更新面板四處本來各寫一次 #0f1522。 */
+  --surface-card: #0f1522;
 
   /* Borders, subtle → strong */
   --border-1: #29344a;
   --border-2: #303b51;
   --border-3: #354158;
   --border-4: #374258;
+  /*
+   * 表單控制項專用的邊框，與上面那組**刻意分開**。
+   *
+   * border-1/2/3 在各自的底色上只有 1.4–1.7:1，當裝飾性分隔線沒問題（WCAG 1.4.11 不涵蓋
+   * 純裝飾），但輸入框不一樣：`.fields input`、`.setup-card input:focus`、
+   * `.dashboard .create-panel input`、`.pdf-deck-name input` 都設了 `outline: 0`／`none`，
+   * 邊框是**唯一**的邊界線索，看不見等於使用者找不到可以打字的地方。1.4.11 要求 3:1，
+   * 這個值在輸入框底色（surface-2/3、#121928、#090f1a）上是 3.10–3.4；最亮的 surface-4
+   * 上是 3.006，**貼著門檻**（差一階更暗的底色就過不了，換色時要重算而不是照抄）。
+   * 不拿它全域取代 border-1/2——那會把每一條分隔線也一起加粗成視覺噪音。
+   */
+  --border-control: #55688b;
 
   /* Text, bright → dim */
   --text-bright: #edf1f7;
   --text: #e9edf5;
   --text-2: #dfe5ee;
   --text-3: #c3ccda;
-  --text-muted: #8491a5;
-  --text-dim: #768399;
-  --text-dim-2: #6f7d92;
+  /*
+   * muted 從 #8491a5 提亮到 #8f9cb0，理由在下面 dim 那段的最後一句：dim 與 dim-2 的下限
+   * 都被「它們實際用到的最亮底色」釘住了，三階色階唯一還能往外拉的方向就是把 muted 往上開。
+   * 提亮只會讓它自己的對比更好（surface-5 上 4.57→5.24、bg 上 6.08→6.99），而級距回到
+   * muted→dim 1.161、muted→dim-2 1.266——與這輪動手之前的 1.200／1.309 幾乎一樣，
+   * 差別是現在三級都過得了 AA。離 --text-3 還有 1.718，不會與它糊在一起。
+   */
+  --text-muted: #8f9cb0;
+  /*
+   * dim 這兩級原本是 #768399／#6f7d92，在它們實際用到的底色上都低於 WCAG AA 的 4.5:1。
+   * 它們承載的是「次要但仍要讀」的文字（面板標題、來源卡片 metadata、說明小字），
+   * 不是純裝飾，所以是提亮而不是降級處理。
+   *
+   * 但門檻要對著**真正用到的最亮底色**算，不是對著 surface-5 算。上一版把兩級都貼到
+   * 「surface-5 剛好過線」（dim 4.518、dim-2 4.496——後者其實還差 0.004 沒過），結果兩個值
+   * 只差一個通道的 2/255：dim-2 vs dim 1.005、dim vs muted 1.011，三級文字色階整個塌成
+   * 同一個顏色，63 個使用點再也分不出輕重。而**dim 與 dim-2 都沒有任何一處用在 surface-5
+   * 上**（畫 surface-5 當底的三條規則寫的都是別的文字色），所以那條門檻從頭到尾是假想的。
+   *
+   * 逐條走過使用點之後的真實最亮底色：
+   * ・--text-dim-2：#17213d（dashboard 的 body 徑向漸層亮端，`.dashboard-section-actions >
+   *   span` 的「N 份簡報」與模型庫載入失敗的 `.model-library-empty` 都落在上面），
+   *   次亮是舞台漸層亮端 #171f30 與 --surface-4；
+   * ・--text-dim：只到 #131b2b（大綱審閱卡片漸層亮端），比 dim-2 的底色**暗**。
+   * dim-2 於是取「#17213d 上還過得了 4.5:1 的最暗值」＝ #7c89a3（4.514，貼著門檻；
+   * #171f30 上 4.677、--surface-4 上 4.794、--surface-1 上 5.278）。
+   *
+   * dim 與 dim-2 的級距因此是 1.091。往下壓不動：dim-2 用在比 dim 更亮的底色上，它的下限
+   * （#7c89a3）比 dim 的下限還亮，把 dim 壓暗到看得出差別就會讓三級的明暗順序反過來。
+   * 所以第三階是**往上**拿回來的——見上面 --text-muted 提亮到 #8f9cb0 的那段。
+   */
+  --text-dim: #8290a8;
+  --text-dim-2: #7c89a3;
 
   /* Semantic */
   --danger: #e5484d;
@@ -49,10 +99,15 @@
   font-family: Inter, ui-sans-serif, system-ui, "Noto Sans TC", sans-serif;
   font-synthesis: none;
 }
+/* 這是整份風格表單裡字最多的一段說明（「高密度會要求更多可讀資訊區塊…」），卻是全檔最小的
+   閱讀文案：它住在 `.style-form > label`（11px）底下，`<small>` 再乘上 UA 的 `smaller`
+   （0.8×）＝實際約 8.8px。字級寫死成 12px 切斷這條繼承鏈；顏色 #68758a 在卡片底
+   （--surface-card）上只有 3.91:1，一併提到 6.18。 */
 .density-help {
   display: block;
   margin-top: 7px;
-  color: #68758a;
+  color: #8a97ad;
+  font-size: 12px;
   line-height: 1.5;
 }
 .library-tabs {
@@ -95,9 +150,12 @@
   padding: 11px 16px;
   cursor: pointer;
 }
+/* 固定 4 軌換成 auto-fill：`body` 的下限是 1100px，但視窗可以比內容區寬得多也可以剛好卡在
+   下限，固定軌數在兩端都會壞——窄的時候每張卡被壓到讀不出標題，寬的時候卡片被拉成長條。
+   minmax 的下限就是「這張卡最少要多寬才讀得懂」，軌數交給瀏覽器算。 */
 .style-library {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 18px;
   margin-top: 22px;
 }
@@ -150,7 +208,7 @@
 }
 .style-card > div button {
   flex: 1;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   padding: 7px;
   cursor: pointer;
@@ -234,7 +292,9 @@
   gap: 7px;
   /* 容器比 260px 窄時（側邊面板）要跟著縮，否則晶片會橫向溢出而不是換行。 */
   max-width: min(260px, 100%);
-  padding: 5px 12px 5px 8px;
+  /* 這顆晶片是可點的 <label>（勾選／取消該來源），高度原本只有約 23px——桌面可點目標的
+     底線是 32×32，上下 padding 從 5px 加到 7px 把它推上來。 */
+  padding: 7px 12px;
   border: 1px solid #2b3750;
   border-radius: 999px;
   background: rgba(18, 26, 41, 0.6);
@@ -297,7 +357,7 @@
 .source-chip.source-chip-pinned .source-chip-check {
   border-color: var(--accent);
   background: var(--accent);
-  color: #180a05;
+  color: var(--on-accent);
 }
 .source-chip.source-chip-ai {
   border-style: dashed;
@@ -411,22 +471,25 @@
   gap: 6px;
   margin-left: auto;
 }
+/* 次要按鈕的外框改用 --border-control：填色（surface-4）與背後的面板底幾乎同色，
+   邊框是它唯一的邊界，而 --border-3 在 surface-4 上只有 1.65:1（WCAG 1.4.11 要 3:1）。 */
 .outline-actions button,
 .add-outline {
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   color: #bec8d8;
   cursor: pointer;
 }
+/* 高度從 30px 補到桌面可點目標的底線 32px（min-width 本來就已經是 32）。 */
 .outline-actions button {
   min-width: 32px;
-  height: 30px;
+  height: 32px;
   padding: 0 9px;
   border-radius: 6px;
 }
 .outline-actions button:hover:not(:disabled) {
   border-color: #53617a;
-  background: #202a3b;
+  background: var(--surface-5);
   color: #fff;
 }
 .outline-actions .outline-delete:hover:not(:disabled) {
@@ -448,7 +511,7 @@
 }
 .add-to-style {
   margin-top: 10px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   color: var(--text-2);
   padding: 9px 12px;
@@ -495,7 +558,7 @@
   margin-left: auto;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -528,7 +591,7 @@
   height: 45px;
   border-radius: 6px;
   background: var(--accent);
-  color: #150e0b;
+  color: var(--on-accent);
   font-size: 25px;
 }
 .style-picker-list {
@@ -576,7 +639,7 @@
 }
 .style-picker-empty {
   color: #7f8ca1;
-  border: 1px dashed #303b50;
+  border: 1px dashed var(--border-2);
   padding: 16px;
   text-align: center;
 }
@@ -608,13 +671,16 @@
   width: min(1180px, calc(100vw - 60px));
   margin: 38px auto;
   display: grid;
-  grid-template-columns: 1fr 420px;
+  /* minmax(0, …) 而非裸 1fr：裸 1fr ＝ minmax(auto, 1fr)，左欄裡任何一個放不進去的東西
+     （長檔名、不換行的參考圖列）都會把軌道撐過份額。與本檔其他 grid 同一套慣例。
+     窄視窗的降級在 @media (max-width: 1200px)。 */
+  grid-template-columns: minmax(0, 1fr) 420px;
   gap: 26px;
 }
 .style-form,
 .reference-panel {
   border: 1px solid var(--border-1);
-  background: #0f1522;
+  background: var(--surface-card);
   padding: 28px;
 }
 .style-form h1 {
@@ -634,8 +700,8 @@
   width: 100%;
   margin-top: 7px;
   padding: 11px;
-  border: 1px solid var(--border-2);
-  background: #121a2a;
+  border: 1px solid var(--border-control);
+  background: var(--surface-3);
   color: var(--text-bright);
   resize: vertical;
 }
@@ -646,7 +712,7 @@
 }
 .style-actions button {
   padding: 11px 16px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   cursor: pointer;
 }
@@ -676,7 +742,7 @@
   grid-template-columns: 96px 1fr auto;
   align-items: center;
   gap: 10px;
-  background: #121928;
+  background: var(--surface-3);
   padding: 8px;
 }
 .reference-list img {
@@ -699,7 +765,7 @@
   gap: 3px;
 }
 .reference-list button {
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   color: #c8d0dc;
   cursor: pointer;
@@ -765,7 +831,7 @@ button {
   border: 0;
   border-radius: 6px;
   background: var(--accent);
-  color: #16100d;
+  color: var(--on-accent);
   font-weight: 850;
   cursor: pointer;
 }
@@ -804,11 +870,13 @@ button {
   line-height: 1.65;
   font-size: 12px;
 }
+/* 邊框掛在 form 而不是 input（input 自己是 `border: 0` + `outline: none`），所以這條就是
+   那個輸入框唯一的邊界線索——換成 --border-control 讓它真的看得見（1.4.11 要 3:1）。 */
 .dashboard .create-panel form {
   display: flex;
   gap: 9px;
   padding: 7px;
-  border: 1px solid #35435c;
+  border: 1px solid var(--border-control);
   border-radius: 10px;
   background: #090f1a;
 }
@@ -825,12 +893,13 @@ button {
   min-width: 132px;
   border-radius: 7px;
 }
+/* 建立專案輸入框底下的說明句，使用者會整句讀：10px 太小、#66758c 只有 3.71:1。 */
 .create-panel > small {
   grid-column: 2;
   display: block;
   margin: 9px 4px 0;
-  color: #66758c;
-  font-size: 10px;
+  color: #7f8da5;
+  font-size: 12px;
 }
 .dashboard-section {
   margin-top: 34px;
@@ -889,9 +958,11 @@ button {
      靠 auto margin 才會繼續貼齊右緣。 */
   margin-left: auto;
 }
+/* 固定 6 軌在 `body` 的 1100px 下限時每張只剩約 172px，裡面還要塞縮圖＋名稱＋一行 small，
+   名稱幾乎必被 ellipsis 吃掉。改成 auto-fill：窄的時候少放幾張，不是每張都變窄。 */
 .style-quick-list {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
   margin-top: 15px;
 }
@@ -941,12 +1012,13 @@ button {
 }
 .style-quick-card small {
   margin-top: 4px;
-  color: #69778d;
+  color: #7f8da5;
   font-size: 9px;
 }
+/* 理由同 .style-quick-list：軌數交給瀏覽器，minmax 下限保住卡片可讀寬度。 */
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 18px;
   margin-top: 15px;
 }
@@ -955,7 +1027,7 @@ button {
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #29354a;
+  border: 1px solid var(--border-1);
   border-radius: 10px;
   background: var(--surface-2);
   transition:
@@ -976,14 +1048,16 @@ button {
   color: inherit;
   cursor: pointer;
 }
+/* 26×26 補到 32×32：刪除專案是不可逆的，而它又是 hover 才浮出來的小圓鈕——目標太小時
+   使用者容易在「還沒瞄準好就按下去」與「按空」之間反覆，兩種都不該發生在破壞性動作上。 */
 .project-card-delete {
   position: absolute;
   top: 8px;
   right: 8px;
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 50%;
@@ -1052,7 +1126,7 @@ button {
 .confirm-actions button {
   min-width: 96px;
   padding: 11px 16px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 6px;
   background: var(--surface-4);
   color: var(--text-2);
@@ -1113,7 +1187,7 @@ button {
 }
 .project-card-info small {
   margin-top: 6px;
-  color: #718097;
+  color: var(--text-dim-2);
   font-size: 9px;
 }
 .empty-dashboard {
@@ -1144,19 +1218,23 @@ button {
 }
 .primary {
   background: var(--accent) !important;
-  color: #120d0a !important;
+  color: var(--on-accent) !important;
   border-color: var(--accent) !important;
   font-weight: 700;
 }
+/* 這一行的代價要記得：它會把停用態**已經算過的**文字對比再乘一次 0.42，於是任何「停用時
+   換個看得見的顏色」都只在名目上成立（實測 3.9–5.2 全部落到 1.7–2.0）。需要停用態文字仍可
+   讀的規則一律要自己 `opacity: 1` 再換色——`.text-layer-rail button:disabled`、
+   `.stage-meta-actions button:disabled`、`.setup-steps > button:disabled`、
+   `.panel-actions .batch-extract:disabled`、`.dashboard-section-actions > button:disabled`
+   都是這個形狀。 */
 button:disabled {
   opacity: 0.42;
   cursor: not-allowed;
 }
-.empty {
-  color: #667289;
-  margin-top: 30px;
-  line-height: 1.7;
-}
+/* `.empty` 曾在這裡定義（空狀態說明文字），但 apps/editor/src 裡沒有任何
+   `className="empty"`——各空狀態都有自己的具名 class（`.source-empty`、`.canvas-empty`、
+   `.model-library-empty`、`.empty-dashboard`…）。留著只會讓下一個人以為有共用的空狀態樣式。 */
 .shell {
   height: 100vh;
   display: grid;
@@ -1201,7 +1279,7 @@ header {
   height: 30px;
   border: 0;
   background: var(--accent);
-  color: #16100d;
+  color: var(--on-accent);
   font-weight: 800;
   font-size: 14px;
   cursor: pointer;
@@ -1249,11 +1327,11 @@ header {
 }
 .title-name-input:focus {
   outline: none;
-  border-color: #7aa2ff;
+  border-color: var(--cap-image);
 }
 .title-block small {
   flex: none;
-  color: #707c91;
+  color: var(--text-dim-2);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -1269,14 +1347,14 @@ header {
   display: inline-block;
   width: 7px;
   height: 7px;
-  background: #69d19b;
+  background: var(--success);
   border-radius: 50%;
   margin-right: 8px;
-  box-shadow: 0 0 12px #69d19b;
+  box-shadow: 0 0 12px var(--success);
 }
 .rail,
 .inspector {
-  background: #0d121e;
+  background: var(--surface-1);
   min-height: 0;
 }
 .rail {
@@ -1295,7 +1373,7 @@ header {
   justify-content: space-between;
   padding: 0 18px;
   border-bottom: 1px solid var(--surface-5);
-  color: #6e7b91;
+  color: var(--text-dim-2);
 }
 .rail-heading b,
 .inspector-heading b {
@@ -1331,7 +1409,7 @@ header {
   font:
     10px "DM Mono",
     monospace;
-  color: #68758b;
+  color: #7c8aa2;
 }
 .thumb-canvas {
   aspect-ratio: 16 / 9;
@@ -1340,7 +1418,7 @@ header {
   justify-content: center;
   background-size: cover;
   background-position: center;
-  background-color: #151d2e;
+  background-color: var(--surface-4);
   color: #9aa5b8;
   overflow: hidden;
 }
@@ -1356,9 +1434,11 @@ header {
   opacity: 0.32;
   filter: grayscale(1);
 }
+/* 頁碼原本再暗一階（#4c586c，2.39:1，全檔最低）來表達「這頁不上場」，但那個語意已經由
+   line-through 完整承擔了——顏色再暗一次只是讓數字讀不出來，換不到任何額外訊息。 */
 .thumbnail.hidden-slide .slide-number {
   text-decoration: line-through;
-  color: #4c586c;
+  color: var(--text-dim-2);
 }
 /* 標記是 .thumbnail 的子節點而不是 .thumb-canvas 的：父層 opacity 會連帶作用在所有子孫上，
    z-index 也救不回來，放進被淡化的縮圖裡等於「已隱藏」三個字也一起糊掉。
@@ -1371,7 +1451,7 @@ header {
   font-style: normal;
   font-size: 9px;
   letter-spacing: 0.4px;
-  color: #e7ecf5;
+  color: var(--text);
   background: rgba(8, 12, 20, 0.82);
   border-top-right-radius: 4px;
   pointer-events: none;
@@ -1433,16 +1513,24 @@ header {
   color: #89a0bc;
   font-size: 10px;
 }
+/*
+ * 這排原本是 `padding: 2px 12px 2px 0` ＋ 9px 字＝約 15px 高，是全檔最小的可點目標，
+ * 而它裝的是「抹除全部文字」這類真的會改到投影片的動作。上下 padding 補到 8px、字級補到
+ * 11px，讓它落在桌面 32×32 的底線附近。
+ * 代價是 `.stage-meta` 這一排從約 15px 長到約 30px，畫布高度少掉約 15px——這是刻意的
+ * 交換：上面 .stage 的註解在意的是「不要變成兩行高」（那會吃掉兩倍），單行變高則是
+ * 讓這些動作真的按得到的最低成本。
+ */
 .stage-meta-actions button {
   flex: none;
   white-space: nowrap;
   border: 0;
-  border-right: 1px solid #303b50;
-  padding: 2px 12px 2px 0;
+  border-right: 1px solid var(--border-2);
+  padding: 8px 12px;
   color: #9ba9bc;
   background: transparent;
   font:
-    9px "DM Mono",
+    11px "DM Mono",
     monospace;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -1450,8 +1538,21 @@ header {
 .stage-meta-actions button:hover:not(:disabled) {
   color: var(--accent-soft);
 }
+/* 停用態原本 #4f5b6d＝2.78:1。停用控制項不受 1.4.3 約束，但「這顆為什麼按不了」得先看得到
+   它寫什麼才問得出來。
+
+   只換顏色買不到那件事：全域 `button:disabled { opacity: 0.42 }`（見下方）會把換好的色再
+   壓掉一次，前一版的 #6f7d92 實際渲染出來是 1.735（舞台漸層亮端）／1.751（暗端），比原本的
+   2.78 還糟——換色只在名目上有效。所以照 `.text-layer-rail button:disabled` 那條的做法：
+   先把 opacity 收回 1，再換色，這樣寫下來的數字才是螢幕上的數字。
+
+   顏色改用 --text-dim-2 token 而不是硬編：前一版寫的 #6f7d92 正是改動前 --text-dim-2 的舊值，
+   註解卻聲稱「與 --text-dim-2 同一階」——token 一動它就與自己聲稱追蹤的東西分岔了。
+   實際比值：舞台漸層亮端 #171f30 上 4.677、暗端 #0a0f19 上 5.445。
+   「按不了」仍看得出來：啟用態是 #9ba9bc，兩者相差 1.475。 */
 .stage-meta-actions button:disabled {
-  color: #4f5b6d;
+  opacity: 1;
+  color: var(--text-dim-2);
   cursor: default;
 }
 .stage-meta-actions > span {
@@ -1572,7 +1673,7 @@ header {
   align-items: center;
   justify-content: center;
   text-align: center;
-  color: #68758b;
+  color: #8a97ad;
 }
 .canvas-empty strong {
   color: var(--text);
@@ -1631,7 +1732,7 @@ header {
 .version-preview-actions .primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
 }
 .versions {
   /* 沒有「版本歷史」標題了，縮圖列直接貼在畫布下方，省下的高度歸畫布。 */
@@ -1643,10 +1744,16 @@ header {
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 10px;
-  min-height: 68px;
-  /* 一列的高度：縮圖 + 版本名稱 + 時間戳，有 label 的版本才會用到滿。 */
-  max-height: 100px;
+  min-height: 76px;
+  /* 一列的高度：縮圖 + 版本名稱 + 時間戳，有 label 的版本才會用到滿（`* { box-sizing:
+     border-box }`，所以這兩個值含下面那 4px×2 的 padding）。 */
+  max-height: 108px;
   overflow-y: auto;
+  /* `overflow-y: auto` 會把溢出的東西裁掉，包含子元素的焦點環。全域的 :focus-visible 是
+     2px ring + 2px offset ＝ 需要 4px 淨空，沒有這圈 padding，用鍵盤 tab 到第一張版本卡時
+     環會被切掉一半，正好是「現在焦點在哪」最需要看清楚的時候。max-height 跟著加 8px，
+     免得可視的列數因為 padding 少掉一列。 */
+  padding: 4px;
 }
 .version-item {
   position: relative;
@@ -1656,20 +1763,23 @@ header {
 }
 .version-list button {
   padding: 4px;
-  border: 1px solid #293349;
-  background: #111725;
+  border: 1px solid var(--border-1);
+  background: var(--surface-2);
   cursor: pointer;
 }
-/* 刪除是不可逆操作，平時退到看不見；滑到那張卡片才浮出來，避免誤點。 */
+/* 刪除是不可逆操作，平時退到看不見；滑到那張卡片才浮出來，避免誤點。
+   16×16 補到 24×24：「破壞性」＋「hover 才出現」兩個條件疊起來，目標小到會讓人在
+   90px 寬的縮圖上反覆瞄準，而瞄歪的結果不是沒反應、是點到縮圖切換版本。
+   24 而不是 32：這顆疊在 90×51 的縮圖右上角，32 會蓋掉縮圖近三分之一的可辨識面積。 */
 .version-item .version-delete {
   position: absolute;
   top: 2px;
   right: 2px;
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  line-height: 14px;
-  border-radius: 8px;
+  line-height: 22px;
+  border-radius: 12px;
   border-color: var(--border-2);
   background: rgba(9, 13, 22, 0.85);
   color: var(--text-muted);
@@ -1725,7 +1835,7 @@ header {
   white-space: nowrap;
 }
 .empty-inline {
-  color: #5e6b80;
+  color: #78859c;
   font-size: 12px;
 }
 .job-error,
@@ -1752,7 +1862,7 @@ header {
   gap: 15px;
 }
 .job-progress strong {
-  color: #eef2f8;
+  color: var(--text-bright);
 }
 .job-progress span {
   color: #8795aa;
@@ -1826,14 +1936,16 @@ header {
   letter-spacing: 0.08em;
   margin-bottom: 17px;
 }
+/* `outline: 0` 讓邊框成為這些輸入框唯一的邊界，所以邊框色用 --border-control
+   （--border-1 在這個底色上只有 1.41:1，實際看起來就是沒有框）。 */
 .fields input,
 .fields textarea,
 .fields select {
   display: block;
   width: 100%;
-  background: #121928;
+  background: var(--surface-3);
   color: #e4e8f0;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
   margin-top: 7px;
   padding: 10px;
@@ -1848,9 +1960,10 @@ header {
 .fields select:focus {
   border-color: var(--accent);
 }
+/* 生成 prompt 是使用者會整段讀、也會整段改的內容，不是 metadata：10px 太小。 */
 .fields .prompt {
   font-family: "DM Mono", monospace;
-  font-size: 10px;
+  font-size: 12px;
   color: #bec8d8;
 }
 .actions {
@@ -1862,7 +1975,7 @@ header {
 }
 .actions button,
 .welcome button {
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   padding: 11px 13px;
   cursor: pointer;
@@ -1885,6 +1998,35 @@ header {
   border-radius: 7px;
   box-shadow: 0 10px 50px rgba(0, 0, 0, 0.45);
 }
+/*
+  toast 從「整條是一顆按鈕」改成「`div[role=alert]` 內含一顆具名關閉鈕」之後，
+  那顆按鈕不再繼承任何樣式，會落到瀏覽器預設外觀（灰底方角，在紅底膠囊上非常突兀）。
+  改成這樣還有一個副作用要補償：滑鼠命中區從整條 toast 縮成一個字元，所以關閉鈕給到
+  28px 見方——它同時是錯誤訊息唯一的關閉途徑。
+  `.job-error` 的「重試」是同一種情況：既有規則只設了容器的配色與 padding。
+*/
+.toast button,
+.job-error button {
+  min-width: 28px;
+  min-height: 28px;
+  margin-left: 6px;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.toast button:hover:not(:disabled),
+.job-error button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.45);
+}
+.job-error button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 @media (max-width: 1200px) {
   /* 收合寬度不隨斷點變（`--inspector-w` 由 .inspector-collapsed 覆寫，那條的
      特異性比這裡高），收合鈕的落點才不會隨視窗跳動。 */
@@ -1895,6 +2037,15 @@ header {
   .stage {
     /* 與上面同一套不對稱，理由同 .stage 的 padding 註解（右邊貼的是文字工具列或畫布本身）。 */
     padding: 20px 12px 20px 20px;
+  }
+  /*
+   * 風格編輯器原本是 `1fr 420px`，完全沒有斷點：右欄是定值，視窗一窄就全部由左欄吸收，
+   * 實測會被壓到約 254px——那一欄裝的是風格描述的多行 textarea 與各個下拉，窄成這樣就
+   * 只剩換行的碎片。右欄縮到 320px（參考圖仍看得出構圖）把寬度還給左欄。
+   * 收在 1200px 這個既有斷點裡，而不是另開一個：多一個斷點就多一組要對齊的行為。
+   */
+  .style-editor-grid {
+    grid-template-columns: minmax(0, 1fr) 320px;
   }
 }
 /*
@@ -1925,7 +2076,7 @@ header {
 /* 左邊已經沒有相鄰按鈕了，額外的 margin 只會讓它離標題更遠。 */
 .workspace-nav .present-button {
   color: #dfe6f2;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
 }
 .presentation-mode {
@@ -1981,7 +2132,7 @@ header {
   border: 1px solid var(--border-1);
 }
 .presentation-empty strong {
-  color: #eef2f8;
+  color: var(--text-bright);
   font-size: clamp(26px, 4vw, 64px);
 }
 .presentation-controls {
@@ -2006,15 +2157,17 @@ header {
 .presentation-controls:focus-within {
   opacity: 1;
 }
+/* 24×24 補到 32×32：這排平時 opacity 0.15，等於要在幾乎看不見的狀態下瞄準，
+   目標尺寸是唯一能補償的變數。放映中誤點上／下一頁的代價又特別高（全場都看得到）。 */
 .presentation-controls button {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   font-size: 12px;
   line-height: 1;
   padding: 0;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-bright);
@@ -2037,12 +2190,14 @@ header {
   align-items: center;
   gap: 8px;
 }
+/* 28 而不是 32：它與旁邊的「N 頁」文字同排在 48px 高的 .rail-heading 裡，32 會把那一排
+   撐得比標題還高。28 已經脫離「必須瞄準」的區間。 */
 .add-page {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: 1px dashed #39445a;
   border-radius: 6px;
   background: transparent;
@@ -2068,12 +2223,15 @@ header {
 .thumbnail.hidden-slide .thumb-actions {
   display: flex;
 }
+/* 23×23 補到 28×28。這排裡有「取消隱藏」——隱藏頁唯一的復原入口（見上面那條註解），
+   而整排是浮在縮圖右上角的小圖示鈕。28 是這裡放得下的最大值：縮圖列只有 228px 寬、
+   三顆並排，再大就會蓋掉縮圖本身讓人認不出是哪一頁。 */
 .thumb-actions button {
   border: 0;
   background: rgba(8, 12, 20, 0.85);
   color: #d5dbe5;
-  width: 23px;
-  height: 23px;
+  width: 28px;
+  height: 28px;
   cursor: pointer;
 }
 /* 隱藏中的那顆用強調色標出來，跟旁邊兩顆常駐的操作按鈕區分開。 */
@@ -2090,14 +2248,17 @@ header {
   grid-template-columns: repeat(4, minmax(0, 1fr)) 26px;
   border-bottom: 1px solid var(--surface-5);
 }
+/* padding 從共用的 `8px 10px` 加到 `10px`：分頁列是 44px 高，但按鈕本身只有約 29px，
+   而分頁是這個面板最常按的東西。上下各多 2px 就跨過 32px 的底線，又不會把列撐破。 */
 .inspector-tabs button {
+  padding: 10px;
   font-size: 11px;
 }
 .inspector-tabs .inspector-collapse {
   padding: 8px 0;
   font-size: 13px;
   line-height: 1;
-  color: #6e7b91;
+  color: var(--text-dim-2);
 }
 .inspector-tabs .inspector-collapse:hover {
   color: var(--accent-strong);
@@ -2409,7 +2570,7 @@ header {
   gap: 8px;
 }
 .panel-actions button {
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   background: var(--surface-4);
   padding: 10px;
   cursor: pointer;
@@ -2428,8 +2589,13 @@ header {
   gap: 8px;
 }
 /* 刻意不套 `.batch-generate` 的強調色：預設的 OpenCV 引擎在本機跑、不消耗任何配額，
-   把它畫得跟「會花錢」的批次生成一樣醒目只會誤導。 */
+   把它畫得跟「會花錢」的批次生成一樣醒目只會誤導。
+
+   `opacity: 1` 是必要的一行，不是多餘的：全域 `button:disabled { opacity: 0.42 }` 會把
+   --text-dim-2 壓成實際 1.979（surface-4 上），而這顆停用時的文字正是「為什麼不能批次抽字」
+   的唯一線索。收回 opacity 之後是 4.794；啟用態是 --text（14.39），差別看得很清楚。 */
 .panel-actions .batch-extract:disabled {
+  opacity: 1;
   color: var(--text-dim-2);
   cursor: not-allowed;
 }
@@ -2500,10 +2666,12 @@ header {
   display: grid;
   gap: 3px;
 }
+/* 這是「不要讓 AI 讀取這批檔案」的同意說明，不是 metadata 徽章：使用者必須讀懂它才決定得了
+   要不要勾，而勾選與否會直接決定檔案內容有沒有被送去給模型。9px 不可接受。 */
 .source-upload-consent small {
   color: var(--text-dim-2);
   font:
-    9px "DM Mono",
+    12px "DM Mono",
     monospace;
   letter-spacing: 0.04em;
   line-height: 1.5;
@@ -2559,6 +2727,8 @@ header {
 .source-search input:focus {
   outline: none;
 }
+/* 清除搜尋：原本 padding 4px ＝ 約 21×21。加到 9px 讓觸擊區約 31×31，
+   而它是 `.source-search` 這條 flex 的最後一項，變大只往內縮輸入框幾個 px。 */
 .source-search > button {
   border: 0;
   background: none;
@@ -2566,7 +2736,7 @@ header {
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  padding: 4px;
+  padding: 9px;
 }
 .source-search > button:hover {
   color: #cfd8e7;
@@ -2662,12 +2832,21 @@ header {
   color: var(--text-dim-2);
   font-size: 9px;
 }
+/*
+ * 22×22 補到 32×32：這是「要不要讓 AI 讀這份來源」的勾選框，勾錯的後果是內容被送去給模型
+ * （或該讀的沒被讀到）。放大的是外面這層 <label> 的觸擊區，裡面的 <input> 維持 15px。
+ *
+ * 用負 margin 而不是改 `.source-card-header` 的第一軌（22px）：左右各 -5px 讓 margin box
+ * 剛好還是 22px，於是標題欄的起點一格都不動，只有觸擊區往外長。少了它，32px 的項目會從
+ * 22px 的軌道溢出到右邊、壓在來源名稱上。上方 -7px 讓勾選框的中心維持在原本的高度
+ * （原本 22/2−2＝9px，現在 32/2−7＝9px），與標題第一行對齊。
+ */
 .source-access-toggle {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  margin: -2px 0 0;
+  width: 32px;
+  height: 32px;
+  margin: -7px -5px 0;
   cursor: pointer;
 }
 .source-access-toggle input {
@@ -2677,6 +2856,8 @@ header {
   accent-color: var(--accent);
   cursor: pointer;
 }
+/* 8px 是全檔最小的字，而且是全大寫的 DM Mono（大寫沒有字母高低差，本來就更難分辨）。
+   徽章維持「一眼掃過」的密度設計不放大成正文，但 10px 是這個字體還認得出來的下限。 */
 .source-kind {
   border: 1px solid var(--border-3);
   border-radius: 999px;
@@ -2684,7 +2865,7 @@ header {
   color: #9eabba;
   background: var(--surface-4);
   font:
-    8px "DM Mono",
+    10px "DM Mono",
     monospace;
   text-transform: uppercase;
 }
@@ -2693,7 +2874,7 @@ header {
   width: calc(100% - 24px);
   margin: 0 12px;
   overflow: hidden;
-  border: 1px solid #28344a;
+  border: 1px solid var(--border-1);
   border-radius: 6px;
   background: #0c121e;
   color: #aeb8c8;
@@ -2714,6 +2895,8 @@ header {
   object-fit: cover;
   display: block;
 }
+/* 來源正文預覽：這三行字就是這個元件存在的全部意義（讓人不用開對話框就認出是哪一份），
+   10px 讓它變成一團灰色紋理。 */
 .source-preview-trigger.text p {
   display: -webkit-box;
   min-height: 74px;
@@ -2721,7 +2904,7 @@ header {
   overflow: hidden;
   padding: 11px 11px 27px;
   color: #a9b4c5;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -2750,29 +2933,37 @@ header {
   color: var(--text-dim);
   font-size: 9px;
 }
+/* 用途下拉決定這份來源會不會被讀、會不會被當參考圖，選項要讀懂才選得對：10px → 12px。
+   邊框用 --border-control 而不是 --border-2（3.36:1 vs 1.5:1）——理由同 :root 的說明。 */
 .source-usage select {
   min-width: 0;
   width: 100%;
-  border: 1px solid #303b52;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   background: #0c111c;
   color: #dbe1eb;
   padding: 7px;
-  font-size: 10px;
+  font-size: 12px;
 }
 .source-card-actions {
   display: flex;
   justify-content: flex-end;
   padding: 8px 12px 12px;
 }
+/*
+ * 「刪除來源」。原本是 9px、`padding: 5px 0`（左右零 padding）＝約 21px 高而且只有文字本身
+ * 可點，是破壞性動作裡最難按到的一顆。padding 補成 8px 10px、字級補到 12px。
+ * 顏色 #8d6d6a 只有 3.83:1——它想表達「這是危險動作」，但暗紅在暗底上等於同時削弱可讀性
+ * 與警示性；改成同色相的亮階（6.19:1），紅的語意保留，字讀得到。
+ */
 .source-card-actions button {
   border: 0;
   background: transparent;
-  color: #8d6d6a;
-  padding: 5px 0;
+  color: #c48a86;
+  padding: 8px 10px;
   text-align: right;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 .source-card-actions .danger:hover {
   color: #ff9d83;
@@ -2819,7 +3010,7 @@ header {
   width: 34px;
   height: 34px;
   margin-left: auto;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -2857,7 +3048,7 @@ header {
   background: #0c121e;
 }
 .source-preview-intro dt {
-  color: #68758b;
+  color: #7c8aa2;
   font-size: 9px;
 }
 .source-preview-intro dd {
@@ -2880,7 +3071,7 @@ header {
 .source-preview-body {
   min-height: 0;
   overflow: auto;
-  border: 1px solid #28344a;
+  border: 1px solid var(--border-1);
   border-radius: 8px;
   background: #080c13;
 }
@@ -2952,7 +3143,7 @@ header {
   width: 34px;
   height: 34px;
   margin-left: auto;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -2974,7 +3165,7 @@ header {
   box-sizing: border-box;
   margin-top: 6px;
   padding: 11px 12px;
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
   background: var(--surface-3);
   color: var(--text-bright);
@@ -2985,7 +3176,7 @@ header {
   border: 1px solid var(--accent);
   border-radius: 5px;
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
   cursor: pointer;
 }
 .web-source-error {
@@ -2996,13 +3187,16 @@ header {
   background: #26171c;
   font-size: 11px;
 }
+/* padding-top 從 0 加到 4px：這一區是 `overflow-y: auto`，會裁掉子元素的焦點環，而全域的
+   :focus-visible 是 2px ring + 2px offset ＝ 需要 4px 淨空。第一筆搜尋結果貼齊上緣時
+   環會被切掉，那正好是 tab 進這一區的第一站。 */
 .web-search-results {
   min-height: 0;
   overflow-y: auto;
   display: grid;
   align-content: start;
   gap: 9px;
-  padding: 0 24px 20px;
+  padding: 4px 24px 20px;
 }
 .web-search-empty {
   display: grid;
@@ -3017,9 +3211,9 @@ header {
   grid-template-columns: 20px 1fr;
   gap: 10px;
   padding: 13px;
-  border: 1px solid #29354a;
+  border: 1px solid var(--border-1);
   border-radius: 7px;
-  background: #101724;
+  background: var(--surface-2);
   cursor: pointer;
 }
 .web-search-result.selected {
@@ -3074,7 +3268,7 @@ header {
 }
 .web-source-dialog footer button {
   padding: 10px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
   background: var(--surface-4);
   cursor: pointer;
@@ -3082,7 +3276,7 @@ header {
 .web-source-dialog footer .primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
 }
 .text-source-backdrop {
   position: fixed;
@@ -3126,7 +3320,7 @@ header {
   width: 34px;
   height: 34px;
   margin-left: auto;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -3167,7 +3361,7 @@ header {
 }
 .text-source-dialog footer button {
   padding: 11px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
   background: var(--surface-4);
   cursor: pointer;
@@ -3175,7 +3369,7 @@ header {
 .text-source-dialog footer .primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
 }
 .url-source-dialog {
   width: min(620px, calc(100vw - 56px));
@@ -3221,7 +3415,7 @@ header {
   color: var(--text-bright);
   text-decoration: none;
   background: var(--surface-4);
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   padding: 13px;
   margin: 8px 0;
 }
@@ -3294,7 +3488,7 @@ header {
   width: 34px;
   height: 34px;
   margin-left: auto;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -3400,15 +3594,18 @@ header {
 .mask-controls input[type="checkbox"] {
   accent-color: var(--accent);
 }
+/* 「清除選取」原本沒有 padding ＝ 只有文字本身約 13px 高可點。8px 10px 讓它成為一個
+   約 30px 的目標；`.mask-controls` 已經有 `min-height: 44px`，這一排不會因此變高。 */
 .mask-controls button {
   margin-left: auto;
+  padding: 8px 10px;
   border: 0;
   background: transparent;
   color: #ff9c7d;
   cursor: pointer;
 }
 .mask-controls small {
-  color: #6f7b90;
+  color: var(--text-dim-2);
 }
 .image-edit-actions {
   display: grid;
@@ -3417,7 +3614,7 @@ header {
 }
 .image-edit-actions button {
   padding: 11px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 5px;
   background: var(--surface-4);
   cursor: pointer;
@@ -3453,11 +3650,14 @@ header {
   justify-content: center;
   align-items: center;
 }
+/* 未走到的步驟名稱：#657188 在設定頁的漸層上只有 3.08:1。它不是裝飾——使用者靠這一排
+   知道「等一下還要填什麼」，也點得下去直接跳過去。新值 #7e8daa 在漸層亮端 #1b2541 上是
+   4.524，**貼著 4.5 門檻**（暗端 --bg 上 5.808）；這一排不可再壓暗。 */
 .setup-steps > button {
   display: flex;
   align-items: center;
   gap: 12px;
-  color: #657188;
+  color: #7e8daa;
   border: none;
   background: none;
   font: inherit;
@@ -3466,8 +3666,22 @@ header {
   cursor: pointer;
   transition: color 0.12s ease;
 }
+/* 還走不到的步驟原本只靠全域 `button:disabled { opacity: 0.42 }` 表示，而那把 4.524 的步驟
+   名稱壓到實際 1.910——整條流程預覽等於消失，使用者反而看不到「等一下還要填什麼」，正是
+   上面那條規則想買到的東西被隔壁一行抵銷掉。opacity 收回 1（同 `.text-layer-rail`），
+   而這一排沒有第二個顏色可用（#7e8daa 已經貼著門檻，再暗就破線）。
+
+   「還不能點」因此改由圈圈的邊框變淡承擔（純裝飾，不受 1.4.11 約束），並用 :not() 排除
+   .active／.done：busy 期間整排都會 disabled，少了這道排除，正在進行的那一步會連 accent
+   圈圈一起被改掉。三種狀態的文字色本來就不同（未到 #7e8daa／已完成 #b8c1cf／當前 #fff），
+   所以少了 opacity 也分得出來。下面 `.setup-steps b` 的 `border` 簡寫雖然排在後面，但特異性
+   低（0,1,1 對 0,3,2），不會蓋回去。 */
 .setup-steps > button:disabled {
+  opacity: 1;
   cursor: default;
+}
+.setup-steps > button:disabled:not(.active):not(.done) b {
+  border-color: var(--border-1);
 }
 .setup-steps > button:not(:disabled):hover {
   color: var(--text-3);
@@ -3480,7 +3694,7 @@ header {
   place-items: center;
   width: 34px;
   height: 34px;
-  border: 1px solid #364158;
+  border: 1px solid var(--border-3);
   border-radius: 50%;
 }
 .setup-steps .active {
@@ -3489,7 +3703,7 @@ header {
 .setup-steps .active b {
   border-color: var(--accent);
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
 }
 .setup-steps .done {
   color: #b8c1cf;
@@ -3504,7 +3718,7 @@ header {
 .setup-card {
   width: min(920px, calc(100vw - 64px));
   margin: auto;
-  background: #0f1522;
+  background: var(--surface-card);
   border: 1px solid var(--border-1);
   border-radius: 16px;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.35);
@@ -3538,9 +3752,11 @@ header {
   box-sizing: border-box;
   margin-top: 7px;
   padding: 11px;
-  border: 1px solid var(--border-2);
+  /* :focus 那條把 outline 關掉了（換成 accent 邊框 + 光暈），所以未聚焦時邊框就是唯一的
+     邊界線索——用 --border-control 讓它到得了 1.4.11 的 3:1。 */
+  border: 1px solid var(--border-control);
   border-radius: 5px;
-  background: #121a2a;
+  background: var(--surface-3);
   color: var(--text-bright);
   font: inherit;
   resize: vertical;
@@ -3589,7 +3805,10 @@ header {
   gap: 14px;
   max-height: 52vh;
   overflow-y: auto;
-  padding: 2px 8px 2px 2px;
+  /* 上／左／下從 2px 加到 4px：這一區 `overflow-y: auto` 會裁掉子元素的焦點環，而全域的
+     :focus-visible 是 2px ring + 2px offset ＝ 剛好要 4px。大綱卡片裡全是輸入框，
+     用鍵盤走過整份大綱是這個畫面的主要操作方式。 */
+  padding: 4px 8px 4px 4px;
   scrollbar-color: #3d4960 transparent;
 }
 .outline-review article {
@@ -3635,7 +3854,7 @@ header {
   letter-spacing: 0.04em;
 }
 .outline-card-header > span {
-  color: #738198;
+  color: var(--text-muted);
   font-size: 11px;
 }
 .outline-review .outline-fields {
@@ -3733,7 +3952,7 @@ header {
 .setup-actions button {
   min-height: 48px;
   padding: 13px 16px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 8px;
   background: var(--surface-4);
   cursor: pointer;
@@ -4029,7 +4248,9 @@ header {
   opacity: 1;
   background: #131c2a;
   border-color: #2a3a54;
-  color: #6c7c92;
+  /* 這排是純圖示鈕，圖示本身就是唯一的資訊；#6c7c92（4.02:1）在停用時等於認不出是哪個工具，
+     而使用者正需要認出來才知道「要先做什麼才解得開」。 */
+  color: #7f8da5;
   cursor: not-allowed;
 }
 /*
@@ -4088,6 +4309,19 @@ header {
   background: #172b40;
   overflow: hidden;
 }
+/*
+ * 這兩顆貼齊 `.text-extraction-row` 的邊緣，而那一列是 `overflow: hidden`（為了讓圓角切得乾淨）
+ * ——全域的 :focus-visible 是 2px ring + **2px offset**，環整圈畫在按鈕外面，於是被父層整個裁掉，
+ * 用鍵盤 tab 到「抽離文字」時畫面上一點反應都沒有。那是這個面板的主要動作，而且是破壞性的
+ * （開新版本、跑抹字、燒 OCR 與影像模型配額）。
+ *
+ * 用負的 offset 讓環改畫在按鈕內側，而不是把父層的 overflow 拿掉：那個 overflow 撐著整列的
+ * 圓角與中間那條分隔線，拆掉要把圓角逐顆補回子元素，換來的只是同一個可見的環。
+ */
+.text-extraction-control .extract-button,
+.text-extraction-control .threshold-toggle {
+  outline-offset: -2px;
+}
 .text-extraction-control .extract-button {
   flex: 1;
   border: 0;
@@ -4139,7 +4373,8 @@ header {
   border-radius: 5px;
   background: #131c2a;
   color: #d8eaff;
-  font-size: 10px;
+  /* 抹字引擎的選項要讀懂才選得對（本機 OpenCV 不花配額、其他的會），10px 太小。 */
+  font-size: 12px;
 }
 /* 勾選框與「抹字引擎」「文字修復」同層級，差別只在控制項在標籤前面。 */
 .text-extraction-control .extract-toggle {
@@ -4155,9 +4390,10 @@ header {
   margin: 0;
   accent-color: var(--accent);
 }
+/* 這句說明的是一個破壞性、而且會燒 OCR／影像模型配額的操作，使用者按下去之前必須讀完。 */
 .text-extraction-control .extract-hint {
   color: #7f8ea4;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   white-space: normal;
 }
@@ -4281,7 +4517,7 @@ header {
   margin-left: auto;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--border-4);
+  border: 1px solid var(--border-control);
   border-radius: 50%;
   background: var(--surface-4);
   color: var(--text-2);
@@ -4298,7 +4534,7 @@ header {
   width: 100%;
   margin-top: 8px;
   padding: 12px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 7px;
   background: var(--surface-3);
   color: var(--text-bright);
@@ -4455,7 +4691,7 @@ header {
 .model-library-create button,
 .model-library-combo-head button {
   padding: 9px 15px;
-  border: 1px solid var(--border-3);
+  border: 1px solid var(--border-control);
   border-radius: 7px;
   background: var(--surface-4);
   color: var(--text-bright);
@@ -4498,7 +4734,7 @@ header {
 .model-library-create button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #14121a;
+  color: var(--on-accent);
   font-weight: 700;
 }
 .model-library-create button.primary:hover:not(:disabled) {
@@ -4531,10 +4767,16 @@ header {
   background: rgba(255, 184, 77, 0.14);
   color: var(--cap-search);
 }
+/* 這個徽章是三種能力徽章裡唯一的「無彩色」版本，卻疊在最亮的 surface-5 上，而它原本用的
+   --text-dim 舊值（#768399）在那個底色上只有 3.80:1（同一組 cap-* 徽章的彩色字都在 4.5
+   以上）。改用 --text-muted ＝ 5.24，與旁邊的彩色徽章重量一致。整份樣式表把 surface-5 當
+   文字底色的只有三處，另兩處是 hover 態（`.outline-actions button:hover` 寫死 #fff、
+   `.model-library-combo-head button:hover` 沿用按鈕自身色），所以 dim 兩級**一處都沒有**
+   落在 surface-5 上——:root 對那兩個 token 的取值說明就建立在這件事上。 */
 .model-library-tag.muted {
   border-color: var(--border-2);
   background: var(--surface-5);
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 .model-library-combo {
   padding: 16px;
@@ -4594,6 +4836,15 @@ header {
 .model-library-conn-status.error {
   color: #ff9db0;
 }
+/*
+  就地錯誤在 `.model-library-row` 裡要自己佔一整列：那個容器是 `flex-wrap`，不宣告
+  基準寬度的話錯誤訊息會擠在動作按鈕同一行的尾巴，看起來像某顆按鈕的說明文字，而不是
+  「這一列存不進去的原因」。直式容器（`.model-library-connection-row`、建立表單）不受影響。
+*/
+.model-library-row > .model-library-conn-status {
+  flex: 1 0 100%;
+  margin-top: 4px;
+}
 
 .system-settings-link {
   margin-top: 6px;
@@ -4631,7 +4882,7 @@ header {
   max-height: 88vh;
   border: 1px solid var(--border-1);
   border-radius: 10px;
-  background: #0f1522;
+  background: var(--surface-card);
   box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
 }
 .pdf-modal-header,
@@ -4648,11 +4899,20 @@ header {
 .pdf-modal-footer {
   border-top: 1px solid #1c2536;
 }
+/* 檔案裡另外六個對話框的關閉鈕都是 34×34 的圓鈕，只有這顆與 .recent-updates-close 是
+   約 20×20 的裸文字。統一到 32×32（可點目標的桌面底線）——不是改成 34×34 的圓鈕，
+   這兩個對話框刻意走比較輕的視覺，但「按得到」不該跟著輕。 */
 .pdf-modal-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   border: none;
   background: none;
   color: var(--text-muted);
   font-size: 20px;
+  line-height: 1;
   cursor: pointer;
 }
 .pdf-drop {
@@ -4679,9 +4939,12 @@ header {
   color: var(--text-muted);
   font-size: 12px;
 }
+/* 全檔唯一用裸 `1fr` 的格線（＝ minmax(auto, 1fr)，寬的子元素會把軌道撐過份額；
+   見 .inspector-tabs 與 .fields fieldset 的註解）。順手改成與 .pdf-analysis-grid 同一套
+   auto-fill：那兩個網格是同一種 16:9 縮圖挑選介面，軌數不該一個固定一個自適應。 */
 .pdf-page-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   grid-auto-rows: min-content;
   align-content: start;
   gap: 14px;
@@ -4736,7 +4999,7 @@ header {
   padding: 0 5px;
   border-radius: 10px;
   background: var(--accent);
-  color: #180a05;
+  color: var(--on-accent);
   font:
     600 11px "DM Mono",
     monospace;
@@ -4808,7 +5071,9 @@ header {
      後面的專案縮圖與卡片就會從字底下透上來，整份更新紀錄變得讀不了。
      刻意寫死而不是 var()：引用一個沒定義的自訂屬性會讓整條宣告在計算階段失效、
      background-color 退回 transparent，而那種失效在 jsdom 與 typecheck 裡都是隱形的
-     （`--surface-card` 就這樣讓面板整片透明過一次，由 styles-tokens.test.ts 釘住）。 */
+     （`--surface-card` 就這樣讓面板整片透明過一次，由 styles-tokens.test.ts 釘住）。
+     `--surface-card` 後來真的補進 :root 了（見上面的 token 區），但這一條**仍然**維持字面值：
+     測試釘的是「這裡是不透明的 hex」，而那道保險的價值正在於它不依賴 token 是否存在。 */
   background: #0f1522;
   box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
   text-align: left;
@@ -4877,18 +5142,32 @@ header {
    Smooth every plain interactive element's hover/focus/active state. Element
    selector (specificity 0,0,1) so any component with its own bespoke
    transition (transform lifts, progress-bar width, etc.) keeps it untouched.
-   Only colour-ish props animate — never width/height (avoids layout jank). */
+   Only colour-ish props animate — never width/height (avoids layout jank).
+
+   當初這份清單只寫了原生元素，漏掉「長得像控制項但不是控制項」的那幾個：縮圖
+   （`<div role="button">`）、來源卡片（`<article>`）、可改名的標題（`<strong role="button">`）
+   ——它們的 hover 是 0ms 硬跳，而旁邊每一顆原生按鈕都是 150ms 淡入，同一個畫面兩種手感，
+   縮圖列尤其明顯（滑過去每一格都在閃）。用 `[role="button"]` 補這條語意上的缺口，
+   `.source-card` 則沒有對應的 role（它是容器，可點的是裡面的東西），只能具名列出。
+
+   `transform` 也一併補進屬性清單：`.style-picker-card:hover` 的 3px 橫移**是**在 <button>
+   上，卻因為屬性沒被列到而照樣硬跳——「元素選擇器」那條理由擋不住這種漏，它漏的是屬性
+   不是選擇器。自己宣告了完整 transition 的元件（`.project-card`、`.project-card-delete`）
+   仍然整條覆蓋這裡，行為不變。 */
 a,
 button,
 input,
 select,
 textarea,
-summary {
+summary,
+[role="button"],
+.source-card {
   transition:
     color 0.15s ease,
     background-color 0.15s ease,
     border-color 0.15s ease,
-    box-shadow 0.15s ease;
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
 }
 
 /* === Accessibility floor ===
@@ -4913,7 +5192,21 @@ textarea:focus-visible,
 /* === Readability ===
    Bump running / notice / empty-state copy that users actually read from 11px
    to 12px (WCAG-friendlier). Glanceable field labels, tags and `small`
-   metadata stay compact on purpose — this is a fix, not a density overhaul. */
+   metadata stay compact on purpose — this is a fix, not a density overhaul.
+
+   第二輪（同一條標準，補的是第一輪漏掉的 9–10px 那批）**寫在各自的規則裡，沒有加進下面
+   這份清單**，理由是清單放不下它們：
+   ・`.source-upload-consent small`（9→12）與 `.source-kind`（8→10）用的是 `font` 簡寫，
+     在這裡補一條 `font-size` 只會讓簡寫裡留著一個永遠不生效的舊值＝第二份真相；
+   ・`.source-kind` 的目標是 10px 不是 12px（徽章維持密度，只是脫離「認不出字形」的下限），
+     本來就不屬於一份叫「都改成 12px」的清單；
+   ・`.density-help` 真正要切斷的是繼承（它在 11px 的 `.style-form > label` 底下，`<small>`
+     再乘 UA 的 0.8×＝實際 8.8px），那個理由只有寫在它自己旁邊才看得懂。
+   一半在清單、一半在定義處是最糟的排列（要查兩個地方），所以第二輪整批留在定義處。
+   涵蓋範圍：.density-help、.create-panel > small、.fields .prompt、.source-kind、
+   .source-upload-consent small、.source-preview-trigger.text p、.source-usage select、
+   .source-card-actions button、.extract-engine select、.extract-hint、
+   .pdf-font-notice button。掃視用的 11px eyebrow 與 9–10px 徽章一律維持不動。 */
 .provider-note,
 .provider-warning,
 .source-empty,
@@ -4950,7 +5243,7 @@ textarea:focus-visible,
 .toast.import-report {
   padding: 10px 14px;
   border: 1px solid #35435c;
-  background: #0d1421;
+  background: var(--surface-1);
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
@@ -4970,9 +5263,10 @@ textarea:focus-visible,
   flex: 1;
   min-width: 0;
 }
+/* `outline: none` ＝ 邊框是唯一的邊界線索，所以用 --border-control（見 :root 的說明）。 */
 .pdf-deck-name input {
   padding: 9px 11px;
-  border: 1px solid #35435c;
+  border: 1px solid var(--border-control);
   border-radius: 7px;
   background: #090f1a;
   color: #f2f5f9;
@@ -4997,7 +5291,7 @@ textarea:focus-visible,
   padding: 10px 14px;
   border: 1px solid #2b3850;
   border-radius: 8px;
-  background: #0d1421;
+  background: var(--surface-1);
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -5035,5 +5329,6 @@ textarea:focus-visible,
   background: #202a15;
   color: #e6f0da;
   cursor: pointer;
-  font-size: 10px;
+  /* 這顆是一次性提示的「知道了」，按下去就不再出現——標籤讀不清楚就不會有人按。 */
+  font-size: 12px;
 }

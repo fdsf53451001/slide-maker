@@ -5555,7 +5555,8 @@ describe("抽字進行中的狀態是逐頁的", () => {
     fireEvent.click(extractButton());
 
     // 裸錯誤碼不算數：使用者要看到的是那句話（錯誤 toast 的節點是「訊息 ×」，取內容比對）。
-    const toast = await screen.findByRole("button", { name: /一次只能處理一頁/ });
+    // toast 是 `role="alert"` 的容器（出現時會被播報），關閉鈕是它裡面那顆。
+    const toast = await screen.findByRole("alert");
     expect(toast.textContent).toContain(busyMessage);
     expect(toast.textContent).not.toContain("OCR_QUEUE_BUSY");
     expect(progress()).toBeNull();

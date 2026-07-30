@@ -957,7 +957,7 @@ describe("生圖模型引擎 × 隱藏頁：走共用的三選一", () => {
     chooseModelEngine();
 
     fireEvent.click(batchButton());
-    const dialog = await screen.findByRole("dialog", { name: "批次抽離文字與隱藏頁" });
+    const dialog = await screen.findByRole("dialog", { name: "要連隱藏頁一起抽離文字嗎？" });
     // 分母是**這次要抽字的頁數**，不是整份簡報的頁數。
     expect(dialog.textContent).toContain("這次會處理 3 頁");
     expect(dialog.textContent).toContain("消耗一次影像模型配額");
@@ -986,7 +986,7 @@ describe("生圖模型引擎 × 隱藏頁：走共用的三選一", () => {
     chooseModelEngine();
 
     fireEvent.click(batchButton());
-    const dialog = await screen.findByRole("dialog", { name: "批次抽離文字與隱藏頁" });
+    const dialog = await screen.findByRole("dialog", { name: "要連隱藏頁一起抽離文字嗎？" });
     fireEvent.click(within(dialog).getByRole("button", { name: "含隱藏頁一起抽（3 頁）" }));
 
     for (let page = 1; page <= 3; page += 1) {
@@ -1007,7 +1007,7 @@ describe("生圖模型引擎 × 隱藏頁：走共用的三選一", () => {
     chooseModelEngine();
 
     fireEvent.click(batchButton());
-    const dialog = await screen.findByRole("dialog", { name: "批次抽離文字與隱藏頁" });
+    const dialog = await screen.findByRole("dialog", { name: "要連隱藏頁一起抽離文字嗎？" });
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
     await settle();
 

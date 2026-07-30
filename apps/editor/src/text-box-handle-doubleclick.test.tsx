@@ -94,6 +94,23 @@ describe("極小文字框的雙擊進入編輯", () => {
     expect(document.querySelectorAll(".text-resize-handle")).toHaveLength(0);
   });
 
+  /**
+   * 把手只吃指標事件，所以不該出現在 Tab 順序與無障礙樹裡。
+   *
+   * 它們是真的 `<button>`，只綁 `onPointerDown`：按 Enter／Space 毫無反應，而 `aria-label`
+   * 又會被念成「調整文字框 se」「調整文字框 nw」（`n`／`ne`／`se` 是內部方向碼）。每選取
+   * 一個文字框就多出八個按不動的 Tab 停點與八句噪音，宣告成可按卻按不動比不宣告更糟。
+   */
+  it("八個把手都不進 Tab 順序、也不進無障礙樹", () => {
+    renderCanvas();
+    const handles = [...document.querySelectorAll<HTMLElement>(".text-resize-handle")];
+    expect(handles).toHaveLength(RESIZE_DIRECTIONS.length);
+    for (const handle of handles) {
+      expect(handle.getAttribute("tabindex")).toBe("-1");
+      expect(handle.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+
   it("雙擊框本體仍然進入編輯（沒有被把手的改動波及）", () => {
     const canvas = renderCanvas();
     fireEvent.doubleClick(document.querySelector(".editable-text-box")!);
