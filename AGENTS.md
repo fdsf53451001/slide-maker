@@ -58,4 +58,4 @@ pnpm monorepo（`apps/*`、`packages/*`，內部相依用 `workspace:*`）：`ap
 
 重大修改要起worktree和feature branch，完成功能在merge回去
 一般任務，要起dev agent作開發，review agent檢查，qa agent作測試，如果有需要可以起更多Agent並行。沒有特別說就用opus模型
-任務完成記得更新CHANGE.md
+任務完成記得更新CHANGE.md，檢端描述，一個項目一到兩行

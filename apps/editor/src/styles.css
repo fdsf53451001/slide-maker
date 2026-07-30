@@ -8,6 +8,10 @@
   --accent: #ff7545;
   --accent-soft: #ff9b79; /* lighter accent text on dark */
   --accent-strong: #ff885c; /* denser accent for emphasis */
+  /* 次要動作按鈕與連結的字色（「查看風格庫 →」「最近更新」「系統設定」）。與
+     `--accent-soft` 差 5–7/channel，超過本檔案的合併門檻（≤2），所以是自己的 token；
+     原本三處各寫一次 `#ff9672`，「這幾顆要長一樣」全靠人記得。 */
+  --accent-action: #ff9672;
   --accent-rgb: 255, 117, 69; /* for rgba(var(--accent-rgb), α) tints */
   /* accent 底上的深色墨水。原本同一件事寫了六個值（#120d0a、#111、#180a05、#150e0b、
      #14121a、#16100d），對比度全落在 6.97–7.27 之間——差異看不出來，卻讓「品牌色換掉之後
@@ -929,7 +933,7 @@ button {
 .dashboard-section-heading > button,
 .dashboard-section-actions > button {
   align-self: center;
-  color: #ff9672;
+  color: var(--accent-action);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -4997,7 +5001,7 @@ header {
   padding: 0;
   border: 0;
   background: transparent;
-  color: #ff9672;
+  color: var(--accent-action);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -5179,10 +5183,14 @@ header {
   margin-left: auto;
   flex: 0 0 auto;
   white-space: nowrap;
-  border: 1px solid var(--border-1);
+  /* 顏色整組對齊「查看風格庫 →」那顆次要動作鈕（accent 字 ＋ surface-4 底 ＋ 控制項邊框）。
+     原本是 transparent 底配 --text-muted 的幽靈輪廓，在 header 上根本不像可以按的東西。
+     幾何刻意不跟著抄：那顆的 11px 內距是給 21px 標題並排用的，塞進 64px 的 header 會頂到
+     上下邊。 */
+  border: 1px solid var(--border-control);
   border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
+  background: var(--surface-4);
+  color: var(--accent-action);
   padding: 7px 12px;
   font-size: 12px;
   cursor: pointer;
