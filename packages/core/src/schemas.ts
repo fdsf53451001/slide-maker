@@ -191,6 +191,20 @@ export const slideOutlineSnapshotSchema = z.object({
   sourceIds: z.array(z.string()).default([]),
 });
 
+/**
+ * 文字描邊的預設值與上限，住在 `packages/core` 的理由與 `SOURCE_COUNT_LIMIT` 那批相同：
+ * 伺服器拿去擋寫入、編輯器拿去當一鍵開啟時寫入的值與滑桿範圍，前端自己抄一份不會有
+ * 任何測試發現它過期。
+ *
+ * `0.04em` 是實測挑出來的一鍵預設：白字壓在明暗不定的背景上時它已經足以救回可讀性
+ * （四面都包，不像陰影只護右下那一側），但細到看不出「這段字加了效果」。
+ */
+export const TEXT_STROKE_DEFAULT_COLOR = "#000000";
+export const TEXT_STROKE_DEFAULT_WIDTH_EM = 0.04;
+export const TEXT_STROKE_DEFAULT_OPACITY = 0.7;
+/** 中文字腔開始被填滿的實測起點是 0.14em；留一點餘裕給「刻意的粗描邊」但不給荒謬值。 */
+export const TEXT_STROKE_MAX_WIDTH_EM = 0.2;
+
 export const editableTextBoxSchema = z.object({
   id: z.string().min(1),
   text: z.string(),
@@ -220,6 +234,24 @@ export const editableTextBoxSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional(),
   backgroundOpacity: z.number().min(0).max(1).optional(),
+  /**
+   * 文字描邊。沒有 `strokeColor` 就代表「無描邊」＝加入這個功能之前的行為，
+   * 與 `backgroundColor` 同一套：色彩欄位是開關，另外兩個是它的參數
+   * （讀取端一律 `?? TEXT_STROKE_DEFAULT_*`）。維持 optional 而不是 `.default()`
+   * 的理由見上面 `backgroundColor` 那條。
+   *
+   * `strokeWidth` 的單位是 **em（字級的倍數）而非畫布 px**，與這個 schema 其他長度
+   * 欄位相反，是刻意的：描邊寬度對「字看起來粗了多少」的影響完全由它與字級的比例
+   * 決定，存絕對 px 會讓同一個值在 100px 標題上細如無物、在 20px 註解上糊成一團，
+   * 使用者每改一次字級就得回頭重調。上限 {@link TEXT_STROKE_MAX_WIDTH_EM} 不是防呆
+   * 而是實測值：中文筆劃比拉丁字母密，0.14em 起字腔就開始被填滿。
+   */
+  strokeColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  strokeWidth: z.number().min(0).max(TEXT_STROKE_MAX_WIDTH_EM).optional(),
+  strokeOpacity: z.number().min(0).max(1).optional(),
   lineHeight: z.number().positive().default(1.2),
   letterSpacing: z.number().default(0),
   align: z.enum(["left", "center", "right"]).default("left"),

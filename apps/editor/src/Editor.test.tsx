@@ -42,6 +42,15 @@ const makeBox = (overrides: Partial<import("@slide-maker/core").EditableTextBox>
   ...overrides,
 });
 
+/**
+ * 底色／描邊的參數收在各自那一列旁邊的下拉裡（勾選框本身一直看得到，不需要展開）。
+ * 要碰色票、粗細、不透明度就得先打開那一顆——與使用者的操作順序相同。冪等。
+ */
+const openEffectPopover = (label: "底色" | "描邊") => {
+  const trigger = screen.getByRole("button", { name: `${label}設定` });
+  if (trigger.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
+};
+
 describe("Editor MVP navigation", () => {
   it("always renders the clean background with the real text layered on top", () => {
     render(
@@ -4643,11 +4652,14 @@ describe("文字框底色", () => {
 
     const toggle = screen.getByLabelText("底色") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
-    // 沒啟用底色時色票與不透明度都是停用的，避免改了看不出效果。
-    expect((screen.getByLabelText("文字框底色") as HTMLInputElement).disabled).toBe(true);
+    // 沒啟用底色時連下拉都按不開：色票與不透明度收在裡面，沒有東西可調。
+    expect((screen.getByRole("button", { name: "底色設定" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
 
     fireEvent.click(toggle);
     await waitFor(() => expect(backgroundBoxes()[0]!.style.background).toBe("rgb(0, 0, 0)"));
+    openEffectPopover("底色");
     expect((screen.getByLabelText("文字框底色") as HTMLInputElement).value).toBe("#000000");
     await waitFor(() => expect(written.at(-1)?.[0]?.backgroundColor).toBe("#000000"), {
       timeout: 3000,
@@ -4689,6 +4701,7 @@ describe("文字框底色", () => {
     await enterAndSelect("底色色票");
 
     fireEvent.click(screen.getByLabelText("底色"));
+    openEffectPopover("底色");
     fireEvent.change(screen.getByLabelText("文字框底色"), { target: { value: "#ff0000" } });
     await waitFor(() => expect(backgroundBoxes()[0]!.style.background).toBe("rgb(255, 0, 0)"));
 

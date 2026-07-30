@@ -53,6 +53,15 @@ const makeBox = (overrides: Partial<EditableTextBox> = {}): EditableTextBox => (
 
 const boxElements = () => [...document.querySelectorAll<HTMLElement>(".editable-text-box")];
 
+/**
+ * 底色／描邊的參數收在各自那一列旁邊的下拉裡（勾選框本身一直看得到，不需要展開）。
+ * 要碰色票、粗細、不透明度就得先打開那一顆——與使用者的操作順序相同。冪等。
+ */
+const openEffectPopover = (label: "底色" | "描邊") => {
+  const trigger = screen.getByRole("button", { name: `${label}設定` });
+  if (trigger.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
+};
+
 describe("textBoxBackground 的退化輸入", () => {
   it("沒有 backgroundColor 就回 undefined，連帶不覆寫 styles.css 的選取提示底", () => {
     expect(textBoxBackground(makeBox())).toBeUndefined();

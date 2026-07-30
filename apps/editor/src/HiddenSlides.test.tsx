@@ -166,6 +166,27 @@ describe("縮圖列的隱藏按鈕", () => {
     expect(JSON.parse(String(call[1]!.body))).toEqual({ hidden: false });
   });
 
+  /*
+   * 圖示是 inline SVG 而不是 `◎`／`⊘`／`👁` 這類符號字元：符號會落到各平台不同的 fallback
+   * 字型（`👁` 甚至變成彩色 emoji），同一排三顆圖示鈕就會粗細與大小對不齊。
+   * 兩態共用眼睛輪廓、只差一條劃掉的斜線，才會被讀成同一顆按鈕的兩個狀態。
+   */
+  it("可見／隱藏兩態都是眼睛 SVG，只有隱藏那顆多一條劃掉的斜線", async () => {
+    const state = { project: hiddenDeck("眼睛圖示", [2]) };
+    stubApi(state);
+    await enter("眼睛圖示");
+
+    const visible = screen.getAllByLabelText("隱藏此頁")[0]!.querySelector("svg")!;
+    const hidden = screen.getByLabelText("取消隱藏此頁").querySelector("svg")!;
+    // 眼白＋瞳孔在兩態都在；文字節點（符號字元）一個都不該剩。
+    for (const icon of [visible, hidden]) {
+      expect(icon.querySelector("circle")).toBeTruthy();
+      expect(icon.closest("button")!.textContent).toBe("");
+    }
+    expect(visible.querySelectorAll("path")).toHaveLength(1);
+    expect(hidden.querySelectorAll("path")).toHaveLength(2);
+  });
+
   it("點按鈕不會順手把那一頁選起來（stopPropagation 仍在）", async () => {
     const state = { project: hiddenDeck("不改選取") };
     stubApi(state);

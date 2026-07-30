@@ -135,26 +135,20 @@ describe("縮圖列的鍵盤路徑", () => {
     expect(thumbnails()[0]!.hasAttribute("aria-current")).toBe(false);
   });
 
-  it("↑↓ 是拖曳以外的排序途徑：送出交換後的順序，首末頁各自 disabled", async () => {
-    const state = { project: editableDeck("縮圖鍵盤排序") };
-    const fetchMock = stubApi(state);
-    await enter("縮圖鍵盤排序");
-    const ids = state.project.slides.map((slide) => slide.id);
+  /*
+   * 縮圖列曾經有一組 ↑↓ 排序鈕，依使用者要求移除（維持移除）。要誠實記下放棄了什麼：
+   * 拖曳因此又是縮圖列**唯一**的排序途徑，純鍵盤與觸控使用者排不了序——大綱頁那組 ↑↓
+   * 仍在，但那是大綱階段，進了編輯階段就回不去。這是用畫面密度換排序的可及性，不是
+   * 「反正別處也做得到」。
+   */
+  it("縮圖列不再有 ↑↓ 排序鈕", async () => {
+    const state = { project: editableDeck("縮圖沒有排序鈕") };
+    stubApi(state);
+    await enter("縮圖沒有排序鈕");
 
-    // 第一頁不能再往上、最後一頁不能再往下。
-    expect(
-      (within(thumbnails()[0]!).getByLabelText("往上移動") as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(
-      (within(thumbnails()[2]!).getByLabelText("往下移動") as HTMLButtonElement).disabled,
-    ).toBe(true);
-
-    fireEvent.click(within(thumbnails()[1]!).getByLabelText("往上移動"));
-
-    await waitFor(() => expect(callsTo(fetchMock, "/slides/reorder")).toHaveLength(1));
-    expect(JSON.parse(String(callsTo(fetchMock, "/slides/reorder")[0]![1]!.body))).toEqual({
-      slideIds: [ids[1], ids[0], ids[2]],
-    });
+    const actions = within(thumbnails()[1]!);
+    expect(actions.queryByLabelText("往上移動")).toBeNull();
+    expect(actions.queryByLabelText("往下移動")).toBeNull();
   });
 
   it("複製與刪除都有 aria-label，不只有滑鼠才看得到的 title", async () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
+import { textStroke } from "@slide-maker/core";
 import type {
   EditableTextBox,
   EditableTextLayer,
@@ -89,7 +90,19 @@ export function textElements(boxes: readonly EditableTextBox[]): string {
       const background = box.backgroundColor
         ? `<rect x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" fill="${box.backgroundColor}" fill-opacity="${box.backgroundOpacity ?? 1}"${transform}/>`
         : "";
-      return `${background}<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${transform}>${tspans}</text>`;
+      /*
+       * 描邊。`paint-order="stroke"` **不可省**：SVG 預設是先填色再畫描邊，而描邊是跨在
+       * 字形輪廓上的（一半在外一半在內），所以少了它描邊會蓋在字面上——實測 200 個框、
+       * 3px 描邊，純白字心像素從 191322 直接歸零，整行字變成黑色實心塊。這由
+       * `text-stroke-pixels.test.ts` 逐像素釘住。
+       * `stroke-linejoin="round"` 是為了中文：筆劃轉角銳利，預設的 miter 會在轉角噴出尖刺。
+       * 寬度換算走 core 的 `textStroke()`，三端不得各自乘一次字級。
+       */
+      const stroke = textStroke(box);
+      const strokeAttrs = stroke
+        ? ` stroke="${stroke.color}" stroke-width="${stroke.widthPx}" stroke-opacity="${stroke.opacity}" stroke-linejoin="round" paint-order="stroke"`
+        : "";
+      return `${background}<text x="${x}" y="${firstBaseline}" text-anchor="${anchor}" font-family="${xml(box.fontFamily)}" font-size="${box.fontSize}" font-weight="${box.fontWeight}" fill="${box.color}" fill-opacity="${box.opacity}" letter-spacing="${box.letterSpacing}"${strokeAttrs}${transform}>${tspans}</text>`;
     })
     .join("");
 }

@@ -17,6 +17,11 @@ import {
   pageNumberLayout,
   pageNumberPositionSchema,
   pageNumberSlideLabel,
+  textStroke,
+  TEXT_STROKE_DEFAULT_COLOR,
+  TEXT_STROKE_DEFAULT_OPACITY,
+  TEXT_STROKE_DEFAULT_WIDTH_EM,
+  TEXT_STROKE_MAX_WIDTH_EM,
   type EditableTextBox,
   type GenerationJob,
   type PageNumberSettings,
@@ -40,6 +45,7 @@ import {
 } from "./api.js";
 import { StyleEditor } from "./StyleEditor.js";
 import { SourcePanel, isDescribing, parsingExpired } from "./SourcePanel.js";
+import { TextEffectRow } from "./TextEffectRow.js";
 import { UsagePanel } from "./UsagePanel.js";
 import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
 import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
@@ -521,9 +527,23 @@ export function SystemSettingsDialog({
  */
 export function textBoxBackground(box: EditableTextBox): string | undefined {
   if (!box.backgroundColor) return undefined;
-  const value = box.backgroundColor.slice(1);
+  return rgba(box.backgroundColor, box.backgroundOpacity ?? 1);
+}
+
+/**
+ * 描邊的 CSS 色值。
+ *
+ * 透明度必須吃進色值本身：`-webkit-text-stroke-color` 沒有對應的 `-opacity` 屬性
+ * （不像 SVG 的 `stroke-opacity`），而容器的 `opacity` 會把字身一起淡掉。
+ */
+export function strokeCssColor(stroke: { color: string; opacity: number }): string {
+  return rgba(stroke.color, stroke.opacity);
+}
+
+function rgba(hex: string, alpha: number): string {
+  const value = hex.slice(1);
   const channel = (offset: number) => Number.parseInt(value.slice(offset, offset + 2), 16);
-  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${box.backgroundOpacity ?? 1})`;
+  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${alpha})`;
 }
 
 /**
@@ -568,6 +588,40 @@ function TextToolIcon({ shape }: { shape: "add" | "delete" | "undo" | "redo" }) 
           <path d="M12.7 6.2h-6a3.3 3.3 0 1 0 0 6.6H8.8" />
         </>
       )}
+    </svg>
+  );
+}
+
+/**
+ * 縮圖上「隱藏／取消隱藏這一頁」那顆按鈕的圖示。
+ *
+ * 與 {@link TextToolIcon} 同一套理由用 inline SVG：`◎`／`⊘`／`👁` 這類符號字元在不同平台
+ * 會落到不同的 fallback 字型（`👁` 甚至會變成彩色 emoji），同一排三顆圖示鈕的粗細與視覺
+ * 大小就對不齊——這個專案已經踩過一次跨機器字型 fallback 的坑。
+ *
+ * 眼睛的開闔跟著**目前狀態**走（睜眼＝這一頁會上場、劃掉＝已隱藏），與 Keynote／Figma
+ * 的圖層可見性慣例一致；按鈕名稱則講的是**按下去會發生什麼**（`aria-label` 那邊），兩者
+ * 分工不重疊。
+ */
+function SlideVisibilityIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="15"
+      height="15"
+      aria-hidden="true"
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M1.4 8S3.8 3.9 8 3.9 14.6 8 14.6 8 12.2 12.1 8 12.1 1.4 8 1.4 8Z" />
+      <circle cx="8" cy="8" r="2.1" />
+      {/* 劃掉的斜線只在隱藏時出現：眼睛的輪廓不變，兩態才會被讀成同一顆按鈕的兩個狀態，
+          而不是換了一顆別的按鈕。 */}
+      {hidden && <path d="M2.6 13.4 13.4 2.6" />}
     </svg>
   );
 }
@@ -728,6 +782,7 @@ export function TextLayerCanvas({
                 ? spareHeight / 2
                 : 0;
           const editing = editingId === box.id && selectedId === box.id;
+          const boxStroke = textStroke(box);
           return (
             <div
               key={box.id}
@@ -785,6 +840,25 @@ export function TextLayerCanvas({
                   lineHeight: box.lineHeight,
                   letterSpacing: `${box.letterSpacing}px`,
                   textAlign: box.align,
+                  /*
+                   * 描邊。長度一律走 `cqh`（與 fontSize、paddingTop 同一套），不可寫裸 px：
+                   * 畫布沒有用 `transform: scale`，尺寸全靠容器查詢單位算出來，絕對 px 不會
+                   * 跟著畫布縮放，編輯畫面與匯出的描邊粗細就會對不上。
+                   *
+                   * `paintOrder: "stroke"` **不可省**：CSS 預設先填色再描邊，而描邊跨在字形
+                   * 輪廓上，少了它描邊會蓋掉字面。Chromium 實測（Chrome 150）純白字心像素
+                   * 2691 → 6312、黑色 4497 → 1434，也就是不加的話字被吃掉一大半。
+                   * WebKit／Gecko 對 HTML 文字的 paint-order 支援度未逐一驗證，這是預設寬度
+                   * 壓在 0.04em 的另一個理由：即使某個瀏覽器忽略 paint-order，那個寬度下字
+                   * 只是變粗，不會變成黑塊。
+                   */
+                  ...(boxStroke
+                    ? {
+                        WebkitTextStrokeWidth: `${(boxStroke.widthPx / canvasHeight) * 100}cqh`,
+                        WebkitTextStrokeColor: strokeCssColor(boxStroke),
+                        paintOrder: "stroke" as const,
+                      }
+                    : {}),
                   paddingTop: `${(verticalOffset / canvasHeight) * 100}cqh`,
                   // 伺服器 SVG 匯出不會在框邊裁字；非編輯狀態放大顯示區，
                   // 讓超出框的文字照樣顯示，與最終合成結果一致。
@@ -2697,6 +2771,20 @@ export function Editor() {
   const pendingTextSelect = useRef<{ versionId: string; boxId: string }>(undefined);
   const [textThreshold, setTextThreshold] = useState(0.75);
   const [showTextThreshold, setShowTextThreshold] = useState(false);
+  /**
+   * TEXT BOX 面板裡哪一個效果的下拉開著（`undefined` ＝都關著）。
+   *
+   * 用單一狀態而不是讓兩列各記各的：兩個下拉同時浮在畫面上會互相重疊，而且使用者
+   * 一次只調得動一個。狀態掛在 Editor、不逐框記，換選文字框時由 `setSelectedTextId`
+   * 那邊一起關掉——留著的話下拉會浮在原地卻改到另一個框的參數。
+   */
+  const [openTextEffect, setOpenTextEffect] = useState<"background" | "stroke">();
+  /*
+   * 換選文字框就把下拉關掉。用 effect 收斂在一處，而不是在每個 `setSelectedTextId` 呼叫點
+   * 補一行——選取的入口有畫布點擊、鍵盤、貼上、復原、切頁等好幾條，漏掉任何一條都會讓
+   * 下拉浮在原地卻改到另一個框的參數（而且它是 fixed 定位的，連位置都不會跟著移）。
+   */
+  useEffect(() => setOpenTextEffect(undefined), [selectedTextId]);
   // 抹字引擎：本地 OpenCV inpaint（快、零配額，預設）或專案組合的生圖模型。
   const [textExtractEngine, setTextExtractEngine] = useState<"opencv" | "model">("opencv");
   // 文字修復：預設關（OCR 讀到什麼就是什麼）。「大綱修復」拿這頁的大綱回頭改 OCR 的字，
@@ -4038,6 +4126,17 @@ export function Editor() {
       }),
     );
   };
+  /** 關閉描邊；三個 optional 欄位一起移除，理由同上面那條。 */
+  const clearSelectedTextStroke = () => {
+    if (!selectedTextId) return;
+    changeTextBoxes(
+      textBoxes.map((box) => {
+        if (box.id !== selectedTextId) return box;
+        const { strokeColor: _color, strokeWidth: _width, strokeOpacity: _opacity, ...rest } = box;
+        return rest;
+      }),
+    );
+  };
   /**
    * 工具列「新增文字框」：這一版已經有文字層就直接加一個框，還沒有的話先請伺服器建立
    * 「文字編輯版本」（背景＝原圖，一個字都不抹），再由新版本承接這個框。
@@ -4569,15 +4668,8 @@ export function Editor() {
           </span>
         </div>
         <div className="thumbnails" ref={railRef}>
-          {project.slides.map((slide, index) => {
+          {project.slides.map((slide) => {
             const thumb = currentImage(project, slide);
-            /** 把這一頁往前／往後挪一格，與大綱頁那兩顆 ↑↓ 呼叫同一個端點。 */
-            const moveSlide = (offset: -1 | 1) => {
-              const ids = project.slides.map((item) => item.id);
-              const target = index + offset;
-              [ids[index], ids[target]] = [ids[target]!, ids[index]!];
-              void runThumbAction(() => api.reorderSlides(project.id, ids));
-            };
             return (
               <div
                 key={slide.id}
@@ -4652,35 +4744,7 @@ export function Editor() {
                       );
                     }}
                   >
-                    {slide.hidden ? "⊘" : "◎"}
-                  </button>
-                  {/*
-                    拖曳在此之前是縮圖列**唯一**的排序途徑，鍵盤與觸控使用者完全排不了序。
-                    這兩顆與大綱頁那組 ↑↓（`aria-label` 與首末頁 disabled 都相同）是同一套
-                    慣例，也呼叫同一個 `api.reorderSlides`，不另立第二種排序語彙。
-                    只用既有的 `.thumb-actions button` 樣式，沒有新增任何 class。
-                  */}
-                  <button
-                    aria-label="往上移動"
-                    title="往上移動"
-                    disabled={thumbBusy || index === 0}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      moveSlide(-1);
-                    }}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    aria-label="往下移動"
-                    title="往下移動"
-                    disabled={thumbBusy || index === project.slides.length - 1}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      moveSlide(1);
-                    }}
-                  >
-                    ↓
+                    <SlideVisibilityIcon hidden={!!slide.hidden} />
                   </button>
                   {/* `title` 不在鍵盤焦點時顯示、行動裝置無法觸發、部分閱讀器設定會忽略它，
                       所以名稱要靠 `aria-label`——同一排的第一顆本來就兩個都有。 */}
@@ -5554,60 +5618,136 @@ export function Editor() {
                     />
                   </label>
                 </div>
-                <div className="text-property-grid background-row">
-                  <label className="background-toggle">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selectedText.backgroundColor)}
-                      onChange={(event) => {
-                        if (!event.target.checked) {
-                          clearSelectedTextBackground();
-                          return;
-                        }
-                        patchSelectedText({
-                          backgroundColor: TEXT_BACKGROUND_DEFAULT_COLOR,
-                          backgroundOpacity: 1,
-                        });
-                      }}
-                    />
-                    底色
-                  </label>
-                  <label>
-                    色票
-                    <input
-                      type="color"
-                      aria-label="文字框底色"
-                      disabled={!selectedText.backgroundColor}
-                      value={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
-                      onChange={(event) =>
-                        patchSelectedText({ backgroundColor: event.target.value })
+                {/*
+                  底色與描邊：各是**勾選框開關 ＋ 旁邊一顆下拉**，參數收在下拉裡，兩組再併成
+                  同一排。攤開就是兩個三四欄的 grid、佔掉面板約 150px，而它們是偶爾才調一次的
+                  東西；縮成一顆下拉之後每組只剩約 95px 寬，一排放得下兩組，再拆成兩排等於白
+                  吃掉一整行。
+                  「有沒有套」由勾選框本身講清楚，現在是什麼顏色則直接畫在觸發鈕的色塊上，
+                  兩件事都不必打開下拉就看得到。細節與定位理由見 `TextEffectRow`。
+                */}
+                <div className="text-effect-rows">
+                  <TextEffectRow
+                    label="底色"
+                    enabled={Boolean(selectedText.backgroundColor)}
+                    swatchColor={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
+                    open={openTextEffect === "background"}
+                    onOpenChange={(next) => setOpenTextEffect(next ? "background" : undefined)}
+                    onEnabledChange={(next) => {
+                      if (!next) {
+                        clearSelectedTextBackground();
+                        return;
                       }
-                    />
-                  </label>
-                  <label>
-                    底色不透明度
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      disabled={!selectedText.backgroundColor}
-                      value={selectedText.backgroundOpacity ?? 1}
-                      onChange={(event) => {
-                        // 數字框可以被清空或打進超界值；schema 只收 0–1，
-                        // 這裡先夾好再寫入，否則存檔時整批文字框會被伺服器擋下。
-                        // 清空／非數字一律保留原值：`Number("")` 是 0（而且是有限數），
-                        // 照寫回去等於底色無聲消失，勾選框卻還是勾的。
-                        const raw = event.target.value.trim();
-                        if (!raw) return;
-                        const next = Number(raw);
-                        if (!Number.isFinite(next)) return;
-                        patchSelectedText({
-                          backgroundOpacity: Math.min(1, Math.max(0, next)),
-                        });
-                      }}
-                    />
-                  </label>
+                      patchSelectedText({
+                        backgroundColor: TEXT_BACKGROUND_DEFAULT_COLOR,
+                        backgroundOpacity: 1,
+                      });
+                    }}
+                  >
+                    <label>
+                      色票
+                      <input
+                        type="color"
+                        aria-label="文字框底色"
+                        value={selectedText.backgroundColor ?? TEXT_BACKGROUND_DEFAULT_COLOR}
+                        onChange={(event) =>
+                          patchSelectedText({ backgroundColor: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      底色不透明度
+                      <input
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={selectedText.backgroundOpacity ?? 1}
+                        onChange={(event) => {
+                          // 數字框可以被清空或打進超界值；schema 只收 0–1，
+                          // 這裡先夾好再寫入，否則存檔時整批文字框會被伺服器擋下。
+                          // 清空／非數字一律保留原值：`Number("")` 是 0（而且是有限數），
+                          // 照寫回去等於底色無聲消失，勾選框卻還是勾的。
+                          const raw = event.target.value.trim();
+                          if (!raw) return;
+                          const next = Number(raw);
+                          if (!Number.isFinite(next)) return;
+                          patchSelectedText({ backgroundOpacity: Math.min(1, Math.max(0, next)) });
+                        }}
+                      />
+                    </label>
+                  </TextEffectRow>
+                  {/* 描邊：形狀與上面那組底色一致（色彩欄位＝開關，其餘是它的參數）。
+                      刻意是**逐框**的可選項而不是專案級開關：白字壓在明暗不定的生成圖上時
+                      它是可讀性的解藥，但同一份簡報裡乾淨純色底的那幾頁套上去只會顯得髒。 */}
+                  <TextEffectRow
+                    label="描邊"
+                    enabled={Boolean(selectedText.strokeColor)}
+                    swatchColor={selectedText.strokeColor ?? TEXT_STROKE_DEFAULT_COLOR}
+                    open={openTextEffect === "stroke"}
+                    onOpenChange={(next) => setOpenTextEffect(next ? "stroke" : undefined)}
+                    onEnabledChange={(next) => {
+                      if (!next) {
+                        clearSelectedTextStroke();
+                        return;
+                      }
+                      patchSelectedText({
+                        strokeColor: TEXT_STROKE_DEFAULT_COLOR,
+                        strokeWidth: TEXT_STROKE_DEFAULT_WIDTH_EM,
+                        strokeOpacity: TEXT_STROKE_DEFAULT_OPACITY,
+                      });
+                    }}
+                  >
+                    <label>
+                      描邊色
+                      <input
+                        type="color"
+                        aria-label="文字描邊色"
+                        value={selectedText.strokeColor ?? TEXT_STROKE_DEFAULT_COLOR}
+                        onChange={(event) => patchSelectedText({ strokeColor: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      {/* 單位是 em（字級的倍數），所以改字級時描邊會等比跟著走。 */}
+                      粗細（em）
+                      <input
+                        type="number"
+                        min="0"
+                        max={TEXT_STROKE_MAX_WIDTH_EM}
+                        step="0.01"
+                        aria-label="文字描邊粗細"
+                        value={selectedText.strokeWidth ?? TEXT_STROKE_DEFAULT_WIDTH_EM}
+                        onChange={(event) => {
+                          // 與底色不透明度同一套：清空／非數字保留原值，超界先夾再寫。
+                          const raw = event.target.value.trim();
+                          if (!raw) return;
+                          const next = Number(raw);
+                          if (!Number.isFinite(next)) return;
+                          patchSelectedText({
+                            strokeWidth: Math.min(TEXT_STROKE_MAX_WIDTH_EM, Math.max(0, next)),
+                          });
+                        }}
+                      />
+                    </label>
+                    <label>
+                      描邊不透明度
+                      <input
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        aria-label="文字描邊不透明度"
+                        value={selectedText.strokeOpacity ?? TEXT_STROKE_DEFAULT_OPACITY}
+                        onChange={(event) => {
+                          const raw = event.target.value.trim();
+                          if (!raw) return;
+                          const next = Number(raw);
+                          if (!Number.isFinite(next)) return;
+                          patchSelectedText({ strokeOpacity: Math.min(1, Math.max(0, next)) });
+                        }}
+                      />
+                    </label>
+                  </TextEffectRow>
                 </div>
               </div>
             )}

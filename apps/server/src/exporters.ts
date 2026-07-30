@@ -9,6 +9,7 @@ import {
   pageNumberLayout,
   pageNumberSlideLabel,
   parseProject,
+  textStroke,
   type PresentationProject,
   type SlideVersion,
 } from "@slide-maker/core";
@@ -226,6 +227,7 @@ async function exportPptx(
         (candidate) => candidate.role === "presentation",
       )) {
         const fontSizePt = box.fontSize * scaleY * 72;
+        const stroke = textStroke(box);
         // 框寬是貼齊字墨的緊框，而 PowerPoint 的 CJK 字型 advance 比量測略寬，
         // 原寬會觸發自動換行讓整段文字跑版：加 1em 餘裕並關閉換行。
         // center/right 對齊時餘裕要往左補回，否則錨點跟著位移。
@@ -281,6 +283,22 @@ async function exportPptx(
           lineSpacing: fontSizePt * box.lineHeight,
           rotate: box.rotation,
           charSpacing: box.letterSpacing * scaleX * 72,
+          /*
+           * 描邊走 pptxgenjs 的 `outline`，它是**run 層**的 `<a:rPr><a:ln>`（讀過
+           * `genXmlTextRunProperties`），也就是 PowerPoint 真正的「文字外框」，
+           * 與 shape 層的效果不同。刻意不用 `shadow`：那一顆被寫進 `p:spPr`，
+           * 套的是文字方塊這個圖形而不是字。
+           *
+           * 兩個已知的不保真處，都不值得為它們放棄描邊：
+           * ① `outline.color` 只吃色字串，pptxgenjs 沒有把 alpha 接出來，所以
+           *    `strokeOpacity` 在 pptx 裡一律當成 1。半透明描邊會比另外兩端深一點。
+           * ② OOXML 的文字外框畫在字面**之上**（沒有 paint-order 這種東西），所以
+           *    同一個寬度在 PowerPoint 裡看起來會比畫布上粗一些。這正是預設值壓在
+           *    0.04em 的另一個理由。
+           */
+          ...(stroke
+            ? { outline: { size: stroke.widthPx * scaleY * 72, color: stroke.color.slice(1) } }
+            : {}),
           // 不用 fit:"shrink"——autofit 在 PowerPoint／Keynote／LibreOffice 的
           // 縮放行為不一致，是文字跑版的另一來源。
         });

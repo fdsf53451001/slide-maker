@@ -2233,6 +2233,10 @@ header {
   width: 28px;
   height: 28px;
   cursor: pointer;
+  /* 這排混著文字符號（⧉／×）與 inline SVG（眼睛）：符號靠 button 預設的置中與基線就對齊，
+     SVG 是 inline 元素，會坐在基線上而比旁邊兩顆低幾 px。用 grid 置中把兩種內容拉齊。 */
+  display: grid;
+  place-items: center;
 }
 /* 隱藏中的那顆用強調色標出來，跟旁邊兩顆常駐的操作按鈕區分開。 */
 .thumbnail.hidden-slide .thumb-hide {
@@ -4433,19 +4437,137 @@ header {
 .text-property-grid.background-row {
   grid-template-columns: 64px 1fr 1fr;
 }
-.text-property-grid.background-row .background-toggle {
+/* 描邊列比底色列多一個「粗細」，所以是四欄——沿用 background-row 的三欄會讓第四個
+   控制項換行落到 64px 那一欄底下，標籤跟著折成兩行（實機截圖確認過）。
+   色票那欄給 0.8fr：`input[type=color]` 不需要與數字輸入框等寬。 */
+.text-property-grid.stroke-row {
+  grid-template-columns: 64px 0.8fr 1fr 1fr;
+}
+.text-property-grid.background-row .background-toggle,
+.text-property-grid.stroke-row .background-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
   align-self: end;
   margin-bottom: 23px;
 }
-.text-property-grid.background-row .background-toggle input {
+.text-property-grid.background-row .background-toggle input,
+.text-property-grid.stroke-row .background-toggle input {
   width: auto;
   margin: 0;
   flex: 0 0 auto;
 }
 .text-properties input[type="color"] {
+  height: 30px;
+  padding: 2px;
+}
+/* 底色與描邊併成同一排：縮成一顆下拉之後每組只剩約 95px 寬（勾選框＋兩字標籤＋46px 的
+   觸發鈕），面板內距後還有 272px，一排放得下兩組——拆成兩排等於白吃掉一整行 30px。 */
+.text-effect-rows {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+/* 兩組各佔一半（`flex: 1`）而不是各自貼齊內容：兩顆觸發鈕因此落在固定的兩個位置，
+   在窄面板裡比長短不一的兩組看起來整齊。 */
+.text-effect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* 選擇器要壓過 `.fields label { display: block }`（同為兩節但那條含元素選擇器，
+   單靠 `.text-effect-check` 一個類別贏不了），否則勾選框與文字會被排成直向。
+   `margin: 0` 同理——`.fields label` 帶著 17px 的下邊距，繼承過來整列會浮高。 */
+.text-effect-row .text-effect-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto 0 0;
+  color: #9ba9bc;
+  font-size: 11px;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+.text-effect-row .text-effect-check input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}
+/* 觸發鈕的可見內容只有色塊與箭頭，名稱靠 aria-label。寬度給到 46px 讓它不是一個
+   針尖大的點擊目標（無障礙指引的 44px 下限；高度與相鄰的輸入框對齊在 30px）。 */
+.text-effect-trigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 46px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--surface-5);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: #9ba9bc;
+  cursor: pointer;
+}
+.text-effect-trigger:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--text-bright);
+}
+/* 沒勾選就沒有東西可調。停用態用「降透明度＋游標」表達，不是只把顏色調淡——
+   只調顏色的話它與「啟用但很暗」分不出來。 */
+.text-effect-trigger:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.text-effect-trigger .caret {
+  float: none;
+  font-size: 10px;
+  line-height: 1;
+}
+.text-effect-swatch {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+/* 關閉時畫斜線而不是留空白：空白色塊看起來像「白色」，斜線看起來才像「沒有」。 */
+.text-effect-swatch.off {
+  background: linear-gradient(
+    to top right,
+    transparent calc(50% - 1px),
+    #6b7a8d calc(50% - 1px),
+    #6b7a8d calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+/* 下拉本體。`position: fixed` 是必要的——面板是 overflow-y: auto，absolute 會被裁掉；
+   座標由 TextEffectRow 依觸發鈕的 rect 算出來。 */
+.text-effect-popover {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 190px;
+  padding: 12px;
+  border: 1px solid var(--surface-5);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+/* 同樣要壓過 `.fields label`，尤其它那 17px 的下邊距——三個欄位就是多出 51px 的空白。 */
+.text-effect-popover label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  color: #9ba9bc;
+  font-size: 10px;
+}
+.text-effect-popover input[type="color"] {
   height: 30px;
   padding: 2px;
 }
