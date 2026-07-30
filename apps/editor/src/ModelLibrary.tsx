@@ -119,6 +119,32 @@ export interface ConnectionModels {
   error?: string;
 }
 
+/** 只接受 http／https 的完整網址；其餘（相對路徑、缺協定、ws://）在執行期只會是 fetch 例外。 */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 表單欄位旁的錯誤字。
+ *
+ * 沿用 `.model-library-conn-status.error`（連線測試失敗那行紅字）而不是另立 class：同一種
+ * 「這裡出問題了」的紅字沒有理由有兩份樣式。橫向 flex 的 `.model-library-row` 裡要獨佔一列
+ * 這件事由 styles.css 的 `.model-library-row > .model-library-conn-status`（`flex: 1 0 100%`）
+ * 負責，直式容器（`.model-library-connection-row`、建立表單）本來就是一列一個。
+ */
+function FieldError({ children }: { children: string }) {
+  return (
+    <p className="model-library-conn-status error" role="alert">
+      {children}
+    </p>
+  );
+}
+
 export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [library, setLibrary] = useState<ModelLibraryData>();
   const [error, setError] = useState<string>();
@@ -150,7 +176,8 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
     }
   };
 
-  useEffect(() => {
+  const loadLibrary = () => {
+    setError(undefined);
     void api
       .modelLibrary()
       .then((value) => {
@@ -161,15 +188,38 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "載入模型庫失敗"),
       );
-  }, []);
+  };
 
-  const run = async (task: () => Promise<ModelLibraryData>) => {
+  useEffect(loadLibrary, []);
+
+  /**
+   * 跑一次寫入並回報成敗。
+   *
+   * 回傳而不是只塞進頂端 toast，是為了讓每一列能**就地**顯示自己的失敗：模型庫是一頁四
+   * 大區、可以捲很長的表單，第 3 個模型列儲存失敗時把訊息丟到畫面最上方，使用者根本不會
+   * 把兩件事連起來。`action` 只用在沒有 Error 可讀的那條路徑——舊的 fallback 是一句
+   * 「操作失敗」，零資訊、零下一步。
+   *
+   * 它**只**回報，不設任何全域錯誤狀態。舊版兩件事都做，於是一列儲存失敗會同時長出
+   * `div[role=alert]`（頁底 toast）與 `p[role=alert]`（該列的 FieldError），字串一模一樣，
+   * 螢幕閱讀器從兩個 alert region 把同一句話連讀兩遍。留下的是就地那一份——toast 講不出是
+   * 哪一列，就地那份講得出，而這一頁沒有任何寫入失敗需要 toast。`error` 因此只剩一個用途：
+   * 整頁載入失敗（那時畫面上根本沒有任何一列可以掛訊息，見下方的復原區塊）。
+   *
+   * 回傳 discriminated result 而不是「訊息字串或 undefined」：`if (failed) return;` 這種寫法
+   * 把空訊息讀成成功，於是建立失敗了卻把使用者剛打好的欄位清掉。`api.ts` 的 `failureMessage()`
+   * 現在保證非空，但成敗不該再依賴「訊息剛好不是空的」這種間接證據。順手也把空白訊息擋掉
+   * ——`ok: false` 配一句空話同樣沒有下一步。
+   */
+  const run = async (task: () => Promise<ModelLibraryData>, action: string): Promise<RunResult> => {
     setBusy(true);
-    setError(undefined);
     try {
       setLibrary(await task());
+      return { ok: true };
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "操作失敗");
+      const message =
+        (reason instanceof Error && reason.message.trim()) || `${action}失敗（伺服器沒有回報原因）`;
+      return { ok: false, message };
     } finally {
       setBusy(false);
     }
@@ -180,7 +230,18 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
       <main className="welcome dashboard library-mode">
         <LibraryHeader active="models" onNavigate={onNavigate} />
         <div className="dashboard-content">
-          {error ? <div className="toast error">{error}</div> : <p>載入中…</p>}
+          {/*
+            載入失敗時整頁只剩一顆不可互動的 toast：沒有重試、沒有下一步，使用者只能重新
+            整理瀏覽器。改成就地的復原區塊（role="alert" 讓它真的會被讀出來）。
+          */}
+          {error ? (
+            <div className="model-library-empty" role="alert">
+              <p>{error}</p>
+              <button onClick={loadLibrary}>重新載入模型庫</button>
+            </div>
+          ) : (
+            <p>載入中…</p>
+          )}
         </div>
       </main>
     );
@@ -188,11 +249,11 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
   return (
     <main className="welcome dashboard library-mode model-library">
       <LibraryHeader active="models" onNavigate={onNavigate} />
-      {error && (
-        <button className="toast error" onClick={() => setError(undefined)}>
-          {error} ×
-        </button>
-      )}
+      {/*
+        這裡刻意**沒有** ErrorToast：寫入失敗一律由出事的那一列自己就地顯示（見 `run`），
+        再補一顆 toast 只會讓同一句話出現在兩個 alert region。整頁載入失敗走的是上面那塊
+        帶「重新載入模型庫」的復原區塊，不是 toast。
+      */}
       <div className="dashboard-content model-library-content">
         <ConnectionsSection
           library={library}
@@ -216,7 +277,42 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
   );
 }
 
-type RunFn = (task: () => Promise<ModelLibraryData>) => Promise<void>;
+/** 寫入的結果。成敗是明確的旗標，不是「訊息字串是不是空的」——見 `run` 的說明。 */
+type RunResult = { ok: true } | { ok: false; message: string };
+
+type RunFn = (task: () => Promise<ModelLibraryData>, action: string) => Promise<RunResult>;
+
+/**
+ * 一列（或一個建立表單）的「進行中 + 就地錯誤」狀態。
+ *
+ * 抽成 hook 而不是各處自己寫：整個模型庫沒有任何一顆按鈕會改文案，只有 `disabled={busy}`，
+ * 使用者分不出「壞了」與「在跑」；而 `busy` 是**全頁共用**的，直接拿它改文案會讓每一列的
+ * 儲存鈕同時寫著「儲存中…」。所以進行中狀態必須是每一列自己的。
+ *
+ * `resetKey` 是這一列目前欄位內容的快照，就地錯誤連同「它是對哪一份內容說的」一起記下來，
+ * 於是使用者一改欄位它就自己消失。舊版只存訊息字串、只在下一次 `act` 才清，使用者一邊修
+ * 欄位一邊看著上一次的「儲存失敗」掛在旁邊，看起來像剛才那次修正也失敗了（相鄰的
+ * `fieldErrors` 每個 onChange 都清得掉，兩者行為不一致）。用快照而不是在二十幾個 onChange
+ * 各補一行 `setRowError(undefined)`：漏掉任何一個，那一列就會留著過期訊息，而漏掉一個不會
+ * 有任何東西提醒你——舊版留在介面上那顆從來沒人呼叫的 `setRowError` 就是這麼來的。
+ */
+function useRowAction(run: RunFn, resetKey: string) {
+  const [pending, setPending] = useState<string>();
+  const [stored, setStored] = useState<{ message: string; key: string }>();
+  const rowError = stored?.key === resetKey ? stored?.message : undefined;
+  /** 回傳成功與否，讓呼叫端能決定要不要清空表單——失敗時不該把使用者剛打好的欄位清掉。 */
+  const act = async (kind: string, action: string, task: () => Promise<ModelLibraryData>) => {
+    // 在按下去的那一刻取快照：送出期間使用者又改了欄位的話，這句話講的已經不是眼前那份內容。
+    const key = resetKey;
+    setPending(kind);
+    setStored(undefined);
+    const result = await run(task, action);
+    setPending(undefined);
+    if (!result.ok) setStored({ message: result.message, key });
+    return result.ok;
+  };
+  return { pending, rowError, act };
+}
 
 function ConnectionsSection({
   library,
@@ -237,10 +333,34 @@ function ConnectionsSection({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [protocol, setProtocol] = useState<ConnectionProtocol>("openai");
+  // 顯式帶上 `| undefined`：`exactOptionalPropertyTypes` 下，清掉單一欄位的錯誤
+  // （`{ ...current, name: undefined }`）對純 optional 屬性是型別錯誤。
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string | undefined;
+    baseUrl?: string | undefined;
+  }>({});
+  const { pending, rowError, act } = useRowAction(run, [name, baseUrl, apiKey, protocol].join(" "));
+  /**
+   * 送出前擋掉必填缺漏，訊息就顯示在出問題的那個欄位旁邊。
+   *
+   * 舊版只檢查 `!name.trim()`（而且是靠按鈕 disabled，使用者看不出少了什麼），base URL
+   * 留空照樣建得起來——建出來的連線在畫面上一切正常，要等到某天生成或抽字時才變成一句
+   * 難懂的 HTTP 錯誤，那時已經沒有人會把它連回「當初那個空欄位」。
+   */
+  const validate = () => {
+    const next: { name?: string; baseUrl?: string } = {};
+    if (!name.trim()) next.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
+    const url = baseUrl.trim();
+    if (!url) next.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
+    else if (!isHttpUrl(url))
+      next.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
+    setFieldErrors(next);
+    return !next.name && !next.baseUrl;
+  };
   const create = async () => {
-    if (!name.trim()) return;
+    if (!validate()) return;
     const before = new Set(library.connections.map((connection) => connection.id));
-    await run(async () => {
+    const ok = await act("create", "新增連線", async () => {
       const next = await api.createConnection({
         name: name.trim(),
         baseUrl: baseUrl.trim(),
@@ -252,10 +372,12 @@ function ConnectionsSection({
       if (created) void onConnectionSaved(created.id);
       return next;
     });
+    if (!ok) return; // 保留已填欄位讓使用者直接重試，而不是重打一次
     setName("");
     setBaseUrl("");
     setApiKey("");
     setProtocol("openai");
+    setFieldErrors({});
   };
   return (
     <section className="dashboard-section model-library-section">
@@ -274,16 +396,30 @@ function ConnectionsSection({
             run={run}
             models={connectionModels[connection.id]}
             onTestConnection={onTestConnection}
+            // 刪一條連線會讓引用它的模型 entry 立刻變成懸空 ref，所以確認文案必須講得出
+            // 「會影響到誰」——這個數字現有資料結構就算得出來，沒有理由不講。
+            dependents={library.models.filter((entry) => entry.connectionRef === connection.id)}
           />
         ))}
       </div>
       <div className="model-library-create">
-        <input
-          aria-label="連線名稱"
-          placeholder="名稱"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
+        {/*
+          用 .model-library-combo-field 包住需要驗證的欄位：它是既有的直式欄位容器
+          （label 在上、控制項在下），錯誤字接在控制項下面才會落在「出問題的那個欄位旁邊」，
+          而不是飛到頁頂的 toast。
+        */}
+        <div className="model-library-combo-field">
+          <input
+            aria-label="連線名稱"
+            placeholder="名稱"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setFieldErrors((current) => ({ ...current, name: undefined }));
+            }}
+          />
+          {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
+        </div>
         <select
           aria-label="協定"
           value={protocol}
@@ -295,16 +431,22 @@ function ConnectionsSection({
             </option>
           ))}
         </select>
-        <input
-          aria-label="Base URL"
-          placeholder={
-            protocol === "gemini"
-              ? "https://generativelanguage.googleapis.com/v1beta"
-              : "http://localhost:8317/v1"
-          }
-          value={baseUrl}
-          onChange={(event) => setBaseUrl(event.target.value)}
-        />
+        <div className="model-library-combo-field">
+          <input
+            aria-label="Base URL"
+            placeholder={
+              protocol === "gemini"
+                ? "https://generativelanguage.googleapis.com/v1beta"
+                : "http://localhost:8317/v1"
+            }
+            value={baseUrl}
+            onChange={(event) => {
+              setBaseUrl(event.target.value);
+              setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+            }}
+          />
+          {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
+        </div>
         <input
           aria-label="API Key"
           placeholder="API key"
@@ -312,10 +454,15 @@ function ConnectionsSection({
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
         />
-        <button className="primary" disabled={busy || !name.trim()} onClick={create}>
-          新增連線
+        {/*
+          刻意**不**在名稱空白時 disabled：按不下去的按鈕不會告訴任何人少了什麼，
+          按得下去、然後在欄位旁指出缺漏才有下一步。
+        */}
+        <button className="primary" disabled={busy} onClick={create}>
+          {pending === "create" ? "新增中…" : "新增連線"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -326,18 +473,43 @@ function ConnectionRow({
   run,
   models,
   onTestConnection,
+  dependents,
 }: {
   connection: ModelConnection;
   busy: boolean;
   run: RunFn;
   models: ConnectionModels | undefined;
   onTestConnection: (connectionId: string) => Promise<void>;
+  /** 引用這條連線的模型 entry：刪除確認要講得出會弄壞什麼。 */
+  dependents: ModelEntry[];
 }) {
   const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl);
   const [apiKey, setApiKey] = useState("");
   const [protocol, setProtocol] = useState<ConnectionProtocol>(connection.protocol);
   const [testing, setTesting] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string | undefined;
+    baseUrl?: string | undefined;
+  }>({});
+  const { pending, rowError, act } = useRowAction(run, [name, baseUrl, apiKey, protocol].join(" "));
+  /**
+   * 與「新增連線」同一份必填檢查。
+   *
+   * 舊版只有建立那邊有：既有連線的 base URL 清空之後照樣存得下去，而後果一模一樣——連線在
+   * 畫面上看起來正常，要到某天生成或抽字時才變成一句難懂的 HTTP 錯誤，那時沒有人會把它連回
+   * 「當初把那個欄位清掉」。同一個陷阱只是換一個畫面出現。
+   */
+  const validate = () => {
+    const next: { name?: string; baseUrl?: string } = {};
+    if (!name.trim()) next.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
+    const url = baseUrl.trim();
+    if (!url) next.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
+    else if (!isHttpUrl(url))
+      next.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
+    setFieldErrors(next);
+    return !next.name && !next.baseUrl;
+  };
   const dirty =
     name !== connection.name ||
     baseUrl !== connection.baseUrl ||
@@ -356,7 +528,10 @@ function ConnectionRow({
         <input
           aria-label="連線名稱"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            setFieldErrors((current) => ({ ...current, name: undefined }));
+          }}
         />
         <select
           aria-label="協定"
@@ -372,7 +547,10 @@ function ConnectionRow({
         <input
           aria-label="Base URL"
           value={baseUrl}
-          onChange={(event) => setBaseUrl(event.target.value)}
+          onChange={(event) => {
+            setBaseUrl(event.target.value);
+            setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+          }}
         />
         <input
           aria-label="API Key（留空沿用）"
@@ -382,11 +560,18 @@ function ConnectionRow({
           onChange={(event) => setApiKey(event.target.value)}
         />
       </div>
+      {/*
+        這一列是 `flex-direction: column`（`.model-library-connection-row`），所以錯誤字接在
+        欄位那一排底下就已經自己獨佔一列，不需要 `.model-library-combo-field` 那種包裝。
+      */}
+      {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
+      {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
       <div className="model-library-row-actions">
         <button
           disabled={busy || !dirty}
-          onClick={() =>
-            run(async () => {
+          onClick={() => {
+            if (!validate()) return;
+            void act("save", "儲存連線", async () => {
               const result = await api.updateConnection(connection.id, {
                 name,
                 baseUrl,
@@ -397,10 +582,10 @@ function ConnectionRow({
               // 存檔後重新載入模型清單（base URL／key 可能已變）。
               void onTestConnection(connection.id);
               return result;
-            })
-          }
+            });
+          }}
         >
-          儲存
+          {pending === "save" ? "儲存中…" : "儲存"}
         </button>
         <button
           disabled={busy || testing || status === "loading"}
@@ -415,14 +600,26 @@ function ConnectionRow({
         >
           {testLabel}
         </button>
+        {/*
+          刪一整條連線原本一鍵、無確認、無 undo，而後果是**延遲的**：引用它的模型 entry
+          立刻變成懸空 ref，要到下一次生成或抽字才炸成難懂的 HTTP 404／500，那時已經沒有
+          人會把它連回這一次點擊。刪一張投影片都要 confirm，這裡的輕重原本是反的。
+        */}
         <button
           className="danger"
           disabled={busy}
-          onClick={() => run(() => api.deleteConnection(connection.id))}
+          onClick={() => {
+            const impact = dependents.length
+              ? `目前有 ${dependents.length} 個模型正在使用它（${dependents.map((entry) => entry.name).join("、")}）。刪除後這些模型會指向一條不存在的連線，且不會有任何錯誤提示——要到下一次生成或抽字時才會失敗。\n\n`
+              : "";
+            if (confirm(`刪除連線「${connection.name}」？\n\n${impact}這個動作無法復原。`))
+              void act("delete", "刪除連線", () => api.deleteConnection(connection.id));
+          }}
         >
-          刪除
+          {pending === "delete" ? "刪除中…" : "刪除"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
       {status === "error" && (
         <p className="model-library-conn-status error">{models?.error ?? "測試連線失敗"}</p>
       )}
@@ -462,9 +659,44 @@ function ModelsSection({
     needsConnection(providerKind) && connectionRef
       ? (connectionModels[connectionRef]?.models ?? [])
       : [];
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string | undefined;
+    model?: string | undefined;
+    connectionRef?: string | undefined;
+  }>({});
+  const { pending, rowError, act } = useRowAction(
+    run,
+    [name, capability, providerKind, model, connectionRef, reasoningEffort, imageApi].join(" "),
+  );
+  /**
+   * 送出前擋掉會變成「懸空 entry」的組合，訊息顯示在缺漏的那個欄位旁邊。
+   *
+   * 舊版只檢查 `!name.trim()`：模型 id 可留空、`openai`／`gemini` 這兩種必須有連線的 kind
+   * 也可以不選連線。建出來的 entry 在列表上看起來一切正常，直到某天生成或抽字時才變成
+   * 難懂的 404／500——這正是把設定錯誤延遲到最遠處才爆的那一類。
+   *
+   * 只對 `needsConnection` 的兩種 kind 要求模型 id：codex 留空是**刻意**的（沿用 Codex CLI
+   * 自身設定），mock／local 也不打 HTTP 端點。
+   */
+  const validate = () => {
+    const next: {
+      name?: string | undefined;
+      model?: string | undefined;
+      connectionRef?: string | undefined;
+    } = {};
+    if (!name.trim()) next.name = "請輸入名稱，組合的下拉選單裡就是靠它指認這個模型。";
+    if (needsConnection(providerKind)) {
+      if (!model.trim())
+        next.model = "請填入端點上的模型 id；留空的 entry 只會在生成時以 HTTP 404 失敗。";
+      if (!connectionRef)
+        next.connectionRef = `${KIND_LABEL[providerKind]}模型一定要指定連線，否則不會有任何端點可打。`;
+    }
+    setFieldErrors(next);
+    return !next.name && !next.model && !next.connectionRef;
+  };
   const create = async () => {
-    if (!name.trim()) return;
-    await run(() =>
+    if (!validate()) return;
+    const ok = await act("create", "新增模型", () =>
       api.createModel({
         name: name.trim(),
         capability,
@@ -475,10 +707,12 @@ function ModelsSection({
         ...(providerKind === "openai" && capability === "image" && imageApi ? { imageApi } : {}),
       }),
     );
+    if (!ok) return; // 保留已填欄位讓使用者直接重試
     setName("");
     setModel("");
     setReasoningEffort("");
     setImageApi("");
+    setFieldErrors({});
   };
   return (
     <section className="dashboard-section model-library-section">
@@ -517,12 +751,18 @@ function ModelsSection({
         })}
       </div>
       <div className="model-library-create">
-        <input
-          aria-label="模型名稱"
-          placeholder="名稱"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
+        <div className="model-library-combo-field">
+          <input
+            aria-label="模型名稱"
+            placeholder="名稱"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setFieldErrors((current) => ({ ...current, name: undefined }));
+            }}
+          />
+          {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
+        </div>
         <select
           aria-label="能力"
           value={capability}
@@ -541,6 +781,8 @@ function ModelsSection({
             // 換 kind 會換掉可選連線集合（協定不同），沿用舊選擇會留下跨協定的懸空 ref。
             setProviderKind(event.target.value as ProviderKind);
             setConnectionRef("");
+            // 必填條件跟著 kind 走（codex 不需要連線與 model id），舊的錯誤字留著會變成假警報。
+            setFieldErrors({});
           }}
         >
           {KINDS.map((item) => (
@@ -549,56 +791,67 @@ function ModelsSection({
             </option>
           ))}
         </select>
-        <select
-          aria-label="連線"
-          value={connectionRef}
-          disabled={!needsConnection(providerKind)}
-          onChange={(event) => {
-            const next = event.target.value;
-            setConnectionRef(next);
-            if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
-          }}
-        >
-          <option value="">（無連線）</option>
-          {connections.map((connection) => (
-            <option key={connection.id} value={connection.id}>
-              {connection.name}
-            </option>
-          ))}
-        </select>
-        {availableModels.length > 0 ? (
+        <div className="model-library-combo-field">
           <select
-            aria-label="模型名"
-            value={availableModels.includes(model) ? model : ""}
+            aria-label="連線"
+            value={connectionRef}
+            disabled={!needsConnection(providerKind)}
             onChange={(event) => {
               const next = event.target.value;
-              // 選模型時把名稱一併帶入；只在名稱空白或仍等於上一次選的 model 時覆寫，
-              // 不蓋掉使用者手打的名稱。
-              if (next && (!name.trim() || name === model)) setName(next);
-              setModel(next);
+              setConnectionRef(next);
+              setFieldErrors((current) => ({ ...current, connectionRef: undefined }));
+              if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
             }}
           >
-            <option value="">選擇模型…</option>
-            {availableModels.map((id) => (
-              <option key={id} value={id}>
-                {id}
+            <option value="">（無連線）</option>
+            {connections.map((connection) => (
+              <option key={connection.id} value={connection.id}>
+                {connection.name}
               </option>
             ))}
           </select>
-        ) : (
-          <input
-            aria-label="模型名"
-            placeholder={
-              providerKind === "codex"
-                ? "model（留空用 Codex 預設）"
-                : providerKind === "gemini"
-                  ? "model（如 gemini-3.1-flash-image）"
-                  : "model（如 gpt-image-2）"
-            }
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-          />
-        )}
+          {fieldErrors.connectionRef && <FieldError>{fieldErrors.connectionRef}</FieldError>}
+        </div>
+        <div className="model-library-combo-field">
+          {availableModels.length > 0 ? (
+            <select
+              aria-label="模型名"
+              value={availableModels.includes(model) ? model : ""}
+              onChange={(event) => {
+                const next = event.target.value;
+                // 選模型時把名稱一併帶入；只在名稱空白或仍等於上一次選的 model 時覆寫，
+                // 不蓋掉使用者手打的名稱。
+                if (next && (!name.trim() || name === model)) setName(next);
+                setModel(next);
+                setFieldErrors((current) => ({ ...current, model: undefined, name: undefined }));
+              }}
+            >
+              <option value="">選擇模型…</option>
+              {availableModels.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              aria-label="模型名"
+              placeholder={
+                providerKind === "codex"
+                  ? "model（留空用 Codex 預設）"
+                  : providerKind === "gemini"
+                    ? "model（如 gemini-3.1-flash-image）"
+                    : "model（如 gpt-image-2）"
+              }
+              value={model}
+              onChange={(event) => {
+                setModel(event.target.value);
+                setFieldErrors((current) => ({ ...current, model: undefined }));
+              }}
+            />
+          )}
+          {fieldErrors.model && <FieldError>{fieldErrors.model}</FieldError>}
+        </div>
         {providerKind === "codex" && (
           <select
             aria-label="推理強度"
@@ -629,10 +882,12 @@ function ModelsSection({
             ))}
           </select>
         )}
-        <button className="primary" disabled={busy || !name.trim()} onClick={create}>
-          新增模型
+        {/* 同「新增連線」：不靠 disabled 擋，按下去之後在缺漏的欄位旁邊講清楚缺什麼。 */}
+        <button className="primary" disabled={busy} onClick={create}>
+          {pending === "create" ? "新增中…" : "新增模型"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -659,6 +914,17 @@ function ModelRow({
     entry.reasoningEffort ?? "",
   );
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">(entry.imageApi ?? "");
+  const { pending, rowError, act } = useRowAction(
+    run,
+    [name, model, connectionRef, reasoningEffort, imageApi].join(" "),
+  );
+  // 刪掉模型會讓引用它的組合欄位變成懸空 ref；確認文案要講得出是哪幾個組合。
+  const usedBy = library.combinations.filter(
+    (combination) =>
+      combination.imageModelRef === entry.id ||
+      combination.textModelRef === entry.id ||
+      combination.searchModelRef === entry.id,
+  );
   const dirty =
     name !== entry.name ||
     model !== entry.model ||
@@ -746,7 +1012,7 @@ function ModelRow({
         <button
           disabled={busy || !dirty}
           onClick={() =>
-            run(() =>
+            void act("save", "儲存模型", () =>
               api.updateModel(entry.id, {
                 name,
                 model,
@@ -763,16 +1029,24 @@ function ModelRow({
             )
           }
         >
-          儲存
+          {pending === "save" ? "儲存中…" : "儲存"}
         </button>
+        {/* 與刪連線同一條理由：後果延遲到下一次生成／抽字才出現，當下毫無提示。 */}
         <button
           className="danger"
           disabled={busy}
-          onClick={() => run(() => api.deleteModel(entry.id))}
+          onClick={() => {
+            const impact = usedBy.length
+              ? `目前有 ${usedBy.length} 個組合正在使用它（${usedBy.map((combination) => combination.name).join("、")}）。刪除後那些組合的對應欄位會變成空的，綁著它們的專案要到下一次生成或抽字時才會失敗。\n\n`
+              : "";
+            if (confirm(`刪除模型「${entry.name}」？\n\n${impact}這個動作無法復原。`))
+              void act("delete", "刪除模型", () => api.deleteModel(entry.id));
+          }}
         >
-          刪除
+          {pending === "delete" ? "刪除中…" : "刪除"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </div>
   );
 }
@@ -787,10 +1061,17 @@ function CombinationsSection({
   run: RunFn;
 }) {
   const [name, setName] = useState("");
+  const [nameError, setNameError] = useState<string>();
+  const { pending, rowError, act } = useRowAction(run, name);
   const create = async () => {
-    if (!name.trim()) return;
-    await run(() => api.createCombination({ name: name.trim() }));
+    if (!name.trim()) {
+      setNameError("請輸入名稱，專案的模型設定裡就是靠它挑選組合。");
+      return;
+    }
+    const ok = await act("create", "新增組合", () => api.createCombination({ name: name.trim() }));
+    if (!ok) return;
     setName("");
+    setNameError(undefined);
   };
   return (
     <section className="dashboard-section model-library-section">
@@ -811,16 +1092,23 @@ function CombinationsSection({
         ))}
       </div>
       <div className="model-library-create">
-        <input
-          aria-label="組合名稱"
-          placeholder="名稱"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <button className="primary" disabled={busy || !name.trim()} onClick={create}>
-          新增組合
+        <div className="model-library-combo-field">
+          <input
+            aria-label="組合名稱"
+            placeholder="名稱"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setNameError(undefined);
+            }}
+          />
+          {nameError && <FieldError>{nameError}</FieldError>}
+        </div>
+        <button className="primary" disabled={busy} onClick={create}>
+          {pending === "create" ? "新增中…" : "新增組合"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -840,6 +1128,10 @@ function CombinationRow({
   const [imageRef, setImageRef] = useState(combination.imageModelRef ?? "");
   const [textRef, setTextRef] = useState(combination.textModelRef ?? "");
   const [searchRef, setSearchRef] = useState(combination.searchModelRef ?? "");
+  const { pending, rowError, act } = useRowAction(
+    run,
+    [name, imageRef, textRef, searchRef].join(" "),
+  );
   const isDefault = library.defaultCombinationId === combination.id;
   const dirty =
     name !== combination.name ||
@@ -880,9 +1172,11 @@ function CombinationRow({
         ) : (
           <button
             disabled={busy}
-            onClick={() => run(() => api.setDefaultCombination(combination.id))}
+            onClick={() =>
+              void act("default", "設定預設組合", () => api.setDefaultCombination(combination.id))
+            }
           >
-            設為預設
+            {pending === "default" ? "設定中…" : "設為預設"}
           </button>
         )}
       </div>
@@ -895,7 +1189,7 @@ function CombinationRow({
         <button
           disabled={busy || !dirty}
           onClick={() =>
-            run(() =>
+            void act("save", "儲存組合", () =>
               api.updateCombination(combination.id, {
                 name,
                 imageModelRef: imageRef || undefined,
@@ -905,17 +1199,29 @@ function CombinationRow({
             )
           }
         >
-          儲存
+          {pending === "save" ? "儲存中…" : "儲存"}
         </button>
+        {/*
+          綁著這個組合的專案在哪裡，前端手上這份 payload 看不到，所以講不出數字——那就
+          明講後果的**時機**：現在什麼都不會發生，要到下一次生成或抽字才失敗。
+        */}
         <button
           className="danger"
           disabled={busy || isDefault}
           title={isDefault ? "預設組合不可刪除，請先改設其他預設" : undefined}
-          onClick={() => run(() => api.deleteCombination(combination.id))}
+          onClick={() => {
+            if (
+              confirm(
+                `刪除組合「${combination.name}」？\n\n綁定這個組合的專案不會立刻報錯，要到下一次生成或抽字時才會失敗（屆時要回到專案設定改綁別的組合）。\n\n這個動作無法復原。`,
+              )
+            )
+              void act("delete", "刪除組合", () => api.deleteCombination(combination.id));
+          }}
         >
-          刪除
+          {pending === "delete" ? "刪除中…" : "刪除"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </div>
   );
 }
@@ -931,13 +1237,36 @@ function SystemSection({
 }) {
   const [timeout, setTimeout] = useState(String(library.system.codexTimeoutMs ?? ""));
   const [concurrency, setConcurrency] = useState(String(library.system.codexMaxConcurrency ?? ""));
-  const save = () =>
-    run(() =>
+  const [fieldErrors, setFieldErrors] = useState<{
+    timeout?: string | undefined;
+    concurrency?: string | undefined;
+  }>({});
+  const { pending, rowError, act } = useRowAction(run, [timeout, concurrency].join(" "));
+  /**
+   * 兩個欄位都是 `inputMode="numeric"`（只是鍵盤提示，不擋任何輸入），舊版沒有任何前端
+   * 驗證：打進 `abc` → `Number("abc")` 是 `NaN` → 照樣送出。留空是合法的（代表沿用伺服器
+   * 預設），所以只在非空時檢查，而且要求整數：小數與 0 對逾時毫秒與併發上限都沒有意義。
+   */
+  const positiveInteger = (raw: string, label: string): string | undefined =>
+    !raw.trim() || /^\d+$/.test(raw.trim())
+      ? raw.trim() && Number(raw) <= 0
+        ? `${label}需大於 0；留空則沿用伺服器預設。`
+        : undefined
+      : `${label}只接受數字（正整數）；留空則沿用伺服器預設。`;
+  const save = async () => {
+    const next = {
+      timeout: positiveInteger(timeout, "Codex Timeout"),
+      concurrency: positiveInteger(concurrency, "Codex 最大併發"),
+    };
+    setFieldErrors(next);
+    if (next.timeout || next.concurrency) return;
+    await act("save", "儲存系統設定", () =>
       api.updateModelLibrarySystem({
         ...(timeout.trim() ? { codexTimeoutMs: Number(timeout) } : {}),
         ...(concurrency.trim() ? { codexMaxConcurrency: Number(concurrency) } : {}),
       }),
     );
+  };
   return (
     <section className="dashboard-section model-library-section">
       <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
@@ -951,8 +1280,12 @@ function SystemSection({
             aria-label="Codex Timeout"
             inputMode="numeric"
             value={timeout}
-            onChange={(event) => setTimeout(event.target.value)}
+            onChange={(event) => {
+              setTimeout(event.target.value);
+              setFieldErrors((current) => ({ ...current, timeout: undefined }));
+            }}
           />
+          {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
         </label>
         <label className="model-library-combo-field">
           Codex 最大併發
@@ -960,13 +1293,18 @@ function SystemSection({
             aria-label="Codex 最大併發"
             inputMode="numeric"
             value={concurrency}
-            onChange={(event) => setConcurrency(event.target.value)}
+            onChange={(event) => {
+              setConcurrency(event.target.value);
+              setFieldErrors((current) => ({ ...current, concurrency: undefined }));
+            }}
           />
+          {fieldErrors.concurrency && <FieldError>{fieldErrors.concurrency}</FieldError>}
         </label>
-        <button className="primary" disabled={busy} onClick={save}>
-          儲存系統設定
+        <button className="primary" disabled={busy} onClick={() => void save()}>
+          {pending === "save" ? "儲存中…" : "儲存系統設定"}
         </button>
       </div>
+      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }

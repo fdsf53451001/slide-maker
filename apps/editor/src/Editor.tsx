@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -59,6 +60,9 @@ import {
   shouldStackTextRail,
   CANVAS_ROW_STACKED_CLASS,
 } from "./canvasRowLayout.js";
+import { useDialogA11y } from "./useDialogA11y.js";
+import { modalDialogOpen } from "./modalDialogOpen.js";
+import { ErrorToast } from "./ErrorToast.js";
 
 /**
  * 量版面的 effect 要在繪製前跑（見 `Editor` 裡的用處），但 `useLayoutEffect` 在沒有 DOM 的
@@ -353,6 +357,35 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.matches("input, select, a") || target.isContentEditable;
 }
 
+/**
+ * 對話框自己接 Escape。
+ *
+ * 刻意**不**掛回 `Editor` 那條集中式鏈：用到這支的三個對話框各有兩個以上的渲染點
+ * （系統設定與三選一在編輯器與精靈都會出現、刪除簡報確認住在 `CreateProject`），而那條鏈
+ * 的 effect 有 `project && workflowStage === "editing"` 的前提，精靈與專案列表那幾處根本
+ * 跑不到它——集中化在這裡買不到一致性，只會讓一半的渲染點按 Esc 沒反應。
+ *
+ * `busy` 是忙碌守衛，語意與各對話框遮罩點擊那道一致：刪除／送出進行中時 Esc 不關閉，
+ * 否則畫面收掉了、在飛的請求照樣跑完，使用者以為自己取消了。
+ */
+function useDialogEscape(onEscape: () => void, busy = false): void {
+  useEffect(() => {
+    if (busy) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onEscape();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onEscape, busy]);
+}
+
+// 錯誤通知列已抽到 `./ErrorToast.tsx`（連同它那份「為什麼是 div 包 button 而不是
+// button[role=alert]」的說明）：模型庫與風格編輯器各自寫了一份形狀不同的 toast，而稽核抓到的
+// 問題正是同一份 UI 漂移成多份拷貝（其中兩份漏了 role="alert"）。理由只留在元件那一份，
+// 這裡不再複述——同一段理由的兩份拷貝遲早會有一份先過期。
+
 /** 某一頁正在跑的文字圖層工作。 */
 type TextLayerTask = "save" | "extract" | "create";
 
@@ -413,8 +446,14 @@ export function SystemSettingsDialog({
   onClose: () => void;
 }) {
   const defaultCombination = combinations.find((item) => item.isDefault);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // 焦點契約與 Escape：兩者都缺會讓「按齒輪 → 改一個設定 → 想收掉」變成無路可退——
+  // Esc 沒反應、Tab 走出對話框到那片已宣告為不存在的頁面、關掉之後焦點掉回 <body>。
+  useDialogA11y(dialogRef, true);
+  useDialogEscape(onClose);
   return (
     <div
+      ref={dialogRef}
       className="system-settings-backdrop"
       role="dialog"
       aria-modal="true"
@@ -767,6 +806,23 @@ export function TextLayerCanvas({
                 RESIZE_DIRECTIONS.map((direction) => (
                   <button
                     key={direction}
+                    /*
+                     * 把手只吃指標事件，所以退出 Tab 順序與無障礙樹。
+                     *
+                     * 它們是真的 `<button>`，在此之前每選取一個文字框就多出八個可以 Tab 到、
+                     * 按 Enter／Space 卻毫無反應的停點，而播報出來的還是「調整文字框 se」
+                     * 「調整文字框 nw」——`n`／`ne`／`se` 是內部方向碼，對使用者沒有意義。
+                     * 宣告成可按卻按不動，比一開始就不宣告更糟。
+                     *
+                     * 這是止血、不是修好：文字框的移動與縮放目前對鍵盤使用者**完全不可達**，
+                     * 而 inspector 也沒有寬高數值欄位可以退回（見 `move` 死區那段註解）。
+                     * 完整解法是在框身綁方向鍵移動／Shift+方向鍵縮放，那是獨立的一次改動。
+                     *
+                     * `aria-label` 留著只當測試與除錯的定位鉤子（`aria-hidden` 之後它進不了
+                     * 播報），不是給使用者聽的字。
+                     */
+                    tabIndex={-1}
+                    aria-hidden="true"
                     aria-label={`調整文字框 ${direction}`}
                     className={`text-resize-handle ${direction}`}
                     onPointerDown={(event) => begin(event, box, direction)}
@@ -989,18 +1045,17 @@ type BatchGenerateChoice = "all" | "visible-only";
  */
 type BatchChoiceVariant = "generate" | "extract";
 
+// 沒有獨立的 `label` 欄位：對話框的名稱直接指向畫面上的 `heading`，兩份字串必然一致。
 const BATCH_CHOICE_COPY: Record<
   BatchChoiceVariant,
-  { label: string; heading: string; visibleOnly: string; all: string }
+  { heading: string; visibleOnly: string; all: string }
 > = {
   generate: {
-    label: "批次生成與隱藏頁",
     heading: "要連隱藏頁一起生成嗎？",
     visibleOnly: "只生成可見頁",
     all: "含隱藏頁一起生成",
   },
   extract: {
-    label: "批次抽離文字與隱藏頁",
     heading: "要連隱藏頁一起抽離文字嗎？",
     visibleOnly: "只抽可見頁",
     all: "含隱藏頁一起抽",
@@ -1037,6 +1092,11 @@ function BatchGenerateDialog({
   onCancel: () => void;
 }) {
   const copy = BATCH_CHOICE_COPY[variant];
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const headingId = useId();
+  useDialogA11y(dialogRef, true);
+  // 忙碌守衛與遮罩點擊那道一致：整批已經在送出時關掉畫面不會取消任何東西。
+  useDialogEscape(onCancel, busy);
   return (
     <div
       className="confirm-backdrop"
@@ -1045,13 +1105,19 @@ function BatchGenerateDialog({
       }}
     >
       <div
+        ref={dialogRef}
         className="confirm-dialog choices"
         role="dialog"
         aria-modal="true"
-        aria-label={copy.label}
+        /*
+         * 名稱指向畫面上那個 `<h2>`，不另外寫一份 `aria-label`：舊寫法的 `copy.label`
+         * （「批次生成與隱藏頁」）與標題（「要連隱藏頁一起生成嗎？」）是兩串不同的字，
+         * 聽到的和看到的對不起來，使用者無從確認自己在回答哪一個問題。
+         */
+        aria-labelledby={headingId}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2>{copy.heading}</h2>
+        <h2 id={headingId}>{copy.heading}</h2>
         <p>
           {body ?? (
             <>
@@ -1226,6 +1292,10 @@ function ImageEditDialog({
   const [instruction, setInstruction] = useState("");
   const [selection, setSelection] = useState<MaskSelection>();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Escape 已由 `Editor` 的集中式鏈處理（它有 `imageEditBusy` 守衛），這裡只補焦點。
+  // 說明欄的 `autoFocus` 不會被搶走：hook 只在焦點還沒進到對話框裡時才主動聚焦。
+  useDialogA11y(dialogRef, true);
   const dragStart = useRef<MaskPoint | undefined>(undefined);
   const canvasPoint = (event: ReactPointerEvent<HTMLCanvasElement>): MaskPoint | undefined => {
     const canvas = canvasRef.current;
@@ -1289,6 +1359,7 @@ function ImageEditDialog({
   };
   return (
     <div
+      ref={dialogRef}
       className="image-edit-backdrop"
       role="dialog"
       aria-modal="true"
@@ -1421,6 +1492,18 @@ function CreateProject({
   const [deleting, setDeleting] = useState(false);
   const [bundleBusy, setBundleBusy] = useState(false);
   const bundleInput = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const confirmHeadingId = useId();
+  useDialogA11y(confirmRef, !!pendingDelete);
+  /*
+   * 刪除是破壞性的，而 Escape 正是使用者最想反悔的那一下——在此之前它完全沒反應，只剩
+   * 「取消」按鈕與遮罩點擊兩條路。`useCallback` 讓 `deleting` 以外的 render 不重掛 listener。
+   * 刪除進行中不關閉：畫面收掉了請求照樣跑完，使用者會以為自己攔下了它。
+   */
+  useDialogEscape(
+    useCallback(() => setPendingDelete(undefined), []),
+    !pendingDelete || deleting,
+  );
 
   /** 匯入 `.slide-project.zip`：成功就直接進該專案，失敗把伺服器的理由留在畫面上。 */
   const importBundle = async (file: File) => {
@@ -1682,12 +1765,15 @@ function CreateProject({
           }}
         >
           <div
+            ref={confirmRef}
             className="confirm-dialog"
             role="dialog"
             aria-modal="true"
+            // 沒有名稱時螢幕閱讀器只念得到「對話方塊」；破壞性確認尤其不能沒有標題。
+            aria-labelledby={confirmHeadingId}
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>刪除簡報</h2>
+            <h2 id={confirmHeadingId}>刪除簡報</h2>
             <p>
               確定要刪除「<strong>{pendingDelete.name}</strong>
               」嗎？此動作無法復原，簡報的所有頁面與版本都會一併移除。
@@ -2532,9 +2618,51 @@ export function Editor() {
     versionId: string;
   }>();
   const [stylePickerBusy, setStylePickerBusy] = useState(false);
+  const stylePickerRef = useRef<HTMLDivElement>(null);
+  // 風格選擇是這個檔案裡唯一以 inline JSX 渲染的對話框，所以 ref 與焦點 hook 只能宣告在
+  // 這裡——它必須排在下面那幾條 early return（/models、/styles）之前，hook 順序才不會錯位。
+  useDialogA11y(stylePickerRef, !!stylePickerVersion);
   const [newSlideBusy, setNewSlideBusy] = useState(false);
   const [showImageEdit, setShowImageEdit] = useState(false);
   const [imageEditBusy, setImageEditBusy] = useState(false);
+  /**
+   * 「生成此頁」自己的 busy。
+   *
+   * 不能只看 `activeJob`：`generate()` 要跑完 readiness → save → generate → getProject
+   * 四趟往返，`activeJob` 才會出現，這段空窗按鈕是亮的，連按兩下就排得出兩個 job（各燒一次
+   * 影像模型配額）。批次抽字那顆早就學到這件事（見 `runBatchTextExtraction` 的註解），
+   * 這裡與下面的批次生成只是把同一個教訓補上。
+   */
+  const [generateBusy, setGenerateBusy] = useState(false);
+  /** 批次生成的本地 busy；理由同上，`project.jobs` 要等 `getProject` 回來才有東西。 */
+  const [batchGenerateBusy, setBatchGenerateBusy] = useState(false);
+  /**
+   * Brief 面板正在跑的動作。
+   *
+   * 「依 Brief 重建大綱」會跑一次網路搜尋加兩階段大綱生成，實測數十秒到數分鐘，而在此之前
+   * 它不 disabled、文案不變、也沒有進度——使用者必然再按一次，**每一次都重跑一整輪搜尋與
+   * 模型呼叫**，最後幾筆回應還會互相覆蓋掉剛生出來的大綱。分成兩種而不是一個 boolean，
+   * 是為了讓按鈕文案講得出正在做的是哪一件事。
+   */
+  const [briefBusy, setBriefBusy] = useState<"save" | "regenerate">();
+  /**
+   * 縮圖列的頁面操作（排序、隱藏、複製、刪除）正在寫入。
+   *
+   * 一個共用旗標而不是逐頁逐動作各一個：這四件事都會改動 `project.slides` 整個陣列，兩個
+   * 在飛的請求誰後回誰算數。實測後果最明顯的是複製——連點兩下就得到兩份副本。
+   */
+  const [thumbBusy, setThumbBusy] = useState(false);
+  /**
+   * 同一件事的 ref 版本，給 `runThumbAction` 的函式內守衛用。
+   *
+   * 讀 state 的那個版本在它聲稱要處理的情境下必定是 no-op：兩下點擊之間如果 React 還沒
+   * 重新 render，handler 閉包裡的 `thumbBusy` 就還是同一個過期的 `false`。ref 沒有這個問題。
+   */
+  const thumbBusyRef = useRef(false);
+  /** 取消生成也會連按：它不 disabled、也不改文案，看起來就像沒反應。 */
+  const [cancelBusy, setCancelBusy] = useState(false);
+  /** 大綱欄位「與目前圖片不同步」那句說明的 id，供 dirty 欄位的 `aria-describedby` 指過去。 */
+  const outlineDirtyNoteId = useId();
   // 批次生成遇到隱藏頁時的三選一確認框；沒有隱藏頁時永遠不會被打開。
   const [askBatchChoice, setAskBatchChoice] = useState(false);
   const [previewVersionId, setPreviewVersionId] = useState<string>();
@@ -3091,6 +3219,11 @@ export function Editor() {
     if (!canvasIsActiveSurface) return;
     const onUndo = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
+      // `canvasIsActiveSurface` 只認得這個檔案裡的覆蓋層；別的元件開的對話框要靠即時的
+      // DOM 查詢才擋得住（見 `modalDialogOpen`）。排在修飾鍵與 key 判斷**之後**：這是一次
+      // `document.querySelector`，放在最前面等於使用者在文字框裡打的每一個字都掃一次 DOM，
+      // 而真正需要它的只有 ⌘Z／Ctrl+Z 那一種鍵。
+      if (modalDialogOpen()) return;
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -3140,6 +3273,9 @@ export function Editor() {
       // 長按會以 ~30/s 重複觸發：壓兩秒就貼出數十個框，每個都推一筆 undo 歷史，
       // 一次長按足以把 TEXT_HISTORY_LIMIT（60）筆歷史全擠掉——那正是出事時唯一的退路。
       if (event.repeat) return;
+      // 對話框開著時 Delete／Backspace 會無聲刪掉背後選中的文字框，並在 650ms 後自動存回
+      // 伺服器——這是本檔最貴的一條誤觸，別的元件開的對話框只有即時 DOM 查詢擋得住。
+      if (modalDialogOpen()) return;
       if (isTypingTarget(event.target)) return;
       const selectedBox = textBoxes.find((box) => box.id === selectedTextId);
       const key = event.key.toLowerCase();
@@ -3253,7 +3389,10 @@ export function Editor() {
         return;
       }
       if (stylePickerVersion) {
-        if (event.key === "Escape") {
+        // 忙碌守衛與遮罩點擊那道一致（見風格選擇的 backdrop onClick）：顯示「正在準備
+        // 參考圖…」時按 Esc，對話框會消失，但 `addCurrentImageToStyle` 照樣跑完並導頁——
+        // 使用者以為取消了，畫面卻自己跳去風格編輯頁。
+        if (event.key === "Escape" && !stylePickerBusy) {
           event.preventDefault();
           setStylePickerVersion(undefined);
         }
@@ -3284,6 +3423,9 @@ export function Editor() {
       // 與文字框快捷鍵共用同一份「畫布是不是當前互動面」判定：這條原本漏掉系統設定
       // 對話框與別條路由（模型庫、風格庫都不會清掉 project），方向鍵會在那些畫面上換頁。
       if (!canvasIsActiveSurface) return;
+      // 這一行必須排在簡報那條分支**之後**：簡報覆蓋層自己就是 `aria-modal` 的對話框，
+      // 而它正是靠方向鍵換頁的。放到前面等於把簡報模式的鍵盤操作整個關掉。
+      if (modalDialogOpen()) return;
       if (isFormControl || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
       const currentIndex = Math.max(
         0,
@@ -3308,6 +3450,7 @@ export function Editor() {
     project,
     selectedId,
     showImageEdit,
+    stylePickerBusy,
     stylePickerVersion,
   ]);
   useEffect(() => {
@@ -3410,11 +3553,7 @@ export function Editor() {
       <>
         {/* 可關閉且會播報：匯入失敗時畫面上只有按鈕文字從「匯入中…」變回原字，
             螢幕閱讀器不會有任何提示，而使用者要能把它關掉再換一個檔案重試。 */}
-        {error && (
-          <button className="toast error" role="alert" onClick={() => setError(undefined)}>
-            {error} ×
-          </button>
-        )}
+        {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
         {importNoticeToast}
         <CreateProject
           key={`${route}:${window.location.search}`}
@@ -3447,11 +3586,7 @@ export function Editor() {
   if (project.workflowStage !== "editing" && isPdfImportProject(project))
     return (
       <>
-        {error && (
-          <button className="toast error" onClick={() => setError(undefined)}>
-            {error} ×
-          </button>
-        )}
+        {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
         {importNoticeToast}
         <PdfDeckAnalysis
           project={project}
@@ -3473,11 +3608,7 @@ export function Editor() {
   if (project.workflowStage !== "editing")
     return (
       <>
-        {error && (
-          <button className="toast error" onClick={() => setError(undefined)}>
-            {error} ×
-          </button>
-        )}
+        {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
         <SetupFlow
           project={project}
           providers={providers}
@@ -3541,27 +3672,33 @@ export function Editor() {
   };
 
   const generate = async () => {
-    if (!selected) return;
-    let currentReadiness: ProviderReadiness;
+    if (!selected || generateBusy) return;
+    // 整段（含 readiness 與 save 那兩趟）都算 busy：只包住 `api.generate` 的話，空窗仍在。
+    setGenerateBusy(true);
     try {
-      currentReadiness = await api.readiness(effectiveImageProviderId);
-      setReadiness(currentReadiness);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Provider readiness 檢查失敗");
-      return;
-    }
-    if (
-      currentReadiness.blocking ||
-      (currentReadiness.requiresAcknowledgement && !acceptUnknownReadiness)
-    )
-      return;
-    if (!(await save())) return;
-    try {
-      // 不傳 providerId：server 依專案組合（或預設組合）解析影像模型。
-      await api.generate(project.id, selected.id, undefined, acceptUnknownReadiness);
-      setProject(await api.getProject(project.id));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "生成失敗");
+      let currentReadiness: ProviderReadiness;
+      try {
+        currentReadiness = await api.readiness(effectiveImageProviderId);
+        setReadiness(currentReadiness);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Provider readiness 檢查失敗");
+        return;
+      }
+      if (
+        currentReadiness.blocking ||
+        (currentReadiness.requiresAcknowledgement && !acceptUnknownReadiness)
+      )
+        return;
+      if (!(await save())) return;
+      try {
+        // 不傳 providerId：server 依專案組合（或預設組合）解析影像模型。
+        await api.generate(project.id, selected.id, undefined, acceptUnknownReadiness);
+        setProject(await api.getProject(project.id));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "生成失敗");
+      }
+    } finally {
+      setGenerateBusy(false);
     }
   };
 
@@ -3602,6 +3739,24 @@ export function Editor() {
     if (!currentOutlineSnapshot || !outlineView) return true;
     return outlineView[field] !== currentOutlineSnapshot[field];
   };
+  /**
+   * 有哪幾欄與目前這張圖不同步。
+   *
+   * 在此之前這件事只由 `.outline-dirty` 的橘色邊框表達，而整份程式碼裡沒有任何一句文字
+   * 解釋那圈橘框是什麼意思——色盲使用者與螢幕閱讀器使用者完全收不到這個訊號，結果是改了
+   * 大綱、匯出成品，才發現圖片還是舊的。`fieldDirty()` 的逐欄比對寫得很細，缺的只是把它
+   * 講出來。欄名要**逐欄**列出而不是說「有些欄位」：使用者要知道自己該回頭看哪一格。
+   */
+  const dirtyFieldLabels = (
+    [
+      ["content", "內容"],
+      ["narrative", "敘事"],
+      ["layoutHint", "構圖提示"],
+      ["imagePrompt", "完整圖片提示詞"],
+    ] as const
+  )
+    .filter(([field]) => fieldDirty(field))
+    .map(([, label]) => label);
   const previewOutlineMatchesCurrent =
     !!draft &&
     !!previewVersion?.outlineSnapshot &&
@@ -3673,22 +3828,52 @@ export function Editor() {
     }
   };
   /**
+   * 縮圖列的頁面操作（排序、隱藏、複製、刪除）。
+   *
+   * 共用 `thumbBusy` 而不是各自 `run()`：這四件事改的都是 `project.slides` 整個陣列，兩個
+   * 在飛的請求誰後回誰算數。實測最明顯的是複製——連點兩下就得到兩份副本，而使用者只按了
+   * 一次「⧉」。
+   *
+   * 實際擋住連點的是按鈕的 `disabled`（React 對離散事件同步 flush，第二下按到的已經是停用
+   * 的按鈕）。函式內這道守衛是第二層，用來擋「不經按鈕」的呼叫路徑；它讀 **ref** 而不是
+   * `thumbBusy` state，因為兩下點擊之間若 React 還沒重新 render，handler 閉包裡的 state 就還是
+   * 那個過期的 `false`——那正是這道守衛聲稱要處理的情境，讀 state 等於在唯一需要它的時候
+   * 什麼都不做。
+   */
+  const runThumbAction = async (operation: () => Promise<PresentationProject>) => {
+    if (thumbBusyRef.current) return;
+    thumbBusyRef.current = true;
+    setThumbBusy(true);
+    try {
+      await run(operation);
+    } finally {
+      thumbBusyRef.current = false;
+      setThumbBusy(false);
+    }
+  };
+  /**
    * 批次生成：先存下編輯中的大綱，再依使用者的選擇決定要不要把隱藏頁也排進去。
    * `"all"` 不傳 `slideIds`，與加入隱藏頁之前完全同一條路。
    */
   const runBatchGenerate = async (choice: BatchGenerateChoice) => {
-    const saved = await save();
-    if (!saved) return;
+    if (batchGenerateBusy) return;
+    setBatchGenerateBusy(true);
     try {
-      await api.generateAll(
-        project.id,
-        undefined,
-        acceptUnknownReadiness,
-        choice === "visible-only" ? visibleSlideIds(project.slides) : undefined,
-      );
-      setProject(await api.getProject(project.id));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "批次生成失敗");
+      const saved = await save();
+      if (!saved) return;
+      try {
+        await api.generateAll(
+          project.id,
+          undefined,
+          acceptUnknownReadiness,
+          choice === "visible-only" ? visibleSlideIds(project.slides) : undefined,
+        );
+        setProject(await api.getProject(project.id));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "批次生成失敗");
+      }
+    } finally {
+      setBatchGenerateBusy(false);
     }
   };
   const textLayerHint = `${textBoxes.length} 個文字框`;
@@ -4195,6 +4380,9 @@ export function Editor() {
           {editingName ? (
             <input
               className="title-name-input"
+              // 沒有 label、沒有 placeholder，螢幕閱讀器只念得到一個空的文字框——而它一進場
+              // 就 autoFocus，使用者聽到的第一句話會是「編輯」兩個字。
+              aria-label="專案名稱"
               autoFocus
               value={nameDraft}
               maxLength={200}
@@ -4253,7 +4441,11 @@ export function Editor() {
             ▶ 簡報模式
           </button>
         </nav>
-        <div className="header-status">
+        {/* 自動儲存是「不用你按存檔」的唯一證據，而它只有一個色點加一句文字；沒有
+            live region 時，看不到畫面的人不會知道自己的編輯到底送出去了沒有。
+            已知取捨：每次自動儲存會播報兩次（「正在…」→「已…」），編輯文字層時偏吵；
+            但相對於完全不知道存了沒有，吵是比較小的錯。 */}
+        <div className="header-status" role="status">
           <span className="status-dot" />
           {saving ? "正在自動儲存…" : "已自動儲存"}
         </div>
@@ -4327,8 +4519,15 @@ export function Editor() {
           </span>
         </div>
         <div className="thumbnails" ref={railRef}>
-          {project.slides.map((slide) => {
+          {project.slides.map((slide, index) => {
             const thumb = currentImage(project, slide);
+            /** 把這一頁往前／往後挪一格，與大綱頁那兩顆 ↑↓ 呼叫同一個端點。 */
+            const moveSlide = (offset: -1 | 1) => {
+              const ids = project.slides.map((item) => item.id);
+              const target = index + offset;
+              [ids[index], ids[target]] = [ids[target]!, ids[index]!];
+              void runThumbAction(() => api.reorderSlides(project.id, ids));
+            };
             return (
               <div
                 key={slide.id}
@@ -4342,15 +4541,35 @@ export function Editor() {
                   const from = ids.indexOf(draggedId);
                   const to = ids.indexOf(slide.id);
                   ids.splice(to, 0, ids.splice(from, 1)[0]!);
-                  void run(() => api.reorderSlides(project.id, ids));
+                  void runThumbAction(() => api.reorderSlides(project.id, ids));
                   setDraggedId(undefined);
                 }}
                 onClick={() => {
                   setSelectedId(slide.id);
                   setPanel("slide");
                 }}
+                /*
+                 * `role="button"` **不會**像真的 `<button>` 那樣把 Enter／Space 合成成 click，
+                 * 所以必須自己接。在此之前這一格 Tab 得到、焦點環會亮、閱讀器也念「按鈕」，
+                 * 按下去卻毫無反應——選頁是編輯器的核心動線，等於整個編輯器對純鍵盤使用者
+                 * 不可用。寫法照抄 header 專案名稱那顆同為 `role="button"` 的 `<strong>`。
+                 *
+                 * 只認 `target === currentTarget`：裡面那排操作按鈕是真的 `<button>`，Enter
+                 * 會被它們自己處理完再冒泡上來，不擋的話「按 Enter 刪除這一頁」會順帶把
+                 * 這一頁選起來。
+                 */
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  setSelectedId(slide.id);
+                  setPanel("slide");
+                }}
                 role="button"
                 tabIndex={0}
+                // 選中狀態原本只有 CSS class：閱讀器聽到的是一排長得一模一樣的按鈕，
+                // 無從得知現在停在哪一頁。
+                {...(slide.id === selected?.id ? { "aria-current": "page" as const } : {})}
               >
                 <span className="slide-number">{String(slide.order + 1).padStart(2, "0")}</span>
                 <span
@@ -4375,29 +4594,65 @@ export function Editor() {
                     className="thumb-hide"
                     title={slide.hidden ? "取消隱藏此頁" : "隱藏此頁（不放映、不匯出 pptx／pdf）"}
                     aria-label={slide.hidden ? "取消隱藏此頁" : "隱藏此頁"}
+                    disabled={thumbBusy}
                     onClick={(event) => {
                       event.stopPropagation();
-                      void run(() => api.setSlideHidden(project.id, slide.id, !slide.hidden));
+                      void runThumbAction(() =>
+                        api.setSlideHidden(project.id, slide.id, !slide.hidden),
+                      );
                     }}
                   >
                     {slide.hidden ? "⊘" : "◎"}
                   </button>
+                  {/*
+                    拖曳在此之前是縮圖列**唯一**的排序途徑，鍵盤與觸控使用者完全排不了序。
+                    這兩顆與大綱頁那組 ↑↓（`aria-label` 與首末頁 disabled 都相同）是同一套
+                    慣例，也呼叫同一個 `api.reorderSlides`，不另立第二種排序語彙。
+                    只用既有的 `.thumb-actions button` 樣式，沒有新增任何 class。
+                  */}
                   <button
-                    title="複製頁面"
+                    aria-label="往上移動"
+                    title="往上移動"
+                    disabled={thumbBusy || index === 0}
                     onClick={(event) => {
                       event.stopPropagation();
-                      void run(() => api.duplicateSlide(project.id, slide.id));
+                      moveSlide(-1);
+                    }}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    aria-label="往下移動"
+                    title="往下移動"
+                    disabled={thumbBusy || index === project.slides.length - 1}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      moveSlide(1);
+                    }}
+                  >
+                    ↓
+                  </button>
+                  {/* `title` 不在鍵盤焦點時顯示、行動裝置無法觸發、部分閱讀器設定會忽略它，
+                      所以名稱要靠 `aria-label`——同一排的第一顆本來就兩個都有。 */}
+                  <button
+                    aria-label="複製頁面"
+                    title="複製頁面"
+                    disabled={thumbBusy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void runThumbAction(() => api.duplicateSlide(project.id, slide.id));
                     }}
                   >
                     ⧉
                   </button>
                   <button
+                    aria-label="刪除頁面"
                     title="刪除頁面"
-                    disabled={project.slides.length === 1}
+                    disabled={thumbBusy || project.slides.length === 1}
                     onClick={(event) => {
                       event.stopPropagation();
                       if (confirm("刪除此頁？"))
-                        void run(() => api.deleteSlide(project.id, slide.id));
+                        void runThumbAction(() => api.deleteSlide(project.id, slide.id));
                     }}
                   >
                     ×
@@ -4671,24 +4926,47 @@ export function Editor() {
                 後重新啟動。
               </p>
             )}
+            {/* 連按會對同一個 job 送出好幾次 DELETE，而畫面上完全沒有「已經按過了」的痕跡。 */}
             <button
+              disabled={cancelBusy}
               onClick={() => {
+                setCancelBusy(true);
                 void api
                   .cancel(project.id, activeJob.id)
                   .then(() => api.getProject(project.id))
                   .then(setProject)
                   .catch((reason: unknown) =>
                     setError(reason instanceof Error ? reason.message : "取消失敗"),
-                  );
+                  )
+                  .finally(() => setCancelBusy(false));
               }}
             >
-              取消生成
+              {cancelBusy ? "正在取消…" : "取消生成"}
             </button>
           </div>
         )}
         {lastJob?.status === "failed" && (
-          <div className="job-error">
+          /*
+           * 生成是這個 app 的核心動作，也是最常失敗的（配額、逾時、readiness、provider
+           * 不支援），但這裡原本只有一行不會被播報、也沒有下一步的死訊息。`role="alert"`
+           * 讓它出現時就講出來，重試鈕比照 `PdfDeckAnalysis` 的錯誤列——重跑同一頁的生成。
+           *
+           * 不另外做「關閉」：重試成功會排出新 job，`lastJob` 隨即換人，這則訊息自己會走。
+           */
+          <div className="job-error" role="alert">
             生成失敗{lastJob.errorCode ? `（${lastJob.errorCode}）` : ""}：{lastJob.error}
+            <button
+              onClick={() => void generate()}
+              disabled={
+                generateBusy ||
+                !!activeJob ||
+                !!previewVersion ||
+                provider?.availability.status !== "available" ||
+                readinessBusy
+              }
+            >
+              重試
+            </button>
           </div>
         )}
         {/* 刻意不放「版本歷史」標題：縮圖卡片本身已帶時間戳與「使用中」標記，
@@ -4767,12 +5045,23 @@ export function Editor() {
         </div>
       </main>
       <aside className="inspector" id="inspector">
+        {/*
+          選中狀態原本只有 CSS class 撐著：閱讀器聽到四顆一模一樣的按鈕，唯一得知現狀的
+          辦法是按下去——而按下去就換掉了整個面板。`aria-current="page"` 是最小修法；
+          完整的 `role="tablist"` 要連帶實作方向鍵巡覽（Home／End、`aria-controls`、
+          roving tabindex），成本高得多，這次不做。
+        */}
         <div className="inspector-tabs">
-          <button className={panel === "slide" ? "active" : ""} onClick={() => setPanel("slide")}>
+          <button
+            className={panel === "slide" ? "active" : ""}
+            {...(panel === "slide" ? { "aria-current": "page" as const } : {})}
+            onClick={() => setPanel("slide")}
+          >
             頁面
           </button>
           <button
             className={panel === "project" ? "active" : ""}
+            {...(panel === "project" ? { "aria-current": "page" as const } : {})}
             onClick={() => setPanel("project")}
           >
             專案
@@ -4780,11 +5069,16 @@ export function Editor() {
           {/* 來源筆數原本掛在 header 的導覽列上，導覽列收掉後改由這個分頁承接（accessible name 仍是「來源 N」）。 */}
           <button
             className={panel === "sources" ? "active" : ""}
+            {...(panel === "sources" ? { "aria-current": "page" as const } : {})}
             onClick={() => setPanel("sources")}
           >
             來源 <b>{project.sources.length}</b>
           </button>
-          <button className={panel === "export" ? "active" : ""} onClick={() => setPanel("export")}>
+          <button
+            className={panel === "export" ? "active" : ""}
+            {...(panel === "export" ? { "aria-current": "page" as const } : {})}
+            onClick={() => setPanel("export")}
+          >
             匯出
           </button>
           {/*
@@ -4828,12 +5122,20 @@ export function Editor() {
                     onChange={(event) => setDraft({ ...draft, purpose: event.target.value })}
                   />
                 </label>
+                {/* 橘框的文字版本。用既有的 `.provider-note` 提示樣式，沒有新增 class。 */}
+                {dirtyFieldLabels.length > 0 && (
+                  <div className="provider-note" id={outlineDirtyNoteId}>
+                    {dirtyFieldLabels.join("、")}
+                    ：這幾欄已修改，尚未反映到目前的圖片——重新生成才會套用。
+                  </div>
+                )}
                 <label className={fieldDirty("content") ? "outline-dirty" : ""}>
                   內容
                   <textarea
                     readOnly={outlineReadOnly}
                     rows={4}
                     value={outlineView.content}
+                    {...(fieldDirty("content") ? { "aria-describedby": outlineDirtyNoteId } : {})}
                     onChange={(event) => setDraft({ ...draft, content: event.target.value })}
                   />
                 </label>
@@ -4843,6 +5145,7 @@ export function Editor() {
                     readOnly={outlineReadOnly}
                     rows={3}
                     value={outlineView.narrative}
+                    {...(fieldDirty("narrative") ? { "aria-describedby": outlineDirtyNoteId } : {})}
                     onChange={(event) => setDraft({ ...draft, narrative: event.target.value })}
                   />
                 </label>
@@ -4852,6 +5155,9 @@ export function Editor() {
                     readOnly={outlineReadOnly}
                     rows={3}
                     value={outlineView.layoutHint}
+                    {...(fieldDirty("layoutHint")
+                      ? { "aria-describedby": outlineDirtyNoteId }
+                      : {})}
                     onChange={(event) => setDraft({ ...draft, layoutHint: event.target.value })}
                   />
                 </label>
@@ -4862,6 +5168,9 @@ export function Editor() {
                     className="prompt"
                     rows={6}
                     value={outlineView.imagePrompt}
+                    {...(fieldDirty("imagePrompt")
+                      ? { "aria-describedby": outlineDirtyNoteId }
+                      : {})}
                     onChange={(event) => setDraft({ ...draft, imagePrompt: event.target.value })}
                   />
                 </label>
@@ -4950,7 +5259,10 @@ export function Editor() {
               <button
                 className="primary"
                 onClick={() => void generate()}
+                // `generateBusy` 補的是 `activeJob` 出現之前那段空窗（readiness → save →
+                // generate → getProject 四趟往返），那段時間按鈕本來是亮的。
                 disabled={
+                  generateBusy ||
                   !!activeJob ||
                   !!previewVersion ||
                   provider?.availability.status !== "available" ||
@@ -4960,7 +5272,11 @@ export function Editor() {
                   (readiness.requiresAcknowledgement && !acceptUnknownReadiness)
                 }
               >
-                {activeJob ? "生成中…" : selected?.versions.length ? "重新生成圖片" : "生成此頁"}
+                {activeJob || generateBusy
+                  ? "生成中…"
+                  : selected?.versions.length
+                    ? "重新生成圖片"
+                    : "生成此頁"}
                 <span>→</span>
               </button>
               <button
@@ -5461,22 +5777,39 @@ export function Editor() {
                 )}
               </div>
             )}
+            {/*
+              這兩顆原本零回饋：不 disabled、文案不變、也沒有進度。「依 Brief 重建大綱」會跑
+              一次網路搜尋加兩階段大綱生成（實測數十秒到數分鐘），使用者的必然反應是再按一次
+              ——而每一次都重跑一整輪搜尋與模型呼叫（燒配額），最後幾筆回應還會互相覆蓋掉剛
+              生出來的大綱。照抄同檔 `outlineBusy` 那顆的模式：進行中改文案並互相 disabled。
+            */}
             <div className="panel-actions">
               <button
                 className="primary"
-                onClick={() => void run(() => api.updateBrief(project.id, briefDraft))}
+                disabled={briefBusy !== undefined}
+                onClick={() => {
+                  setBriefBusy("save");
+                  void run(() => api.updateBrief(project.id, briefDraft)).finally(() =>
+                    setBriefBusy(undefined),
+                  );
+                }}
               >
-                儲存 Brief
+                {briefBusy === "save" ? "正在儲存…" : "儲存 Brief"}
               </button>
               <button
+                disabled={briefBusy !== undefined}
                 onClick={() => {
                   // 指定的來源是使用者最不預期會失去的東西：頁面整批換成新的，指定自然
                   // 跟著消失，所以確認視窗要講明白，而不是只說「取代目前頁面」。
-                  if (confirm("重新產生大綱會取代目前頁面（包含你指定的來源），確定繼續？"))
-                    void run(() => api.regenerateOutline(project.id, true));
+                  if (!confirm("重新產生大綱會取代目前頁面（包含你指定的來源），確定繼續？"))
+                    return;
+                  setBriefBusy("regenerate");
+                  void run(() => api.regenerateOutline(project.id, true)).finally(() =>
+                    setBriefBusy(undefined),
+                  );
                 }}
               >
-                依 Brief 重建大綱
+                {briefBusy === "regenerate" ? "正在檢索來源與重建大綱…" : "依 Brief 重建大綱"}
               </button>
               <button
                 className="batch-generate"
@@ -5485,14 +5818,17 @@ export function Editor() {
                   if (hiddenCount > 0) setAskBatchChoice(true);
                   else void runBatchGenerate("all");
                 }}
+                // `batchGenerateBusy` 補的是 `project.jobs` 出現排隊中的 job 之前那段空窗
+                // （save ＋ generateAll ＋ getProject 三趟往返），那段時間按鈕本來是亮的。
                 disabled={
+                  batchGenerateBusy ||
                   project.jobs.some((job) => ["queued", "running"].includes(job.status)) ||
                   readinessBusy ||
                   !readiness ||
                   readiness.blocking
                 }
               >
-                批次生成全部頁面
+                {batchGenerateBusy ? "正在排程批次生成…" : "批次生成全部頁面"}
               </button>
               {/*
                 批次抽離全部文字。進行中時這一顆變成進度顯示（不可再按），旁邊多長出一顆
@@ -5642,6 +5978,7 @@ export function Editor() {
       )}
       {stylePickerVersion && (
         <div
+          ref={stylePickerRef}
           className="style-picker-backdrop"
           role="dialog"
           aria-modal="true"
@@ -5840,12 +6177,25 @@ export function Editor() {
           }}
         />
       )}
+      {/*
+        批次抽字的進度。這是全 app 最長的操作（150 頁的專案十幾分鐘），程式碼為它寫了大量
+        中止、守衛與摘要邏輯，但進度在此之前只存在於按鈕文字裡——按下開始之後，看不到畫面的
+        人完全不知道跑到第幾頁、有沒有卡住。同檔的 job 進度與文字圖層進度都有 `role="status"`，
+        這裡是唯一漏掉的一條。
+
+        掛在 shell 這一層而不是那顆按鈕旁邊：live region 必須先在 DOM 裡存在、之後的內容變動
+        才會被播報，而按鈕住在「專案」分頁裡——使用者切到別的分頁時整條 live region 會卸載，
+        剩下的頁數就此靜默。空字串時不佔版面也不播報。
+      */}
+      <div className="visually-hidden" role="status">
+        {batchExtract
+          ? `批次抽離文字：正在處理第 ${batchExtract.current} 頁，共 ${batchExtract.total} 頁。${
+              batchExtract.stopping ? "已要求停止，做完這一頁就會停下。" : ""
+            }`
+          : ""}
+      </div>
       {importNoticeToast}
-      {error && (
-        <button className="toast error" onClick={() => setError(undefined)}>
-          {error} ×
-        </button>
-      )}
+      {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
     </div>
   );
 }

@@ -112,7 +112,19 @@ type ApiFailure = {
 // `message` 就是寫給使用者的那一句；有它就只顯示它，不要在前面掛一串錯誤碼——
 // 裸的 `CODEX_STYLE_ANALYSIS_DISABLED`、`PDF_ASPECT_UNSUPPORTED` 對使用者沒有意義，
 // 而 PDF 匯入對話框正是新使用者看到的第一個畫面。沒有 `message` 才退回代碼。
-function failureMessage(body: unknown, fallback: string): string {
+//
+// 收 `Response` 而不是收一個 `fallback: string`，是為了保證**回傳值永不為空字串**。
+// 舊版的鏈尾是呼叫端傳進來的 `response.statusText`，而 HTTP/2 沒有 reason phrase，
+// `statusText` 在上面永遠是 `""`——於是「伺服器只回了狀態碼」這種失敗會產生一個空訊息，
+// 而空訊息在前端一律被讀成「沒有東西要顯示」甚至被讀成成功：`{error && <ErrorToast/>}`
+// 整條 toast 不會出現，`if (failed) return;` 那類判斷會當成成功往下走並清掉使用者填好的欄位。
+// 一句「HTTP 500」資訊很少，但它至少是一句話。第三個參數留給「HTTP 狀態本身不是原因」的
+// 呼叫端（`addUrlSources` 在 200 但 payload 缺 project 時也走這裡）。
+function failureMessage(
+  body: unknown,
+  response: Response,
+  fallback = response.statusText.trim() || `HTTP ${response.status}`,
+): string {
   if (typeof body !== "object" || body === null) return fallback;
   const failure = body as ApiFailure;
   const detail = (failure.issues ?? [])
@@ -159,11 +171,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = (await response.json()) as T | ApiFailure;
   if (!response.ok)
-    throw new ApiError(
-      failureMessage(body, response.statusText),
-      response.status,
-      failureCode(body),
-    );
+    throw new ApiError(failureMessage(body, response), response.status, failureCode(body));
   return body as T;
 }
 
@@ -450,7 +458,7 @@ export const api = {
     // 用 `failureMessage()` 而不是只取 `error`：伺服器的上限訊息帶著實際數字（「已達 200
     // 份上限（目前 200 份）」），只顯示錯誤碼等於把那份唯一的真相丟掉，前端就得自己再寫
     // 一份數字——而那份必定跟著漂。
-    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as PresentationProject;
   },
   searchWebSources: (projectId: string, query: string, limit = 8, textEngine?: string) =>
@@ -484,7 +492,7 @@ export const api = {
       failures?: UrlSourceFailure[];
     };
     if (!response.ok || !payload.project) {
-      const error = new Error(failureMessage(body, "加入網址來源失敗")) as UrlSourceError;
+      const error = new Error(failureMessage(body, response, "加入網址來源失敗")) as UrlSourceError;
       error.failures = payload.failures ?? [];
       throw error;
     }
@@ -499,8 +507,7 @@ export const api = {
       body: file,
     });
     const body = (await response.json()) as StyleReferenceImage | { error?: string };
-    if (!response.ok)
-      throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as StyleReferenceImage;
   },
   renderPdfPages: async (
@@ -513,8 +520,7 @@ export const api = {
     });
     const body = (await response.json()) as
       { pages: string[]; totalPages: number; truncated: boolean } | { error?: string };
-    if (!response.ok)
-      throw new Error("error" in body ? (body.error ?? response.statusText) : response.statusText);
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as { pages: string[]; totalPages: number; truncated: boolean };
   },
   // ── 從 PDF 匯入簡報 ──────────────────────────────────────────────────────
@@ -526,7 +532,7 @@ export const api = {
       body: file,
     });
     const body = (await response.json()) as PdfDeckInspection | ApiFailure;
-    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as PdfDeckInspection;
   },
   importPdfDeck: async (
@@ -542,7 +548,7 @@ export const api = {
     });
     const body = (await response.json()) as
       { project: PresentationProject; report: PdfDeckImportReport } | ApiFailure;
-    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as { project: PresentationProject; report: PdfDeckImportReport };
   },
   /**
@@ -565,7 +571,7 @@ export const api = {
     } catch {
       throw new Error(`匯入專案檔失敗（HTTP ${response.status}）`);
     }
-    if (!response.ok) throw new Error(failureMessage(body, response.statusText));
+    if (!response.ok) throw new Error(failureMessage(body, response));
     return body as PresentationProject;
   },
   updateStyleSnapshot: (

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createDefaultStyle, createProject } from "@slide-maker/core";
 import type { PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
@@ -175,8 +175,11 @@ describe("匯入專案檔的邊界情形", () => {
     render(<Editor />);
     await screen.findByRole("button", { name: "匯入專案檔" });
     fireEvent.change(bundleInput(), { target: { files: [bundleFile()] } });
-    const toast = await screen.findByText(/壞檔/);
-    fireEvent.click(toast);
+    // 訊息本身是 `role="alert"` 的容器（會被播報），關閉是裡面那顆具名的按鈕——
+    // 兩個語意分開之後，「按下去關得掉」要對那顆按鈕測，不是對訊息文字節點。
+    const toast = await screen.findByRole("alert");
+    expect(toast.textContent).toContain("壞檔");
+    fireEvent.click(within(toast).getByRole("button", { name: "關閉錯誤訊息" }));
     await waitFor(() => expect(screen.queryByText(/壞檔/)).toBeNull());
   });
 

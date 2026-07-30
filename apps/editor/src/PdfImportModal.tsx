@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { StyleReferenceImage } from "@slide-maker/core";
 import { api } from "./api.js";
+import { useDialogA11y } from "./useDialogA11y.js";
 
 /**
  * 「從 PDF 建立風格」的頁面挑選器。無狀態流程：
@@ -23,6 +24,26 @@ export function PdfImportModal({
   const [selected, setSelected] = useState<number[]>([]); // 依勾選順序保留的頁碼
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogA11y(dialogRef, true);
+
+  /**
+   * Escape 關閉，但忙碌中一律不理會。
+   *
+   * 與遮罩點擊、關閉鈕同一條守衛：`confirm()` 的上傳迴圈是元件自己的 state，對話框一關
+   * 就整個消失——已經成功的參考圖回不到 StyleEditor，失敗訊息也一起不見，而請求還在跑。
+   * 這裡不接進任何集中式 Escape 鏈：風格編輯頁沒有那條鏈，這是唯一的一層。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (!busy) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
 
   const pick = async (file: File) => {
     setBusy(true);
@@ -69,11 +90,26 @@ export function PdfImportModal({
   };
 
   return (
-    <div className="pdf-modal-backdrop" onClick={onClose}>
-      <div className="pdf-modal" onClick={(event) => event.stopPropagation()}>
+    // 遮罩點擊與關閉鈕、Escape 共用同一條忙碌守衛：76／129 兩顆按鈕早就擋了 busy，只有這裡
+    // 沒擋——上傳期間手滑點到背景就會把整個對話框連同進行中的迴圈與錯誤訊息一起丟掉。
+    <div className="pdf-modal-backdrop" onClick={() => (busy ? undefined : onClose())}>
+      {/*
+        無障礙樹上這原本是一團匿名 div：按下「從 PDF 匯入」之後，螢幕閱讀器不會有任何
+        「有東西打開了」的訊息。形狀比照隔壁的 PdfDeckImportModal，只是名稱改用
+        aria-labelledby 指向標題本身，標題改字時名稱不會漏掉沒改。
+      */}
+      <div
+        className="pdf-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        ref={dialogRef}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="pdf-modal-header">
-          <strong>從 PDF 匯入參考圖</strong>
-          <button className="pdf-modal-close" onClick={onClose} disabled={busy}>
+          <strong id={titleId}>從 PDF 匯入參考圖</strong>
+          <button className="pdf-modal-close" onClick={onClose} disabled={busy} aria-label="關閉">
             ×
           </button>
         </header>
@@ -124,7 +160,26 @@ export function PdfImportModal({
             </div>
           </>
         )}
-        {error && <div className="pdf-modal-error">{error}</div>}
+        {/*
+          錯誤要 role="alert"：它出現的時機是使用者按下按鈕之後、焦點還停在按鈕上，畫面
+          別處冒出一行紅字沒有任何機制會被讀出來。
+        */}
+        {error && (
+          <div className="pdf-modal-error" role="alert">
+            {error}
+          </div>
+        )}
+        {/*
+          解析與匯入都是分鐘級的等待（匯入還是一張一張上傳），只在按鈕與 drop 區改文字，
+          讀屏使用者不會知道有東西在跑。做法與隔壁 PdfDeckImportModal 的進度列一致。
+        */}
+        {busy && (
+          <div className="pdf-modal-progress" role="status">
+            {pages
+              ? `正在上傳 ${selected.length} 張參考圖，請勿關閉視窗。`
+              : "正在解析 PDF 頁面，請稍候。"}
+          </div>
+        )}
         <footer className="pdf-modal-footer">
           <button onClick={onClose} disabled={busy}>
             取消

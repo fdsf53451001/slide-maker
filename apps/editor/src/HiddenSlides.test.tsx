@@ -205,7 +205,7 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
     await enter("無隱藏頁批次");
 
     fireEvent.click(await openProjectPanel());
-    expect(screen.queryByRole("dialog", { name: "批次生成與隱藏頁" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "要連隱藏頁一起生成嗎？" })).toBeNull();
     await waitFor(() => expect(generateBodies(fetchMock)).toHaveLength(1));
     expect(generateBodies(fetchMock)[0]).toEqual({ acceptUnknownReadiness: false });
   });
@@ -216,7 +216,7 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
     await enter("問過再生成");
 
     fireEvent.click(await openProjectPanel());
-    const dialog = await screen.findByRole("dialog", { name: "批次生成與隱藏頁" });
+    const dialog = await screen.findByRole("dialog", { name: "要連隱藏頁一起生成嗎？" });
     expect(dialog.textContent).toContain("消耗影像模型配額");
     // 共 4 頁、其中 2 頁隱藏。
     expect(dialog.textContent).toMatch(/共\s*4\s*頁/);
@@ -238,7 +238,7 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
       acceptUnknownReadiness: false,
       slideIds: visibleIds,
     });
-    expect(screen.queryByRole("dialog", { name: "批次生成與隱藏頁" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "要連隱藏頁一起生成嗎？" })).toBeNull();
   });
 
   it("選「含隱藏頁一起生成」不帶 slideIds（讓 server 照舊排全部頁面）", async () => {
@@ -259,11 +259,11 @@ describe("批次生成遇到隱藏頁時先讓使用者選", () => {
     await enter("取消批次");
 
     fireEvent.click(await openProjectPanel());
-    const dialog = await screen.findByRole("dialog", { name: "批次生成與隱藏頁" });
+    const dialog = await screen.findByRole("dialog", { name: "要連隱藏頁一起生成嗎？" });
     fireEvent.click(within(dialog).getByText("取消"));
 
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "批次生成與隱藏頁" })).toBeNull(),
+      expect(screen.queryByRole("dialog", { name: "要連隱藏頁一起生成嗎？" })).toBeNull(),
     );
     expect(generateBodies(fetchMock)).toHaveLength(0);
   });

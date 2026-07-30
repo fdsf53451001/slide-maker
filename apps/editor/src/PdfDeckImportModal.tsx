@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MAX_DECK_IMPORT_PAGES,
   MAX_UPLOAD_BYTES,
   type PresentationProject,
 } from "@slide-maker/core";
 import { api, type PdfDeckImportReport, type PdfDeckInspection } from "./api.js";
+import { useDialogA11y } from "./useDialogA11y.js";
 
 /**
  * 「把一份既有 PDF 匯入成簡報專案」的選頁對話框。
@@ -26,6 +27,24 @@ export function PdfDeckImportModal({
   const [selected, setSelected] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogA11y(dialogRef, true);
+
+  /**
+   * Escape 關閉，忙碌中一律不理會（與遮罩點擊、關閉鈕同一條守衛）。
+   *
+   * 這裡不接進 `Editor.tsx` 的集中式 Escape 鏈：那條在 `workflowStage !== "editing"` 時
+   * 直接 return，而本對話框只在儀表板（沒有開啟中的專案）出現，兩邊碰不到面。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (!busy) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
 
   const pick = async (picked: File) => {
     setBusy(true);
@@ -72,6 +91,8 @@ export function PdfDeckImportModal({
         role="dialog"
         aria-modal="true"
         aria-label="從 PDF 匯入簡報"
+        ref={dialogRef}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="pdf-modal-header">
@@ -149,7 +170,12 @@ export function PdfDeckImportModal({
             </div>
           </>
         )}
-        {error && <div className="pdf-modal-error">{error}</div>}
+        {/* 錯誤出現時焦點還在剛按下的按鈕上，沒有 role="alert" 就完全不會被讀出來。 */}
+        {error && (
+          <div className="pdf-modal-error" role="alert">
+            {error}
+          </div>
+        )}
         {/*
           每頁要 render 原圖、再抽一次可編輯文字層，實測約 0.6 秒／頁——150 頁要一分半。
           按鈕上的「匯入中…」不足以說明這段等待，這裡明講在做什麼、大概多久。

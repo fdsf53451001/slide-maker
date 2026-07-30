@@ -7,6 +7,8 @@ import {
 } from "@slide-maker/core";
 import { api, projectAssetUrl, type UrlSourceFailure, type WebSearchResult } from "./api.js";
 import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
+import { useDialogA11y } from "./useDialogA11y.js";
+import { modalDialogOpen } from "./modalDialogOpen.js";
 
 export function sourceTypeLabel(source: SourceAsset): string {
   if (source.mediaType.startsWith("image/")) return "圖片";
@@ -174,13 +176,16 @@ function SourcePreviewDialog({
   const segments = highlightSegments(source.extractedText, terms);
   const firstHit = segments.findIndex((segment) => segment.hit);
   const firstHitRef = useRef<HTMLElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogA11y(dialogRef, true);
   useEffect(() => {
     firstHitRef.current?.scrollIntoView?.({ block: "center" });
   }, [source.id]);
   // 四個對話框一律 portal 到 body：它們在 React tree 上是來源面板的後代，而來源面板整塊
   // 會被側邊欄收合（`.inspector-collapsed`）以 `display: none` 藏起來——祖先一旦 none，
-  // `position: fixed` 的後代也跟著消失。收合鈕就在對話框背後、且這裡沒有 focus trap，
-  // 鍵盤走到它按下去就會讓填到一半的對話框整個不見。
+  // `position: fixed` 的後代也跟著消失。收合鈕就在對話框背後，鍵盤走到它按下去就會讓
+  // 填到一半的對話框整個不見——這正是四個對話框都掛上 `useDialogA11y` 的原因（focus trap
+  // 讓 Tab 走不出去，關閉後焦點還原回觸發的按鈕）。
   return createPortal(
     <div
       className="source-preview-backdrop"
@@ -191,6 +196,8 @@ function SourcePreviewDialog({
     >
       <section
         className={`source-preview-dialog ${imageSource ? "image" : "text"}`}
+        ref={dialogRef}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header>
@@ -231,7 +238,16 @@ function SourcePreviewDialog({
                 </div>
               )}
             </dl>
-            {failureText && <p className="source-describe-failed">⚠ {failureText}</p>}
+            {/*
+              失敗說明要 role="alert"：輪詢會在對話框開著的時候把這一段換上來（分析是背景
+              工作），沒有 live region 的話，讀屏使用者停在原本那句「AI 正在讀取…」上，
+              永遠等不到「其實失敗了」。
+            */}
+            {failureText && (
+              <p className="source-describe-failed" role="alert">
+                ⚠ {failureText}
+              </p>
+            )}
             <p>
               {imageSource
                 ? isDescribing(source)
@@ -279,10 +295,13 @@ function SourcePreviewDialog({
 
 function WebSourceDialog({
   onCancel,
+  onBusyChange,
   onSearch,
   onSave,
 }: {
   onCancel: () => void;
+  /** 讓外層的 Escape 鏈知道請求還在跑；理由與 UrlSourceDialog 的同名 prop 相同。 */
+  onBusyChange: (busy: boolean) => void;
   onSearch: (query: string) => Promise<WebSearchResult[]>;
   onSave: (sources: WebSearchResult[]) => Promise<void>;
 }) {
@@ -293,7 +312,16 @@ function WebSourceDialog({
   const [saving, setSaving] = useState(false);
   const [searched, setSearched] = useState(false);
   const [localError, setLocalError] = useState<string>();
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogA11y(dialogRef, true);
   const busy = searching || saving;
+  // 只回報「儲存中」：搜尋還沒寫入任何東西，中途關掉不會留下半份工作，Escape 照樣可以關。
+  // cleanup 一定要把旗標放掉——成功路徑是 onSave 先關掉對話框、`finally` 才跑，少了它
+  // 外層會永遠停在忙碌狀態，之後每一個對話框的 Escape 與遮罩點擊都被鎖死。
+  useEffect(() => {
+    onBusyChange(saving);
+    return () => onBusyChange(false);
+  }, [saving, onBusyChange]);
   const search = async () => {
     const keyword = query.trim();
     if (keyword.length < 2) return;
@@ -323,7 +351,12 @@ function WebSourceDialog({
         if (!busy) onCancel();
       }}
     >
-      <section className="web-source-dialog" onClick={(event) => event.stopPropagation()}>
+      <section
+        className="web-source-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header>
           <div>
             <span className="section-label">ADD WEB SOURCES</span>
@@ -355,7 +388,12 @@ function WebSourceDialog({
             {searching ? "正在搜尋網路…" : "搜尋"}
           </button>
         </form>
-        {localError && <div className="web-source-error">{localError}</div>}
+        {/* 搜尋／儲存失敗時焦點還在按鈕上，沒有 role="alert" 就沒有任何東西會把它讀出來。 */}
+        {localError && (
+          <div className="web-source-error" role="alert">
+            {localError}
+          </div>
+        )}
         <div className="web-search-results">
           {!searched && !searching && (
             <div className="web-search-empty">輸入關鍵字後搜尋，這一步不會直接寫入來源。</div>
@@ -480,6 +518,8 @@ function UrlSourceDialog({
   };
   const [failures, setFailures] = useState<UrlSourceFailure[]>([]);
   const [localError, setLocalError] = useState<string>();
+  const dialogRef = useRef<HTMLFormElement>(null);
+  useDialogA11y(dialogRef, true);
   const urls = parsePastedUrls(value);
   const tooMany = urls.length > URL_SOURCE_BATCH_LIMIT;
   // portal 到 body，理由同 SourcePreviewDialog。
@@ -495,6 +535,8 @@ function UrlSourceDialog({
     >
       <form
         className="text-source-dialog url-source-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -546,7 +588,12 @@ function UrlSourceDialog({
           動態網頁（需要 JavaScript 才顯示內容的網站）會改由外部 render 服務取得正文，
           該網址與其內容會送往第三方處理。
         </small>
-        {localError && <div className="web-source-error">{localError}</div>}
+        {/* 整批失敗的那一句與逐筆清單同時出現；沒有 role="alert" 兩者都不會被讀出來。 */}
+        {localError && (
+          <div className="web-source-error" role="alert">
+            {localError}
+          </div>
+        )}
         {failures.length > 0 && (
           <ul className="url-source-failures">
             {/* 同一個無效網址貼兩次就會回兩筆一模一樣的 failure，url 不是唯一鍵。 */}
@@ -583,6 +630,8 @@ function TextSourceDialog({
 }) {
   const [name, setName] = useState("貼上文字.md");
   const [content, setContent] = useState("");
+  const dialogRef = useRef<HTMLFormElement>(null);
+  useDialogA11y(dialogRef, true);
   const normalizedName = /\.(?:md|txt)$/i.test(name.trim())
     ? name.trim()
     : `${name.trim() || "貼上文字"}.md`;
@@ -599,6 +648,8 @@ function TextSourceDialog({
     >
       <form
         className="text-source-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -671,6 +722,9 @@ export function SourcePanel({
 }) {
   const [sourcePreview, setSourcePreview] = useState<SourceAsset>();
   const [showWebSourceSearch, setShowWebSourceSearch] = useState(false);
+  // 「加入所選來源」按下去之後 addWebSources 還在跑，這時關掉對話框只是把畫面收掉：來源
+  // 照樣落地、setQuery("") 照樣執行，使用者卻以為自己取消了。
+  const [webSourceBusy, setWebSourceBusy] = useState(false);
   const [showUrlSource, setShowUrlSource] = useState(false);
   // 擷取中途按 Esc 會關掉對話框、丟掉失敗清單，而請求還在跑（相鄰的貼上文字有守衛）。
   const [urlSourceBusy, setUrlSourceBusy] = useState(false);
@@ -684,6 +738,13 @@ export function SourcePanel({
    * 模型；等它出現在清單裡再取消勾選已經來不及了。預設仍是允許（既有行為）。
    */
   const [allowModelAccess, setAllowModelAccess] = useState(true);
+  /**
+   * 正在送出請求的來源 id。
+   *
+   * 用集合而不是單一 id：使用者可以在等待期間去點另一張卡片，兩筆請求本來就會併行，
+   * 用單一 id 記錄會讓先回來的那一筆把另一筆的忙碌狀態抹掉。
+   */
+  const [pendingSourceIds, setPendingSourceIds] = useState<ReadonlySet<string>>(new Set());
 
   const terms = searchTerms(query);
   // 新增來源後清空搜尋，否則新來源若不符合目前關鍵字會「加了卻沒出現」。
@@ -691,14 +752,32 @@ export function SourcePanel({
     ? project.sources.filter((source) => matchSource(source, terms))
     : project.sources;
 
+  /**
+   * Escape 由上往下逐層關閉；忙碌中的那一層擋住，但**事件仍然吃掉**。
+   *
+   * 兩個守衛寫成巢狀 if 而不是 `showX && !busy`：寫成 `&&` 時，忙碌中的分支會落空、整條
+   * 鏈繼續往下掉到「清空搜尋關鍵字」那一支——擷取網址擷取到一半按 Esc，對話框沒關（正確），
+   * 卻無聲清掉了背後的搜尋框，整份來源清單在對話框後面跳掉。有對話框開著時，Escape 的
+   * 對象只可能是最上層那一個，不會是它背後的搜尋框。
+   *
+   * 同一條理由對**別的元件**開的對話框一樣成立，而上面那四個 state 看不到它們：這條鏈是全域
+   * 的第四條 window keydown listener，而 `SourcePanel`（`panel === "sources"`）與 header 齒輪
+   * 打開的系統設定對話框住在同一個 shell 裡、可以同時存在。實測：搜尋框打了「營收」把 175 份
+   * 來源縮到 3 張卡，從齒輪開啟系統設定再按 Esc——對話框關掉了（正確），背後的搜尋框卻被無聲
+   * 清空、清單彈回全部 175 份。所以最後那一支要多問一次 `modalDialogOpen()`；自己那四個對話框
+   * 開著時它本來就到不了這一支，行為完全不變。
+   */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (sourcePreview) setSourcePreview(undefined);
-      else if (showWebSourceSearch) setShowWebSourceSearch(false);
-      else if (showUrlSource && !urlSourceBusy) setShowUrlSource(false);
-      else if (showTextSource && !uploadBusy) setShowTextSource(false);
-      else if (query) setQuery("");
+      else if (showWebSourceSearch) {
+        if (!webSourceBusy) setShowWebSourceSearch(false);
+      } else if (showUrlSource) {
+        if (!urlSourceBusy) setShowUrlSource(false);
+      } else if (showTextSource) {
+        if (!uploadBusy) setShowTextSource(false);
+      } else if (query && !modalDialogOpen()) setQuery("");
       else return;
       event.preventDefault();
     };
@@ -707,6 +786,7 @@ export function SourcePanel({
   }, [
     sourcePreview,
     showWebSourceSearch,
+    webSourceBusy,
     showUrlSource,
     urlSourceBusy,
     showTextSource,
@@ -714,11 +794,28 @@ export function SourcePanel({
     query,
   ]);
 
-  const run = async (operation: () => Promise<PresentationProject>) => {
+  /**
+   * 卡片上的單筆操作。`action` 只用在**沒有** Error 可讀的那條路徑上。
+   *
+   * 舊的 fallback 是一句「操作失敗」：任何非 Error 的拒絕（例如網路層丟出的字串）都會
+   * 落到它，而使用者手上只剩「有東西壞了」，連是勾選、改用途還是刪除都分不出來。
+   */
+  const run = async (
+    source: SourceAsset,
+    action: string,
+    operation: () => Promise<PresentationProject>,
+  ) => {
+    setPendingSourceIds((current) => new Set(current).add(source.id));
     try {
       onProject(await operation());
     } catch (reason) {
-      onError(reason instanceof Error ? reason.message : "操作失敗");
+      onError(reason instanceof Error ? reason.message : `${action}失敗（伺服器沒有回報原因）`);
+    } finally {
+      setPendingSourceIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
@@ -729,6 +826,9 @@ export function SourcePanel({
    * 條件；至於伺服器到底會不會跑（開關關掉、沒設文字模型、模型不可用），前端無從得知，
    * 所以**不預測**，改看回應——這筆來源沒有變成 `parsing` 就代表什麼都沒發生，直說。
    * 少了這一段，確認框會在那些配置下承諾一件不會發生的事。
+   *
+   * 這條路可能觸發視覺模型（消耗配額、要等好幾秒），所以整段都要記進 `pendingSourceIds`：
+   * 沒有忙碌狀態時，使用者在下拉選單改完用途後畫面一動也不動，只能再改一次。
    */
   const changeUsage = async (source: SourceAsset, usage: SourceAsset["usage"]) => {
     const requested =
@@ -736,6 +836,7 @@ export function SourcePanel({
       confirm(
         `要順便讓 AI 讀出「${source.name}」的內容嗎？\n\n若目前的模型設定支援讀圖，會呼叫一次視覺模型（消耗配額）；讀完之後這張圖的內容才搜尋得到，也才會被大綱引用。\n\n按「取消」只改用途，不呼叫模型。`,
       );
+    setPendingSourceIds((current) => new Set(current).add(source.id));
     try {
       const updated = await api.updateSource(project.id, source.id, {
         usage,
@@ -745,7 +846,13 @@ export function SourcePanel({
       if (requested && updated.sources.find((item) => item.id === source.id)?.status !== "parsing")
         onError("目前的模型設定不會讀圖，已只更改用途（沒有呼叫模型，也沒有消耗配額）。");
     } catch (reason) {
-      onError(reason instanceof Error ? reason.message : "操作失敗");
+      onError(reason instanceof Error ? reason.message : "更改生成用途失敗（伺服器沒有回報原因）");
+    } finally {
+      setPendingSourceIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
@@ -773,6 +880,15 @@ export function SourcePanel({
       <div className="source-add-actions">
         <label className={`upload-source ${uploadBusy ? "disabled" : ""}`}>
           ＋ {uploadBusy ? "正在上傳來源…" : "上傳來源檔案"}
+          {/*
+            視覺上的「正在上傳來源…」就在左邊，但那是靜態文字，讀屏使用者不會被告知。
+            另開一個 .visually-hidden 的 live region 而不是直接把上面那段包成 role="status"：
+            包起來會讓 label 的可及名稱被切成兩段，且回到閒置時會播報「上傳來源檔案」
+            這種聽起來像「又要你上傳一次」的內容。這裡只在有事發生時才有字。
+          */}
+          <span className="visually-hidden" role="status">
+            {uploadBusy ? "正在上傳來源檔案，請稍候。" : ""}
+          </span>
           <span>可多選 · PDF · PPTX · DOCX · MD · TXT · PNG · JPG</span>
           <input
             aria-label="上傳來源檔案"
@@ -876,16 +992,22 @@ export function SourcePanel({
           const summary = sourceSummary(source);
           const failureText = describeFailure(source);
           const assetUrl = projectAssetUrl(project.id, source.assetPath);
+          const pending = pendingSourceIds.has(source.id);
           return (
             <article key={source.id} className="source-card">
               <header className="source-card-header">
                 <label className="source-access-toggle" title="允許 AI 在生成時讀取此來源">
+                  {/*
+                    送出期間鎖住：這顆勾選直接打 API，沒有 disabled 的話連點三下就排出三筆
+                    請求，最後落地的是先送出、後回來的那一筆——畫面上的勾選狀態與伺服器相反。
+                  */}
                   <input
                     aria-label={`允許 AI 使用 ${source.name}`}
                     type="checkbox"
                     checked={source.allowModelAccess}
+                    disabled={pending}
                     onChange={(event) =>
-                      void run(() =>
+                      void run(source, "更改 AI 使用權限", () =>
                         api.updateSource(project.id, source.id, {
                           allowModelAccess: event.target.checked,
                         }),
@@ -895,12 +1017,36 @@ export function SourcePanel({
                 </label>
                 <div>
                   <strong title={source.name}>{source.name}</strong>
-                  <small>
+                  {/*
+                    這一行是整張卡片唯一會自己變的文字（上傳完成、AI 讀圖完成、逾時改口、
+                    以及上面那些單筆操作），所以 live region 掛在它身上：既不必新增元素，
+                    也剛好涵蓋「分析中 → N 個文字區塊」這個唯一有意義的完成通知。
+
+                    role 一律掛著，**不改成「只在分析中才掛」**：live region 必須在內容變化
+                    **之前**就存在於 DOM 裡才會被可靠地播報，掛的時機跟著文字一起出現等於把
+                    唯一重要的那個通知（分析完成）變成不確定行為。專案上限 200 份來源就是最多
+                    200 個 polite region，這是已知代價——但 polite region 在文字沒變時不會做任何
+                    事，換來的可靠性值這個價。
+                  */}
+                  <small role="status">
                     {sourceSize(source.sizeBytes)} ·{" "}
-                    {isDescribing(source)
-                      ? parsingLabel(source, project.sources)
-                      : `${source.chunks.length} 個文字區塊`}
+                    {pending
+                      ? "更新中…"
+                      : isDescribing(source)
+                        ? parsingLabel(source, project.sources)
+                        : `${source.chunks.length} 個文字區塊`}
                   </small>
+                  {/*
+                    **不可**是 `role="alert"`：它渲染的是 `metadata.imageDescriptionFailure`
+                    這個**持久狀態**，不是剛發生的事件，而 assertive region 一插入 DOM 就會播報
+                    並打斷讀屏正在念的東西。一個綁錯組合的專案可以有 12 張圖同時帶著這個旗標，
+                    切到來源分頁時 `SourcePanel` 掛載＝12 個 alert 同時插入，螢幕閱讀器排隊念 12 次
+                    「⚠ AI 未讀取圖片內容」，而且每次回到這個分頁都重演一次。
+                    連 role 都不給：這段文字就在卡片裡，瀏覽模式讀得到，而上面那個 status region
+                    的文字會在同一時刻一起變（分析中 → N 個文字區塊），已經有一次通知。
+                    真正事件驅動的那一個保留 `role="alert"`——`SourcePreviewDialog` 裡對話框開著時
+                    背景輪詢把「AI 正在讀取…」換成失敗訊息，那才是「剛剛發生了一件事」。
+                  */}
                   {failureText && (
                     <small className="source-describe-failed" title={failureText}>
                       ⚠ AI 未讀取圖片內容
@@ -929,6 +1075,7 @@ export function SourcePanel({
                 <select
                   aria-label={`${source.name} 的生成用途`}
                   value={source.usage}
+                  disabled={pending}
                   onChange={(event) =>
                     // 改成「視覺參考」時可以順便補跑內容描述，但那會呼叫模型、消耗配額——
                     // 使用者只是在下拉選單裡改個用途，靜默地花掉配額不誠實，所以先問（見
@@ -944,14 +1091,19 @@ export function SourcePanel({
                 </select>
               </label>
               <div className="source-card-actions">
+                {/* 確認之後刪除仍要跑一趟伺服器；沒有 disabled 的話按第二次會對已刪除的
+                    id 再送一次，回來的是一句看不懂的 404。 */}
                 <button
                   className="danger"
+                  disabled={pending}
                   onClick={() => {
                     if (confirm("刪除來源？既有版本的來源快照仍會保留。"))
-                      void run(() => api.deleteSource(project.id, source.id, true));
+                      void run(source, "刪除來源", () =>
+                        api.deleteSource(project.id, source.id, true),
+                      );
                   }}
                 >
-                  刪除來源
+                  {pending ? "處理中…" : "刪除來源"}
                 </button>
               </div>
             </article>
@@ -972,6 +1124,7 @@ export function SourcePanel({
       {showWebSourceSearch && (
         <WebSourceDialog
           onCancel={() => setShowWebSourceSearch(false)}
+          onBusyChange={setWebSourceBusy}
           onSearch={(query) => api.searchWebSources(project.id, query)}
           onSave={async (sources) => {
             onProject(await api.addWebSources(project.id, sources));
