@@ -91,7 +91,7 @@ editing, or the extracted text layer — not by dragging text boxes.
 - A deterministic **mock** image provider is the default: no network, no quota, useful for
   development and tests.
 - Production transports for OpenAI-compatible endpoints (CLIProxyAPI, OpenAI, LiteLLM,
-  OpenRouter…), native Gemini (AI Studio), and an experimental Codex app-server spike.
+  OpenRouter…) and native Gemini (AI Studio).
 - A **model library** in the UI: connections (base URL + key + protocol), per-capability model
   entries (image / text / search), and named combinations you bind to a project. API keys are
   redacted on read.
@@ -146,7 +146,6 @@ which capabilities you get.
 | 1   | **Mock provider** (default)                                                                 | none                                                  | Development, tests, trying the workflow offline |
 | 2   | **OpenAI-compatible gateway** — CLIProxyAPI (CLI2Proxy), LiteLLM, OpenRouter, OpenAI itself | Run/point at a gateway, then one connection in the UI | **Recommended for real decks**                  |
 | 3   | **Gemini AI Studio, native**                                                                | An AI Studio API key                                  | Gemini image models without a gateway           |
-| 4   | **Codex CLI app-server**                                                                    | A locally authenticated Codex CLI, opt-in flag        | Experimental; see the security notes            |
 
 ### Recommended: CLIProxyAPI + `gpt-image-2`
 
@@ -166,7 +165,8 @@ In the model library, create:
 - **Connection** — protocol `openai`, base URL `http://localhost:8317/v1` (whatever your
   gateway listens on), API key as configured.
 - **Image model** — kind `openai`, model `gpt-image-2`, image API `images`.
-- **Text / search models** — point them at the same connection, or leave them on Codex.
+- **Text / search models** — point them at the same connection (the first-boot seed already
+  leaves an entry ready to fill in).
 - **Combination** — bundle the three and set it as the default.
 
 Equivalent first-boot environment seed, if you prefer to start from a config:
@@ -203,7 +203,7 @@ changing them later has no effect — edit the library in the UI instead.
 
 ### Image transports
 
-All transports share the same provider-neutral **Codex-baseline image contract** in
+All transports share the same provider-neutral **image contract** in
 `@slide-maker/core`: canvas, complete slide fields, style snapshot, information density,
 edit/mask semantics, ordered reference roles, direct-asset fidelity, the untrusted-data
 boundary, and an explicit ban on the model drawing deck chrome. Adapters add only their
@@ -216,7 +216,6 @@ PNG.
 | OpenAI-compatible Chat      | `provider-openai/src/image-chat.ts` | `/chat/completions`                    | `gpt-5.6-terra`, `gemini-3.1-flash-image` | Yes, ordered, up to 8                     |
 | OpenRouter images           | `provider-openai`                   | `/images`                              | provider-specific                         | Yes, via `input_references`               |
 | Gemini native               | `@slide-maker/provider-gemini`      | `:generateContent`                     | `gemini-2.5-flash-image`                  | Yes, ordered inline data                  |
-| Codex app-server            | `@slide-maker/provider-codex`       | Codex CLI app-server                   | configured Codex image model              | Yes                                       |
 | Mock                        | `@slide-maker/provider-mock`        | none                                   | —                                         | —                                         |
 
 Notes from live testing:
@@ -246,12 +245,8 @@ an illegal value throws rather than silently degrading.
 | `SLIDE_MAKER_DATA_ROOT`                                                                                                | Project data directory (default `.data/`)                                                                       |
 | `SLIDE_MAKER_SEARCH_INDEX_PATH`                                                                                        | Move the SQLite FTS index off the data root                                                                     |
 | `SLIDE_MAKER_TRUSTED_HOSTS`                                                                                            | Extra allowed hostnames; unset, only localhost is served                                                        |
-| `SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX`                                                                                | `1` enables the Codex image provider (see below)                                                                |
-| `SLIDE_MAKER_CODEX_TIMEOUT_MS`                                                                                         | 30 000 – 1 800 000, default 600 000                                                                             |
-| `SLIDE_MAKER_CODEX_MAX_CONCURRENCY`                                                                                    | 1 – 4, default 3                                                                                                |
-| `SLIDE_MAKER_CODEX_MODEL`, `SLIDE_MAKER_CODEX_REASONING_EFFORT`                                                        | Override the Codex CLI's own settings                                                                           |
 | `SLIDE_MAKER_OPENAI_BASE_URL`, `_API_KEY`, `_IMAGE_MODEL`, `_TEXT_MODEL`, `_SEARCH_MODEL`, `_IMAGE_API`, `_TIMEOUT_MS` | First-boot seed for an OpenAI-compatible endpoint                                                               |
-| `SLIDE_MAKER_TEXT_ENGINE`, `SLIDE_MAKER_WEB_SEARCH_ENGINE`                                                             | `codex` (default) or `openai`                                                                                   |
+| `SLIDE_MAKER_MODEL_TIMEOUT_MS`                                                                                         | Default per-call model timeout, 30 000 – 1 800 000, default 600 000                                             |
 | `SLIDE_MAKER_OCR_MODEL_TIER`, `_OCR_DET_SIDE_LEN`, `_OCR_PYTHON`, `_OCR_SCRIPT`                                        | PaddleOCR tier (`tiny`/`small`/`medium`, default `medium`), detection side length, interpreter and script paths |
 | `SLIDE_MAKER_INPAINT_PYTHON`, `_INPAINT_SCRIPT`                                                                        | Local OpenCV inpainter paths                                                                                    |
 | `SLIDE_MAKER_WEB_RENDER_ENGINE`                                                                                        | `jina` (default) or `none` — third-party renderer used to re-fetch JS-rendered pages for pasted URLs            |
@@ -281,9 +276,6 @@ Two things worth knowing before you change anything:
 - TypeScript runs with `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`: indexed
   access yields `undefined`, and optional properties may not be explicitly set to `undefined`.
 
-The `smoke:*` scripts (`smoke:image:codex`, `smoke:deck:grok`, …) are **live** end-to-end
-tests that consume real model quota. They are deliberately excluded from `pnpm check`.
-
 ## Project structure
 
 pnpm monorepo; internal dependencies use `workspace:*`.
@@ -296,7 +288,6 @@ pnpm monorepo; internal dependencies use `workspace:*`.
 | `packages/provider-mock`   | Deterministic, no-cost image provider (the default)                                                |
 | `packages/provider-openai` | OpenAI-compatible image / structured-text / web-search adapters                                    |
 | `packages/provider-gemini` | Gemini AI Studio native `:generateContent` adapters                                                |
-| `packages/provider-codex`  | Experimental Codex app-server spike, pinned to protocol `0.144.4`                                  |
 
 `packages/core` is the single source of truth for anything three surfaces must agree on —
 image semantics, page-number geometry, URL safety. Do not re-implement those in an adapter.
@@ -332,15 +323,7 @@ See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the full procedure and its 
   explicitly list hostnames in `SLIDE_MAKER_TRUSTED_HOSTS`. There is no built-in
   authentication — put a proxy in front of it if you expose it.
 - API keys are stored in plaintext in `models.json` under the data root.
-- The **Codex image provider is opt-in** (`SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1`) and
-  offers **soft isolation, not a security boundary**. It pins the experimental Codex `0.144.4`
-  app-server protocol and requests a read-only filesystem policy, no approvals, no turn
-  network access and an ephemeral thread, rejecting file changes, MCP calls, non-`exec`
-  dynamic tools, web search, unexpected response policies and uncorrelated events. Even so,
-  app-server still loads the real `CODEX_HOME` configuration and tool surfaces, so a malicious
-  reference or prompt can still cause prompt injection, local-data disclosure, configured-tool
-  side effects or quota consumption. Run it only in a disposable account or container with no
-  secrets and no privileged tools.
+
 - **Pasting a URL can send that URL and its content to a third party.** When the native fetch
   only gets an empty shell (client-side-rendered pages), the paste-a-URL channel falls back to
   the renderer selected by `SLIDE_MAKER_WEB_RENDER_ENGINE`, which defaults to **`jina`
@@ -350,10 +333,9 @@ See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the full procedure and its 
   disable the fallback entirely; pages that need JavaScript will then fail with
   `WEB_SOURCE_RENDER_UNAVAILABLE` instead. Web-search capture never uses the renderer — those
   URLs come from the model, not from a per-URL user decision.
-- Model output is treated as untrusted: Codex results must be a regular, non-symlink PNG
-  inside the job workspace and are checked for size, dimensions, chunk bounds, the required
-  IHDR/IDAT/IEND chunks and CRCs before being re-rendered to exactly 1920×1080 and validated
-  again. Source documents and web pages are marked as untrusted data in prompts.
+- Model output is treated as untrusted: every accepted raster is checked for size, dimensions,
+  chunk bounds, the required IHDR/IDAT/IEND chunks and CRCs before being re-rendered to exactly
+  1920×1080 and validated again. Source documents and web pages are marked as untrusted data in prompts.
 
 ## License
 

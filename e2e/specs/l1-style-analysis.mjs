@@ -1,10 +1,10 @@
 // L1（文字層）：風格參考圖分析。上傳 1 張 PNG 參考圖成 style-asset，再走
 // POST /style-analysis（帶 e2e-gpt 組合）。驗證回傳的 designSystem 非空、且含「色票」段
-// （renderDesignSystem 缺色票會直接丟 CODEX_STYLE_ANALYSIS_INCOMPLETE，故成功回應即代表
+// （renderDesignSystem 缺色票會直接丟 STYLE_ANALYSIS_INCOMPLETE，故成功回應即代表
 // palette 有內容）。avoid 為字串陣列。
 //
 // 預期 API 呼叫：文字 1（風格分析是單次結構化輸出，伺服器端無重試迴圈）。
-// 註：若組合無可用文字模型會回 CODEX_STYLE_ANALYSIS_DISABLED——正常路徑（e2e-gpt 有
+// 註：若組合無可用文字模型會回 STYLE_ANALYSIS_DISABLED——正常路徑（e2e-gpt 有
 // 文字模型）不該遇到；遇到時視為環境/組合問題直接讓 client.post 丟出（帶 status+code）。
 import { assert } from "../lib/assert.mjs";
 import { makePng } from "../lib/fixtures.mjs";

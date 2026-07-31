@@ -23,7 +23,7 @@ node e2e/run.mjs --layers l0
 | `pnpm e2e`    | 全部 | **消耗** | 預設 = L0+L1+L2。                                                                                                 |
 | `pnpm e2e:ui` | UI   | —        | 瀏覽器層（Playwright，`@slide-maker/e2e-ui`，由另一個 agent 於 `e2e/ui` 實作；此 script 代理到該套件的 `test`）。 |
 
-> ⚠️ **`e2e`、`e2e:l1`、`e2e:l2` 會消耗 Codex/OpenAI/Gemini 配額，絕不可放進 `pnpm check`。**
+> ⚠️ **`e2e`、`e2e:l1`、`e2e:l2` 會消耗 OpenAI/Gemini 配額，絕不可放進 `pnpm check`。**
 > `pnpm check` 只跑 typecheck/test/build；`.mjs` 不進 vitest、也不進 tsc。
 > L0 是唯一零配額層，但同樣不預設進 `check`（它需要先 `build` 出 dist）。
 

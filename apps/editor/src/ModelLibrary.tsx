@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type {
-  CodexReasoningEffort,
   ConnectionProtocol,
   ModelCapability,
   ModelCombination,
@@ -20,7 +19,6 @@ const CAPABILITY_LABEL: Record<ModelCapability, string> = {
 };
 const KIND_LABEL: Record<ProviderKind, string> = {
   mock: "Mock",
-  codex: "Codex",
   openai: "OpenAI 相容",
   gemini: "Gemini 原生",
   local: "本機（OpenCV）",
@@ -30,12 +28,11 @@ const PROTOCOL_LABEL: Record<ConnectionProtocol, string> = {
   gemini: "Gemini 原生",
 };
 const CAPABILITIES: ModelCapability[] = ["image", "text", "search"];
-const KINDS: ProviderKind[] = ["mock", "codex", "openai", "gemini", "local"];
+const KINDS: ProviderKind[] = ["mock", "openai", "gemini", "local"];
 const PROTOCOLS: ConnectionProtocol[] = ["openai", "gemini"];
-const REASONING_EFFORTS: CodexReasoningEffort[] = ["minimal", "low", "medium", "high"];
 const OPENAI_IMAGE_APIS: OpenAiImageApi[] = ["images", "chat", "openrouter-image"];
 
-/** 需要連線的 provider kind（HTTP 端點兩家）；mock／codex 在本機跑，沒有連線概念。 */
+/** 需要連線的 provider kind（HTTP 端點兩家）；mock／local 在本機跑，沒有連線概念。 */
 function needsConnection(kind: ProviderKind): kind is ConnectionProtocol {
   return kind === "openai" || kind === "gemini";
 }
@@ -652,7 +649,6 @@ function ModelsSection({
   const [providerKind, setProviderKind] = useState<ProviderKind>("openai");
   const [model, setModel] = useState("");
   const [connectionRef, setConnectionRef] = useState("");
-  const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort | "">("");
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">("");
   const connections = connectionsFor(library, providerKind);
   const availableModels =
@@ -666,7 +662,7 @@ function ModelsSection({
   }>({});
   const { pending, rowError, act } = useRowAction(
     run,
-    [name, capability, providerKind, model, connectionRef, reasoningEffort, imageApi].join(" "),
+    [name, capability, providerKind, model, connectionRef, imageApi].join(" "),
   );
   /**
    * 送出前擋掉會變成「懸空 entry」的組合，訊息顯示在缺漏的那個欄位旁邊。
@@ -703,14 +699,12 @@ function ModelsSection({
         providerKind,
         model: model.trim(),
         ...(needsConnection(providerKind) && connectionRef ? { connectionRef } : {}),
-        ...(providerKind === "codex" && reasoningEffort ? { reasoningEffort } : {}),
         ...(providerKind === "openai" && capability === "image" && imageApi ? { imageApi } : {}),
       }),
     );
     if (!ok) return; // 保留已填欄位讓使用者直接重試
     setName("");
     setModel("");
-    setReasoningEffort("");
     setImageApi("");
     setFieldErrors({});
   };
@@ -837,11 +831,9 @@ function ModelsSection({
             <input
               aria-label="模型名"
               placeholder={
-                providerKind === "codex"
-                  ? "model（留空用 Codex 預設）"
-                  : providerKind === "gemini"
-                    ? "model（如 gemini-3.1-flash-image）"
-                    : "model（如 gpt-image-2）"
+                providerKind === "gemini"
+                  ? "model（如 gemini-3.1-flash-image）"
+                  : "model（如 gpt-image-2）"
               }
               value={model}
               onChange={(event) => {
@@ -852,22 +844,6 @@ function ModelsSection({
           )}
           {fieldErrors.model && <FieldError>{fieldErrors.model}</FieldError>}
         </div>
-        {providerKind === "codex" && (
-          <select
-            aria-label="推理強度"
-            value={reasoningEffort}
-            onChange={(event) =>
-              setReasoningEffort(event.target.value as CodexReasoningEffort | "")
-            }
-          >
-            <option value="">推理強度（預設）</option>
-            {REASONING_EFFORTS.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        )}
         {providerKind === "openai" && capability === "image" && (
           <select
             aria-label="影像 API"
@@ -910,13 +886,10 @@ function ModelRow({
   const [name, setName] = useState(entry.name);
   const [model, setModel] = useState(entry.model);
   const [connectionRef, setConnectionRef] = useState(entry.connectionRef ?? "");
-  const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort | "">(
-    entry.reasoningEffort ?? "",
-  );
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">(entry.imageApi ?? "");
   const { pending, rowError, act } = useRowAction(
     run,
-    [name, model, connectionRef, reasoningEffort, imageApi].join(" "),
+    [name, model, connectionRef, imageApi].join(" "),
   );
   // 刪掉模型會讓引用它的組合欄位變成懸空 ref；確認文案要講得出是哪幾個組合。
   const usedBy = library.combinations.filter(
@@ -929,7 +902,6 @@ function ModelRow({
     name !== entry.name ||
     model !== entry.model ||
     connectionRef !== (entry.connectionRef ?? "") ||
-    reasoningEffort !== (entry.reasoningEffort ?? "") ||
     imageApi !== (entry.imageApi ?? "");
   const connections = connectionsFor(library, entry.providerKind);
   const availableModels =
@@ -980,20 +952,6 @@ function ModelRow({
           </option>
         ))}
       </select>
-      {entry.providerKind === "codex" && (
-        <select
-          aria-label="推理強度"
-          value={reasoningEffort}
-          onChange={(event) => setReasoningEffort(event.target.value as CodexReasoningEffort | "")}
-        >
-          <option value="">推理強度（預設）</option>
-          {REASONING_EFFORTS.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      )}
       {entry.providerKind === "openai" && entry.capability === "image" && (
         <select
           aria-label="影像 API"
@@ -1018,9 +976,6 @@ function ModelRow({
                 model,
                 ...(needsConnection(entry.providerKind)
                   ? { connectionRef: connectionRef || undefined }
-                  : {}),
-                ...(entry.providerKind === "codex"
-                  ? { reasoningEffort: reasoningEffort || undefined }
                   : {}),
                 ...(entry.providerKind === "openai" && entry.capability === "image"
                   ? { imageApi: imageApi || undefined }
@@ -1235,13 +1190,9 @@ function SystemSection({
   busy: boolean;
   run: RunFn;
 }) {
-  const [timeout, setTimeout] = useState(String(library.system.codexTimeoutMs ?? ""));
-  const [concurrency, setConcurrency] = useState(String(library.system.codexMaxConcurrency ?? ""));
-  const [fieldErrors, setFieldErrors] = useState<{
-    timeout?: string | undefined;
-    concurrency?: string | undefined;
-  }>({});
-  const { pending, rowError, act } = useRowAction(run, [timeout, concurrency].join(" "));
+  const [timeout, setTimeout] = useState(String(library.system.modelTimeoutMs ?? ""));
+  const [fieldErrors, setFieldErrors] = useState<{ timeout?: string | undefined }>({});
+  const { pending, rowError, act } = useRowAction(run, timeout);
   /**
    * 兩個欄位都是 `inputMode="numeric"`（只是鍵盤提示，不擋任何輸入），舊版沒有任何前端
    * 驗證：打進 `abc` → `Number("abc")` 是 `NaN` → 照樣送出。留空是合法的（代表沿用伺服器
@@ -1255,15 +1206,13 @@ function SystemSection({
       : `${label}只接受數字（正整數）；留空則沿用伺服器預設。`;
   const save = async () => {
     const next = {
-      timeout: positiveInteger(timeout, "Codex Timeout"),
-      concurrency: positiveInteger(concurrency, "Codex 最大併發"),
+      timeout: positiveInteger(timeout, "模型逾時"),
     };
     setFieldErrors(next);
-    if (next.timeout || next.concurrency) return;
+    if (next.timeout) return;
     await act("save", "儲存系統設定", () =>
       api.updateModelLibrarySystem({
-        ...(timeout.trim() ? { codexTimeoutMs: Number(timeout) } : {}),
-        ...(concurrency.trim() ? { codexMaxConcurrency: Number(concurrency) } : {}),
+        ...(timeout.trim() ? { modelTimeoutMs: Number(timeout) } : {}),
       }),
     );
   };
@@ -1275,9 +1224,9 @@ function SystemSection({
       </p>
       <div className="model-library-create">
         <label className="model-library-combo-field">
-          Codex Timeout (ms)
+          模型逾時 (ms)
           <input
-            aria-label="Codex Timeout"
+            aria-label="模型逾時"
             inputMode="numeric"
             value={timeout}
             onChange={(event) => {
@@ -1286,19 +1235,6 @@ function SystemSection({
             }}
           />
           {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
-        </label>
-        <label className="model-library-combo-field">
-          Codex 最大併發
-          <input
-            aria-label="Codex 最大併發"
-            inputMode="numeric"
-            value={concurrency}
-            onChange={(event) => {
-              setConcurrency(event.target.value);
-              setFieldErrors((current) => ({ ...current, concurrency: undefined }));
-            }}
-          />
-          {fieldErrors.concurrency && <FieldError>{fieldErrors.concurrency}</FieldError>}
         </label>
         <button className="primary" disabled={busy} onClick={() => void save()}>
           {pending === "save" ? "儲存中…" : "儲存系統設定"}

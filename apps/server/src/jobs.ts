@@ -43,6 +43,8 @@ const PHASE_STEP = {
   queued: 1,
   preparing: 2,
   launching: 3,
+  // 值刻意保留舊名：既有 project.json 的 job 快照裡存著它，改名要配一條資料 migration。
+  // 使用者看到的字串在編輯器端，已改成不提 Codex。
   waiting_for_codex: 4,
   validating_output: 5,
   persisting: 6,
@@ -50,14 +52,15 @@ const PHASE_STEP = {
   failed: 6,
   cancelled: 6,
 } as const;
+/**
+ * provider 丟出的 `SafeProviderError.code` → 使用者看得懂的中文。
+ * 只收「使用者自己有下一步可做」的碼；其餘落到 safeFailure() 的通用分類。
+ */
 const PROVIDER_ERROR_MESSAGES: Record<string, string> = {
-  CODEX_TIMEOUT:
-    "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。",
-  CODEX_USAGE_LIMIT: "Codex 額度已達上限，請在額度恢復後重試。",
-  CODEX_AUTH_REQUIRED: "Codex 尚未登入或授權已失效，請先在 CLI 完成登入。",
-  CODEX_PROCESS_FAILED: "Codex 執行失敗，請檢查 CLI 狀態後重試。",
-  CODEX_IMAGE_ARTIFACT_UNSUPPORTED:
-    "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
+  OPENAI_AUTH_REQUIRED: "端點回報認證失敗，請確認模型庫裡這條連線的 API key。",
+  GEMINI_AUTH_REQUIRED: "端點回報認證失敗，請確認模型庫裡這條連線的 API key。",
+  OPENAI_USAGE_LIMIT: "模型額度已達上限，請在額度恢復後重試。",
+  GEMINI_USAGE_LIMIT: "模型額度已達上限，請在額度恢復後重試。",
 };
 
 /** 一張要附給影像模型的圖。`sourceId` 只供截斷 log 使用，不會送進 provider。 */
@@ -963,7 +966,11 @@ export class JobRunner {
             height: project.canvas.height,
             // sourceId 只給截斷 log 用，不外流到 provider 的請求裡。
             references: references.map(({ sourceId: _sourceId, ...reference }) => reference),
-            model: provider.id === "mock-image" ? "mock-svg-v1" : "codex-imagegen",
+            // 合約要求這個欄位，但**沒有任何 provider 讀它**：每家都用自己 entry 上的
+            // model 名，落進版本紀錄的也是 provider 回傳的 `GeneratedImage.model`。
+            // 舊值寫死 "codex-imagegen"，於是 openai／gemini 生成的圖在請求裡也被標成
+            // codex——沒有實際影響，但會誤導任何 log／除錯的人。改帶 provider id。
+            model: provider.id,
             parameters: {},
             ...(edit ? { edit } : {}),
           },

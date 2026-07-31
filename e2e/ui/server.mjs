@@ -8,8 +8,8 @@
 // Guarantees:
 //   - never touches .slide-maker-data / .data (own SLIDE_MAKER_DATA_ROOT)
 //   - NODE_ENV=test  → outline generation uses the deterministic local
-//     fallback (createSlidesFromBrief) instead of calling Codex (no quota)
-//   - no Codex / OpenAI / Gemini credentials in env → nothing hits the network
+//     fallback (createSlidesFromBrief) instead of calling a text model (no quota)
+//   - no OpenAI / Gemini credentials in env → nothing hits the network
 //   - SLIDE_MAKER_LOG_EGRESS_IP unset → no boot-time call to api.ipify.org
 //
 // Env in:
@@ -69,7 +69,6 @@ const child = spawn(process.execPath, [serverEntry], {
     SLIDE_MAKER_SEARCH_INDEX_PATH: resolve(dataRoot, "index", "sources.sqlite"),
     // Belt-and-braces: make sure no live provider or egress probe is active.
     SLIDE_MAKER_LOG_EGRESS_IP: "",
-    SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX: "",
     SLIDE_MAKER_OPENAI_BASE_URL: "",
     SLIDE_MAKER_OPENAI_API_KEY: "",
   },

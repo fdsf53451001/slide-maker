@@ -3,7 +3,7 @@
 Real-browser end-to-end tests driven with Playwright + headless Chromium. They
 boot the **already-built** server (`apps/server/dist`) against an **isolated
 data root** with the **mock image provider only**, so they consume **no
-Codex/Grok/OpenAI/Gemini quota** and never touch the network.
+OpenAI/Gemini quota** and never touch the network.
 
 These tests target things the API layer can't see — pure CSS/DOM invariants:
 exact canvas aspect ratio, page-number overlay geometry vs. `page-number.ts`,
@@ -113,11 +113,11 @@ the `smoke:*` scripts).
 - **Own server launcher** (`server.mjs`) — spawns `apps/server/dist/index.js`
   with `NODE_ENV=test`, `HOST=127.0.0.1`, its own `PORT` (default `4188`), and a
   dedicated `SLIDE_MAKER_DATA_ROOT` under `.e2e-data/ui-<runId>`. It never
-  touches `.slide-maker-data` / `.data`. All Codex/OpenAI/egress env is blanked.
+  touches `.slide-maker-data` / `.data`. All model/egress env is blanked.
 - **Mock image provider** — the server auto-seeds `models.json` with the default
   combination already pointing at `mock-image` (deterministic SVG, ready, no
   quota). Nothing pre-writes `models.json`; it's mock out of the box.
-- **Deterministic outlines** — with `NODE_ENV=test` and no Codex/OpenAI creds,
+- **Deterministic outlines** — with `NODE_ENV=test` and no model credentials,
   the outline endpoint falls back to `createSlidesFromBrief` (local, offline).
 - **Host allow-list** — `baseURL` is `http://127.0.0.1:<PORT>`, which the
   server's `LOCAL_HOSTNAMES` check accepts.

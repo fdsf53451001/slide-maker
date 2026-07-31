@@ -465,7 +465,7 @@ describe("兩階段大綱的來源歸屬", () => {
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(400);
-    expect(body.error).toBe("CODEX_OUTLINE_PLAN_MISMATCH");
+    expect(body.error).toBe("OUTLINE_PLAN_MISMATCH");
     // 裸錯誤碼在編輯器裡等於叫人再按一次卻不說為什麼。
     expect((body as { message?: string }).message).toMatch(/錯位|再產生一次/);
     const drift = readWarnings().filter((entry) => entry.event === "outline_draft_alignment_drift");
@@ -546,7 +546,7 @@ describe("兩階段大綱的來源歸屬", () => {
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(400);
-    expect(body.error).toBe("CODEX_OUTLINE_COUNT_INVALID");
+    expect(body.error).toBe("OUTLINE_COUNT_INVALID");
     // 「本次要求 5 頁，允許 5–5 頁」會與使用者自己的設定矛盾，還把他導向去改一個他從沒
     // 設過的數字。
     const message = (body as { message?: string }).message ?? "";
@@ -672,7 +672,7 @@ describe("兩階段大綱的來源歸屬", () => {
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(400);
-    expect(body.error).toBe("CODEX_OUTLINE_PLAN_MISMATCH");
+    expect(body.error).toBe("OUTLINE_PLAN_MISMATCH");
     expect(
       readWarnings().filter((entry) => entry.event === "outline_draft_alignment_drift"),
     ).toHaveLength(1);

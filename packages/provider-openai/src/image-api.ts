@@ -179,7 +179,7 @@ export async function generateViaImagesApi(
   // gateway 不保證回 PNG（實測 gpt-image gateway 會回 jpeg/webp）。比照 chat／openrouter
   // 通道：png 走結構驗證＋canvas 正規化；其餘 raster 走 rasterToCanvasPng 轉成 canvas PNG。
   // 認不得的格式丟具名 SafeProviderError，而非讓 validatePngStructure 以標著「Codex」的裸
-  // Error 冒到上層（那訊息來自 provider-codex，會誤導成別條通道壞了）。
+  // Error 冒到上層（那訊息來自共用的 PNG 驗證，不指涉任何一條通道）。
   const mediaType = detectImageMediaType(raw);
   if (mediaType === "image/png") {
     validatePngStructure(Buffer.from(raw));

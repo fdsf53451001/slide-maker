@@ -525,7 +525,7 @@ describe("大綱生成的來源資料流", () => {
 
     expect(failure.status).toBe(400);
     expect(failure.body).toEqual({
-      error: "CODEX_OUTLINE_COUNT_INVALID",
+      error: "OUTLINE_COUNT_INVALID",
       message:
         "大綱頁數不符合要求：本次要求 1 頁，允許 1–3 頁；模型宣告 4 頁，實際回傳 4 頁（第 1 次嘗試）。",
     });
@@ -554,7 +554,7 @@ describe("大綱生成的來源資料流", () => {
 
     expect(failure.status).toBe(400);
     expect(failure.body).toEqual({
-      error: "CODEX_OUTLINE_COUNT_INVALID",
+      error: "OUTLINE_COUNT_INVALID",
       message:
         "大綱頁數不符合要求：本次要求 1 頁，允許 1–3 頁；模型未提供有效頁數宣告，實際回傳 4 頁（第 1 次嘗試）。",
     });

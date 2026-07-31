@@ -20,7 +20,6 @@ COPY apps/server/package.json apps/server/
 COPY apps/editor/package.json apps/editor/
 COPY packages/core/package.json packages/core/
 COPY packages/provider-mock/package.json packages/provider-mock/
-COPY packages/provider-codex/package.json packages/provider-codex/
 COPY packages/provider-openai/package.json packages/provider-openai/
 COPY packages/provider-gemini/package.json packages/provider-gemini/
 # 新增 workspace 套件時，這份清單必須跟著加一行——漏掉的話 pnpm install 不認得該

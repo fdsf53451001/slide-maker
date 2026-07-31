@@ -14,7 +14,7 @@ import { generateViaChat, MAX_CHAT_REFERENCES } from "./image-chat.js";
 import { generateViaOpenRouter, MAX_OPENROUTER_REFERENCES } from "./image-openrouter.js";
 
 /**
- * Maintained image transports (Codex app-server lives in provider-codex):
+ * Maintained image transports:
  *  - `images` / `chat`：CLI2Proxy 相容端點的兩個 adapter（/images/* 與 /chat/completions）。
  *  - `openrouter-image`：OpenRouter 專用 /images 端點（input_references 帶參考圖）。
  */

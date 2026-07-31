@@ -32,12 +32,12 @@ describe("request failures", () => {
 
   it("shows the outline count details without exposing the compatibility code", async () => {
     failWith({
-      error: "CODEX_OUTLINE_COUNT_INVALID",
+      error: "OUTLINE_COUNT_INVALID",
       message:
         "大綱頁數不符合要求：本次要求 7 頁，允許 5–9 頁；模型宣告 10 頁，實際回傳 10 頁（第 1 次嘗試）。",
     });
     await expect(api.regenerateOutline("p1")).rejects.toThrow("本次要求 7 頁，允許 5–9 頁");
-    await expect(api.regenerateOutline("p1")).rejects.not.toThrow(/CODEX_OUTLINE_COUNT_INVALID/);
+    await expect(api.regenerateOutline("p1")).rejects.not.toThrow(/OUTLINE_COUNT_INVALID/);
   });
 
   it("falls back to the code when the server has nothing to explain", async () => {

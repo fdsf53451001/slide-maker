@@ -302,7 +302,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
 
-    fireEvent.change(await screen.findByLabelText("Codex Timeout"), { target: { value: "abc" } });
+    fireEvent.change(await screen.findByLabelText("模型逾時"), { target: { value: "abc" } });
     fireEvent.click(screen.getByRole("button", { name: "儲存系統設定" }));
 
     expect(screen.getByRole("alert").textContent).toMatch(/只接受數字/);

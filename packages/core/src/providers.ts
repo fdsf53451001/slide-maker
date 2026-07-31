@@ -161,16 +161,14 @@ export type ChildExitClass = "success" | "nonzero" | "timeout" | "aborted" | "se
 export type ImageGenerationLifecycleEvent =
   { type: "spawned" } | { type: "exited"; exitClass: Exclude<ChildExitClass, "server_shutdown"> };
 
+/**
+ * 非生成式 readiness 的結果。`cli_missing`／`incompatible`／`ready_experimental`／
+ * `artifact_unsupported` 隨本機 Codex CLI 通道一起移除——那四個描述的是「本機執行檔在不在、
+ * 版本對不對」，HTTP 端點沒有對應概念。`readiness.ts` 對認不得的值一律落到 `unknown`，
+ * 所以舊 provider 回傳舊值也不會炸。
+ */
 export type ProviderPreflightStatus =
-  | "ready"
-  | "ready_experimental"
-  | "disabled"
-  | "cli_missing"
-  | "incompatible"
-  | "auth_required"
-  | "timeout"
-  | "artifact_unsupported"
-  | "unknown";
+  "ready" | "disabled" | "auth_required" | "timeout" | "unknown";
 
 export interface ProviderPreflightResult {
   status: ProviderPreflightStatus;
@@ -251,7 +249,6 @@ export interface ImageProvider {
   /** Maximum jobs this process may execute concurrently for this provider. */
   readonly maxConcurrency?: number;
   readonly timeoutMs?: number;
-  readonly artifactContract?: "supported" | "unsupported";
   readonly capabilities: ImageProviderCapabilities;
   readonly settingsSchema?: z.ZodType;
   /** A bounded, non-generating readiness check. It must never expose raw process output. */

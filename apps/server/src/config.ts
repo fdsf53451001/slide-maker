@@ -1,27 +1,23 @@
-import {
-  CODEX_DEFAULT_TIMEOUT_MS,
-  CODEX_MAX_TIMEOUT_MS,
-  CODEX_MIN_TIMEOUT_MS,
-} from "@slide-maker/provider-codex";
+/**
+ * 模型呼叫的預設逾時：連線自己沒設 `timeoutMs` 時的回退值，三家 provider 共用。
+ * 上下限沿用原本 codex 通道的值（30 秒～30 分），那是實際跑過長簡報生成校準出來的。
+ */
+export const DEFAULT_MODEL_TIMEOUT_MS = 10 * 60_000;
+export const MIN_MODEL_TIMEOUT_MS = 30_000;
+export const MAX_MODEL_TIMEOUT_MS = 30 * 60_000;
 
-export const DEFAULT_CODEX_TIMEOUT_MS = CODEX_DEFAULT_TIMEOUT_MS;
-export const MIN_CODEX_TIMEOUT_MS = CODEX_MIN_TIMEOUT_MS;
-export const MAX_CODEX_TIMEOUT_MS = CODEX_MAX_TIMEOUT_MS;
-export const DEFAULT_CODEX_MAX_CONCURRENCY = 3;
-export const MAX_CODEX_MAX_CONCURRENCY = 4;
-
-export function parseCodexTimeoutMs(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_CODEX_TIMEOUT_MS;
+export function parseModelTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_MODEL_TIMEOUT_MS;
   if (!/^\d+$/.test(value))
-    throw new Error("SLIDE_MAKER_CODEX_TIMEOUT_MS must be an integer in milliseconds");
+    throw new Error("SLIDE_MAKER_MODEL_TIMEOUT_MS must be an integer in milliseconds");
   const timeout = Number(value);
   if (
     !Number.isSafeInteger(timeout) ||
-    timeout < MIN_CODEX_TIMEOUT_MS ||
-    timeout > MAX_CODEX_TIMEOUT_MS
+    timeout < MIN_MODEL_TIMEOUT_MS ||
+    timeout > MAX_MODEL_TIMEOUT_MS
   ) {
     throw new Error(
-      `SLIDE_MAKER_CODEX_TIMEOUT_MS must be between ${MIN_CODEX_TIMEOUT_MS} and ${MAX_CODEX_TIMEOUT_MS}`,
+      `SLIDE_MAKER_MODEL_TIMEOUT_MS must be between ${MIN_MODEL_TIMEOUT_MS} and ${MAX_MODEL_TIMEOUT_MS}`,
     );
   }
   return timeout;
@@ -69,26 +65,6 @@ export function parseOcrDetSideLen(value: string | undefined): number {
   return sideLen;
 }
 
-export function parseCodexModel(value: string | undefined): string | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
-  return value.trim();
-}
-
-export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
-export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
-
-export function parseCodexReasoningEffort(
-  value: string | undefined,
-): CodexReasoningEffort | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
-  if (!(CODEX_REASONING_EFFORTS as readonly string[]).includes(value)) {
-    throw new Error(
-      `SLIDE_MAKER_CODEX_REASONING_EFFORT must be one of: ${CODEX_REASONING_EFFORTS.join(", ")}`,
-    );
-  }
-  return value as CodexReasoningEffort;
-}
-
 /** 永遠放行的主機名。這三個以外一律要靠 SLIDE_MAKER_TRUSTED_HOSTS 明確列出。 */
 export const LOCAL_HOSTNAMES = ["localhost", "127.0.0.1", "::1"] as const;
 
@@ -120,9 +96,6 @@ export function parseTrustedHosts(value: string | undefined): readonly string[] 
 export const DEFAULT_OPENAI_TIMEOUT_MS = 120_000;
 export const MIN_OPENAI_TIMEOUT_MS = 5_000;
 export const MAX_OPENAI_TIMEOUT_MS = 30 * 60_000;
-
-export const AI_ENGINES = ["codex", "openai"] as const;
-export type AiEngine = (typeof AI_ENGINES)[number];
 
 export const OPENAI_IMAGE_APIS = ["images", "chat", "openrouter-image"] as const;
 export type OpenAiImageApi = (typeof OPENAI_IMAGE_APIS)[number];
@@ -175,14 +148,6 @@ export function parseOpenAiTimeoutMs(value: string | undefined): number {
     );
   }
   return timeout;
-}
-
-/** 引擎選擇（codex 預設 | openai），非法值 throw。 */
-export function parseAiEngine(name: string, value: string | undefined): AiEngine {
-  if (value === undefined || value.trim() === "") return "codex";
-  if (!(AI_ENGINES as readonly string[]).includes(value))
-    throw new Error(`${name} must be one of: ${AI_ENGINES.join(", ")}`);
-  return value as AiEngine;
 }
 
 export const WEB_RENDER_ENGINES = ["jina", "none"] as const;
@@ -259,20 +224,4 @@ export function parseImageDescriptionMode(value: string | undefined): ImageDescr
       `SLIDE_MAKER_IMAGE_DESCRIPTION must be one of: ${IMAGE_DESCRIPTION_MODES.join(", ")}`,
     );
   return normalized as ImageDescriptionMode;
-}
-
-export function parseCodexMaxConcurrency(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_CODEX_MAX_CONCURRENCY;
-  if (!/^\d+$/.test(value)) throw new Error("SLIDE_MAKER_CODEX_MAX_CONCURRENCY must be an integer");
-  const concurrency = Number(value);
-  if (
-    !Number.isSafeInteger(concurrency) ||
-    concurrency < 1 ||
-    concurrency > MAX_CODEX_MAX_CONCURRENCY
-  ) {
-    throw new Error(
-      `SLIDE_MAKER_CODEX_MAX_CONCURRENCY must be between 1 and ${MAX_CODEX_MAX_CONCURRENCY}`,
-    );
-  }
-  return concurrency;
 }

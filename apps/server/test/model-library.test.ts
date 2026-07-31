@@ -48,8 +48,13 @@ describe("model library CRUD and project composition", () => {
     const library = await json<ModelLibrary>("/api/model-library");
     expect(library.defaultCombinationId).toBe("default");
     expect(library.models.some((entry) => entry.id === "mock-image")).toBe(true);
-    expect(library.models.some((entry) => entry.id === "codex-text")).toBe(true);
-    // 種子未帶 openai env，故無連線；redaction 契約仍須成立（有 key 回佔位、無回空）。
+    // 沒有 codex 那種「本機一定有」的後備之後，seed 會留一份待填的 openai 骨架，
+    // 讓第一次開機的使用者有欄位可填、組合的 ref 也指得到。
+    expect(library.models.some((entry) => entry.id === "openai-text")).toBe(true);
+    expect(library.combinations.find((item) => item.id === "default")?.textModelRef).toBe(
+      "openai-text",
+    );
+    // 種子未帶 openai env，故 key 為空；redaction 契約仍須成立（有 key 回佔位、無回空）。
     for (const connection of library.connections)
       expect(connection.apiKey === "" || connection.apiKey === "••••••••").toBe(true);
   });
@@ -100,9 +105,9 @@ describe("model library CRUD and project composition", () => {
 
     // 系統設定。
     library = await send<ModelLibrary>("/api/model-library/system", "PATCH", {
-      codexMaxConcurrency: 2,
+      modelTimeoutMs: 90_000,
     });
-    expect(library.system.codexMaxConcurrency).toBe(2);
+    expect(library.system.modelTimeoutMs).toBe(90_000);
 
     // 參照完整性：連線仍被模型引用時不可刪。
     await expect(send(`/api/model-library/connections/${connection.id}`, "DELETE")).rejects.toThrow(

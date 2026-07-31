@@ -52,7 +52,7 @@ import {
   outlineDataFidelityInstruction,
   outlineDeckOverflowRetryInstruction,
   outlineOverflowRetryInstruction,
-} from "@slide-maker/provider-codex";
+} from "@slide-maker/core";
 import { listModelIds } from "@slide-maker/provider-openai";
 import { listGeminiModelIds } from "@slide-maker/provider-gemini";
 import { JobRunner } from "./jobs.js";
@@ -62,13 +62,8 @@ import { buildSeedLibrary, withLocalInpaintEntry } from "./model-library-seed.js
 import { ModelLibraryError, ModelRuntime } from "./model-runtime.js";
 import { runtimePaths } from "./runtime-paths.js";
 import {
-  type AiEngine,
   LOCAL_HOSTNAMES,
-  parseAiEngine,
-  parseCodexMaxConcurrency,
-  parseCodexModel,
-  parseCodexReasoningEffort,
-  parseCodexTimeoutMs,
+  parseModelTimeoutMs,
   parseImageDescriptionMode,
   parseOcrDetSideLen,
   parseOcrModelTier,
@@ -196,7 +191,7 @@ interface OutlineCountErrorDetails {
  * 一個他根本沒設過的數字。
  */
 class OutlineCountError extends Error {
-  readonly code = "CODEX_OUTLINE_COUNT_INVALID";
+  readonly code = "OUTLINE_COUNT_INVALID";
 
   constructor(readonly details: OutlineCountErrorDetails) {
     super(
@@ -216,18 +211,17 @@ class OutlineCountError extends Error {
  * 在那裡顯示 `PDF_ASPECT_UNSUPPORTED` 等於什麼都沒說。
  */
 const PDF_MESSAGES: Record<string, string> = {
-  // 預設文字引擎（codex）的風格分析逾時：`provider-codex` 只丟得出裸的碼字串
-  // （不是 StyleAnalysisError），沒有這一條的話分析頁會直接顯示
-  // `CODEX_STRUCTURED_TIMEOUT`。openai 引擎走 SafeProviderError，不經過這裡。
-  CODEX_STRUCTURED_TIMEOUT:
+  // 風格分析的文字模型逾時。走 SafeProviderError 的 provider 不經過這裡，這一條是給
+  // 只丟得出裸碼字串的路徑用的——沒有它，分析頁會直接把 `TEXT_MODEL_TIMEOUT` 顯示給使用者。
+  TEXT_MODEL_TIMEOUT:
     "分析這幾頁花太久已中止。可以直接重試，或少挑幾頁再分析一次；也可以先用預設風格進編輯器。",
   // 長度重試三輪後仍超出可接受上限的兩倍。這是使用者唯一還會看到的長度失敗，裸碼在這裡
   // 等於叫人再按一次（而再按一次通常還是同樣結果）：訊息必須指出可行的下一步。
   // 階段 2 的回覆對不回階段 1 的頁面（缺 planRef、重複、指到不存在的頁）。照位置硬配
   // 會讓封面拿到內頁的文字而毫無徵兆，所以寧可擋下；再按一次通常就過了。
-  CODEX_OUTLINE_PLAN_MISMATCH:
+  OUTLINE_PLAN_MISMATCH:
     "模型這次回來的內容對不回大綱的頁面順序，為避免每一頁的標題與內文錯位，這一份沒有落地。請再產生一次；若連續發生，請改用另一個文字模型。",
-  CODEX_OUTLINE_CONTENT_UNREADABLE:
+  OUTLINE_CONTENT_UNREADABLE:
     "模型幾次都寫出遠超版面容量的內容，這一頁沒有落地。請把資訊密度調低一級，或把這一頁拆成兩頁，再重新產生一次。",
   PDF_SIZE_INVALID: "檔案是空的或超過 100MB 上限。",
   PDF_INVALID: "這不是一份 PDF 檔。",
@@ -341,8 +335,6 @@ function httpFailureFields(error: unknown): Record<string, unknown> {
     .map((line) => line.trim());
   return { ...modelErrorFields(error), ...(frames.length ? { errorFrames: frames } : {}) };
 }
-/** 前端「選擇模型」步驟可覆寫文字／搜尋引擎；未指定時回退環境變數預設。 */
-const textEngineSchema = z.enum(["codex", "openai"]).optional();
 /**
  * 階段 1（規劃）的回覆。**沒有 content**：這一輪的輸入只有來源目錄（每份一句摘要），
  * 手上沒有正文可寫，硬要它寫只會寫出憑摘要腦補的內容。
@@ -845,21 +837,15 @@ export async function createApp(
     retriever.index(repaired.id, repaired.sources);
     await sweepOcrInputs(repaired.id);
   }
-  const codexSandbox = process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX === "1";
   // 上傳圖片是否自動跑背景描述（預設 on）。這是唯一由「上傳檔案」觸發的模型呼叫，
   // 配額敏感或離線的部署要能整條關掉，而不是靠使用者逐張取消勾選。
   const imageDescriptionMode = parseImageDescriptionMode(process.env.SLIDE_MAKER_IMAGE_DESCRIPTION);
   // env 提供 seed 素材與 system 未設時的回退預設；模型庫存在後即以 JSON 為準。
   const envDefaults = {
-    codexTimeoutMs: parseCodexTimeoutMs(process.env.SLIDE_MAKER_CODEX_TIMEOUT_MS),
-    codexMaxConcurrency: parseCodexMaxConcurrency(process.env.SLIDE_MAKER_CODEX_MAX_CONCURRENCY),
+    modelTimeoutMs: parseModelTimeoutMs(process.env.SLIDE_MAKER_MODEL_TIMEOUT_MS),
     ocrModelTier: parseOcrModelTier(process.env.SLIDE_MAKER_OCR_MODEL_TIER),
     ocrDetSideLen: parseOcrDetSideLen(process.env.SLIDE_MAKER_OCR_DET_SIDE_LEN),
   };
-  const codexModel = parseCodexModel(process.env.SLIDE_MAKER_CODEX_MODEL);
-  const codexReasoningEffort = parseCodexReasoningEffort(
-    process.env.SLIDE_MAKER_CODEX_REASONING_EFFORT,
-  );
   const openAiBaseUrl = parseOpenAiBaseUrl(process.env.SLIDE_MAKER_OPENAI_BASE_URL);
   const openAiApiKey = parseOptionalString(process.env.SLIDE_MAKER_OPENAI_API_KEY);
   // 「貼上網址」通道專用的第三方 render fallback（engine=none 時為 undefined）。
@@ -877,15 +863,6 @@ export async function createApp(
   let seededLibrary = await libraryRepository.loadOrSeed(() =>
     buildSeedLibrary({
       now: new Date().toISOString(),
-      textEngine: parseAiEngine("SLIDE_MAKER_TEXT_ENGINE", process.env.SLIDE_MAKER_TEXT_ENGINE),
-      webSearchEngine: parseAiEngine(
-        "SLIDE_MAKER_WEB_SEARCH_ENGINE",
-        process.env.SLIDE_MAKER_WEB_SEARCH_ENGINE,
-      ),
-      codex: {
-        ...(codexModel ? { model: codexModel } : {}),
-        ...(codexReasoningEffort ? { reasoningEffort: codexReasoningEffort } : {}),
-      },
       ...(openAiBaseUrl && openAiApiKey
         ? {
             openai: {
@@ -915,10 +892,6 @@ export async function createApp(
 
   const runtime = new ModelRuntime(
     {
-      codexSandbox,
-      codexImageJobsRoot: runtimePaths.codexImageJobsRoot,
-      codexStructuredJobsRoot: join(dataRoot, "codex-structured-jobs"),
-      codexWebSearchJobsRoot: join(dataRoot, "codex-web-search-jobs"),
       localToolsRoot: runtimePaths.workspaceRoot,
       defaults: envDefaults,
     },
@@ -1137,7 +1110,7 @@ export async function createApp(
             provider,
             imagePath: repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
             language: current.brief.language,
-            timeoutMs: runtime.system.codexTimeoutMs,
+            timeoutMs: runtime.system.modelTimeoutMs,
             signal,
           });
         } catch (error) {
@@ -1623,7 +1596,7 @@ export async function createApp(
     const config = {
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
-      timeoutMs: connection.timeoutMs ?? runtime.system.codexTimeoutMs,
+      timeoutMs: connection.timeoutMs ?? runtime.system.modelTimeoutMs,
     };
     const models =
       connection.protocol === "gemini"
@@ -2030,7 +2003,7 @@ export async function createApp(
     // 風格分析無專案脈絡：由呼叫端指定組合，未指定時退回模型庫預設組合。
     const structuredText = runtime.resolveTextProvider(combinationId);
     if (structuredText.availability.status !== "available")
-      throw new StyleAnalysisError("CODEX_STYLE_ANALYSIS_DISABLED");
+      throw new StyleAnalysisError("STYLE_ANALYSIS_DISABLED");
     const imagePaths = [];
     for (const id of referenceIds) {
       const reference = await styles.referenceMetadata(id);
@@ -2047,7 +2020,7 @@ export async function createApp(
     let outcome: StructuredTextResult;
     try {
       outcome = await structuredText.runStructured({
-        timeoutMs: runtime.system.codexTimeoutMs,
+        timeoutMs: runtime.system.modelTimeoutMs,
         outputSchema: styleAnalysisJsonSchema,
         imagePaths,
         prompt: STYLE_ANALYSIS_PROMPT,
@@ -2259,9 +2232,7 @@ export async function createApp(
 
   app.post("/api/projects/:projectId/outline", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
-    const { replace } = z
-      .object({ replace: z.boolean().default(false), textEngine: textEngineSchema })
-      .parse(request.body ?? {});
+    const { replace } = z.object({ replace: z.boolean().default(false) }).parse(request.body ?? {});
     const before = await repository.loadProject(projectId);
     if (!before) throw new Error("Project not found");
     const structuredText = resolveStructuredText(before);
@@ -2292,7 +2263,7 @@ export async function createApp(
       slides = createSlidesFromBrief(before.brief);
     } else {
       if (structuredText.availability.status !== "available")
-        throw new Error("CODEX_OUTLINE_DISABLED");
+        throw new Error("OUTLINE_TEXT_MODEL_DISABLED");
       const desired = before.brief.desiredSlideCount;
       const min = Math.max(1, desired - 2);
       const max = desired + 2;
@@ -2462,7 +2433,7 @@ export async function createApp(
           "plan",
           1,
           {
-            timeoutMs: runtime.system.codexTimeoutMs,
+            timeoutMs: runtime.system.modelTimeoutMs,
             outputSchema: outlinePlanJsonSchema,
             prompt: [
               "You are the presentation strategist for Slide Maker. Plan an original outline determined by the topic; do not use or mention preset outline templates.",
@@ -2636,7 +2607,7 @@ export async function createApp(
             "draft",
             attempt,
             {
-              timeoutMs: runtime.system.codexTimeoutMs,
+              timeoutMs: runtime.system.modelTimeoutMs,
               outputSchema: outlineDraftJsonSchema,
               prompt: [
                 "You are the presentation writer for Slide Maker. The deck plan is fixed: write the copy for the planned slides, returning exactly one entry per planned slide in the given order. Never add, drop, merge, or reorder slides, and never rewrite a page purpose.",
@@ -2712,7 +2683,7 @@ export async function createApp(
               plannedCount: plan.slides.length,
               returnedCount: candidate.slides.length,
             });
-            throw new Error("CODEX_OUTLINE_PLAN_MISMATCH");
+            throw new Error("OUTLINE_PLAN_MISMATCH");
           }
           if (!alignment.verified)
             // 沒有錨點可驗＝「這一輪的配對沒有被驗證過」，不是「配對正確」。模型連續不回
@@ -2808,7 +2779,7 @@ export async function createApp(
         if (!result) {
           // 按建構不可達：每一輪不是 break（沒超標）、就是設下 shortestOverflow（超標）、
           // 就是在 schema parse 或頁數檢查丟錯往上傳。留著只為讓型別收斂，不必為它寫測試。
-          if (!shortestOverflow) throw new Error("CODEX_OUTLINE_NO_RESULT");
+          if (!shortestOverflow) throw new Error("OUTLINE_NO_RESULT");
           if (shortestOverflow.longest > contentAcceptCeiling) {
             // 超標不再是失敗原因，但總得有個底：讀不了的長度落地等於把問題丟給使用者。
             logWarn("outline_content_overflow_rejected", {
@@ -2822,7 +2793,7 @@ export async function createApp(
               acceptCeiling: contentAcceptCeiling,
               density: before.styleSnapshot.density,
             });
-            throw new Error("CODEX_OUTLINE_CONTENT_UNREADABLE");
+            throw new Error("OUTLINE_CONTENT_UNREADABLE");
           }
           logWarn("outline_content_overflow_accepted", {
             projectId,
@@ -3090,7 +3061,6 @@ export async function createApp(
   app.post("/api/projects/:projectId/slides/:slideId/outline", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
     const slideId = idSchema.parse(request.params.slideId);
-    z.object({ textEngine: textEngineSchema }).parse(request.body ?? {});
     const before = await repository.loadProject(projectId);
     if (!before) throw new Error("Project not found");
     const structuredText = resolveStructuredText(before);
@@ -3157,7 +3127,7 @@ export async function createApp(
       };
     } else {
       if (structuredText.availability.status !== "available")
-        throw new Error("CODEX_OUTLINE_DISABLED");
+        throw new Error("OUTLINE_TEXT_MODEL_DISABLED");
       const contentHardLimit = outlineContentCharBudget(before.styleSnapshot.density).hard;
       // 重試用盡後仍願意採用的長度；倍率的唯一真相在 core，不在這裡寫死。
       const contentAcceptCeiling = outlineContentAcceptCeiling(before.styleSnapshot.density);
@@ -3187,7 +3157,7 @@ export async function createApp(
           { ...regenerateUsageFields, attempt },
           () =>
             structuredText.runStructured({
-              timeoutMs: runtime.system.codexTimeoutMs,
+              timeoutMs: runtime.system.modelTimeoutMs,
               outputSchema: aiRegeneratedSlideJsonSchema,
               prompt: [
                 "You are revising exactly one existing presentation slide outline. Preserve its page purpose and role in the deck.",
@@ -3270,7 +3240,7 @@ export async function createApp(
       if (!revised) {
         // 按建構不可達：每一輪不是 break（沒超標）、就是設下 shortestOverflow（超標）、
         // 就是在 schema parse 丟錯往上傳。留著只為讓型別收斂，不必為它寫測試。
-        if (!shortestOverflow) throw new Error("CODEX_OUTLINE_NO_RESULT");
+        if (!shortestOverflow) throw new Error("OUTLINE_NO_RESULT");
         if (shortestOverflow.measuredUnits > contentAcceptCeiling) {
           // 超標不再是失敗原因，但總得有個底：讀不了的長度落地等於把問題丟給使用者。
           logWarn("outline_content_overflow_rejected", {
@@ -3282,7 +3252,7 @@ export async function createApp(
             acceptCeiling: contentAcceptCeiling,
             density: before.styleSnapshot.density,
           });
-          throw new Error("CODEX_OUTLINE_CONTENT_UNREADABLE");
+          throw new Error("OUTLINE_CONTENT_UNREADABLE");
         }
         logWarn("outline_content_overflow_accepted", {
           projectId,
@@ -3510,7 +3480,7 @@ export async function createApp(
     const slideId = idSchema.parse(request.params.slideId);
     const { providerId, instruction, maskDataUrl, acceptUnknownReadiness } = z
       .object({
-        providerId: z.string().default("codex-image-spike"),
+        providerId: z.string().default("mock-image"),
         instruction: z.string().trim().min(1).max(2_000),
         maskDataUrl: z.string().max(7_000_000).optional(),
         acceptUnknownReadiness: z.boolean().default(false),
@@ -3793,9 +3763,9 @@ export async function createApp(
       const ocrBoxCount = boxes.length;
       if (styleRefiner.availability.status !== "available") {
         styleRefinementReason = "TEXT_MODEL_UNAVAILABLE";
-        // provider 的 `reason` 是環境／設定層級的說明（CLI 沒裝、缺 API key、要開哪個環境
-        // 變數），不含憑證也不含頁面內容，所以既進得了 log 也回得了前端——本機最常見的
-        // 「需設定 SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1」那一句正是使用者的下一步。
+        // provider 的 `reason` 是環境／設定層級的說明（缺 base URL、缺 API key、要設哪個
+        // 環境變數），不含憑證也不含頁面內容，所以既進得了 log 也回得了前端——最常見的
+        // 「需設定 SLIDE_MAKER_OPENAI_BASE_URL、…」那一句正是使用者的下一步。
         styleRefinementDetail = styleRefiner.availability.reason;
         // 其餘只記 id、代碼與數字：框裡的字與 prompt 一字不進 log。
         logWarn("ocr_style_refine_skipped", {
@@ -3817,7 +3787,7 @@ export async function createApp(
           const styleRefinement = ocrStyleRefinementSchema.parse(
             await recordStructuredUsage(projectId, refineUsageFields, () =>
               styleRefiner.runStructured({
-                timeoutMs: runtime.system.codexTimeoutMs,
+                timeoutMs: runtime.system.modelTimeoutMs,
                 outputSchema: ocrStyleRefinementJsonSchema,
                 imagePaths: [normalizedInputPath],
                 prompt: [
@@ -4389,11 +4359,10 @@ export async function createApp(
 
   app.post("/api/projects/:projectId/web-search", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
-    const { query, limit, textEngine } = z
+    const { query, limit } = z
       .object({
         query: z.string().trim().min(2).max(500),
         limit: z.number().int().min(1).max(20).default(8),
-        textEngine: textEngineSchema,
       })
       .parse(request.body);
     const project = await repository.loadProject(projectId);
@@ -4829,7 +4798,7 @@ export async function createApp(
     }
     if (
       error instanceof Error &&
-      /^(SOURCE_|PROJECT_BUNDLE_|EXPORT_|SLIDE_VERSION_MISSING|STYLE_REFERENCE_|STYLE_COVER_|PDF_|CODEX_OUTLINE_|CODEX_STRUCTURED_|CODEX_STYLE_ANALYSIS_)/.test(
+      /^(SOURCE_|PROJECT_BUNDLE_|EXPORT_|SLIDE_VERSION_MISSING|STYLE_REFERENCE_|STYLE_COVER_|PDF_|OUTLINE_|TEXT_MODEL_|STYLE_ANALYSIS_)/.test(
         error.message,
       )
     ) {

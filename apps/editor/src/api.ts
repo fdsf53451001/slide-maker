@@ -178,7 +178,7 @@ type ApiFailure = {
 // 一併攤平成訊息，使用者才知道是哪個欄位不合法（例如 purpose 超過上限）。
 // provider／模型庫／PDF 匯入／風格分析的失敗則是 `{ error: code, message }`，
 // `message` 就是寫給使用者的那一句；有它就只顯示它，不要在前面掛一串錯誤碼——
-// 裸的 `CODEX_STYLE_ANALYSIS_DISABLED`、`PDF_ASPECT_UNSUPPORTED` 對使用者沒有意義，
+// 裸的 `STYLE_ANALYSIS_DISABLED`、`PDF_ASPECT_UNSUPPORTED` 對使用者沒有意義，
 // 而 PDF 匯入對話框正是新使用者看到的第一個畫面。沒有 `message` 才退回代碼。
 //
 // 收 `Response` 而不是收一個 `fallback: string`，是為了保證**回傳值永不為空字串**。

@@ -19,14 +19,10 @@ process.on("unhandledRejection", (reason) => {
 const port = Number.parseInt(process.env.PORT ?? "4173", 10);
 const host = process.env.HOST ?? "127.0.0.1";
 const dataRoot = process.env.SLIDE_MAKER_DATA_ROOT;
-const codexSoftSandboxEnabled = process.env.SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX === "1";
 
 const app = dataRoot ? await createApp(dataRoot) : await createApp();
 const server = app.listen(port, host, () => {
-  for (const message of formatStartupStatus({
-    baseUrl: `http://${host}:${port}`,
-    codexSoftSandboxEnabled,
-  }))
+  for (const message of formatStartupStatus({ baseUrl: `http://${host}:${port}` }))
     console.log(message);
   // 不 await：位址探測要打外網，不該讓它決定服務何時開始收請求。
   if (egressLoggingEnabled()) void logEgressAddresses();

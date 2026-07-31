@@ -302,7 +302,7 @@ describe("PDF deck import API", () => {
           const response = await analyse(body.project);
           expect(response.status).toBe(400);
           const failure = (await response.json()) as { error: string; message?: string };
-          expect(failure.error).toBe("CODEX_STYLE_ANALYSIS_DISABLED");
+          expect(failure.error).toBe("STYLE_ANALYSIS_DISABLED");
           // 使用者看得懂的原因，不是裸錯誤碼。
           expect(failure.message).toMatch(/模型/);
         }
@@ -317,7 +317,7 @@ describe("PDF deck import API", () => {
         const response = await analyse(body.project);
         expect(response.status).toBe(400);
         expect(((await response.json()) as { error: string }).error).toBe(
-          "CODEX_STYLE_ANALYSIS_INCOMPLETE",
+          "STYLE_ANALYSIS_INCOMPLETE",
         );
         expect(await styleAssets()).toEqual(before);
       } finally {
@@ -326,24 +326,24 @@ describe("PDF deck import API", () => {
     }, 60_000);
 
     /**
-     * 預設文字引擎（codex）逾時：`provider-codex` 只丟得出裸的碼字串，不是
+     * 文字模型逾時：有些路徑只丟得出裸的碼字串，不是
      * `StyleAnalysisError`，所以訊息只能由 `app.ts` 的錯誤碼表補。少了那一條，
-     * 分析頁上顯示的就是 `CODEX_STRUCTURED_TIMEOUT` 本人。
+     * 分析頁上顯示的就是 `TEXT_MODEL_TIMEOUT` 本人。
      */
     it("explains a codex analysis timeout in words instead of leaking the error code", async () => {
       if (bindUnavailable) return;
       const { body } = await importDeck("1,2", "Timing Out Analysis");
       const timeout = stubTextProvider(async () => {
-        throw new Error("CODEX_STRUCTURED_TIMEOUT");
+        throw new Error("TEXT_MODEL_TIMEOUT");
       });
       try {
         const before = await styleAssets();
         const response = await analyse(body.project);
         expect(response.status).toBe(400);
         const failure = (await response.json()) as { error: string; message?: string };
-        expect(failure.error).toBe("CODEX_STRUCTURED_TIMEOUT");
+        expect(failure.error).toBe("TEXT_MODEL_TIMEOUT");
         expect(failure.message).toBeDefined();
-        expect(failure.message).not.toContain("CODEX_STRUCTURED_TIMEOUT");
+        expect(failure.message).not.toContain("TEXT_MODEL_TIMEOUT");
         // 逾時是可重試的：訊息要講得出「重試」與「少挑幾頁」這兩條路。
         expect(failure.message).toMatch(/重試/);
         expect(failure.message).toMatch(/少挑幾頁/);

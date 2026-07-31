@@ -146,7 +146,7 @@ export default async function run({ client }) {
   assert(!library.connections.some((c) => c.id === conn.id), "連線刪除");
 
   // ── 系統設定 PATCH ────────────────────────────────────────────────────────
-  library = (await client.patch("/api/model-library/system", { json: { codexMaxConcurrency: 2 } }))
+  library = (await client.patch("/api/model-library/system", { json: { modelTimeoutMs: 90000 } }))
     .body;
-  assertEq(library.system.codexMaxConcurrency, 2, "系統 codexMaxConcurrency PATCH");
+  assertEq(library.system.modelTimeoutMs, 90000, "系統 modelTimeoutMs PATCH");
 }

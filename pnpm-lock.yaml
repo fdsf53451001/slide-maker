@@ -69,9 +69,6 @@ importers:
       '@slide-maker/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@slide-maker/provider-codex':
-        specifier: workspace:*
-        version: link:../../packages/provider-codex
       '@slide-maker/provider-gemini':
         specifier: workspace:*
         version: link:../../packages/provider-gemini
@@ -122,15 +119,6 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/provider-codex:
-    dependencies:
-      '@resvg/resvg-js':
-        specifier: ^2.6.2
-        version: 2.6.2
-      '@slide-maker/core':
-        specifier: workspace:*
-        version: link:../core
-
   packages/provider-gemini:
     dependencies:
       '@slide-maker/core':
@@ -154,9 +142,6 @@ importers:
       '@slide-maker/core':
         specifier: workspace:*
         version: link:../core
-      '@slide-maker/provider-codex':
-        specifier: workspace:*
-        version: link:../provider-codex
 
 packages:
 

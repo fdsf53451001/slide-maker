@@ -6,7 +6,7 @@ import {
   type ModelEntry,
   type ModelLibrary,
 } from "@slide-maker/core";
-import type { AiEngine, CodexReasoningEffort, OcrModelTier, OpenAiImageApi } from "./config.js";
+import type { OcrModelTier, OpenAiImageApi } from "./config.js";
 
 /**
  * 首次開機的 seed 素材：把目前 env 值解析結果轉成一份模型庫。
@@ -14,12 +14,6 @@ import type { AiEngine, CodexReasoningEffort, OcrModelTier, OpenAiImageApi } fro
  */
 export interface SeedConfig {
   now: string;
-  textEngine: AiEngine;
-  webSearchEngine: AiEngine;
-  codex: {
-    model?: string;
-    reasoningEffort?: CodexReasoningEffort;
-  };
   openai?: {
     baseUrl: string;
     apiKey: string;
@@ -30,8 +24,7 @@ export interface SeedConfig {
     imageApi: OpenAiImageApi;
   };
   system: {
-    codexTimeoutMs: number;
-    codexMaxConcurrency: number;
+    modelTimeoutMs: number;
     ocrModelTier: OcrModelTier;
     ocrDetSideLen: number;
   };
@@ -64,7 +57,7 @@ export function buildSeedLibrary(config: SeedConfig): ModelLibrary {
   const connections: ModelConnection[] = [];
   const models: ModelEntry[] = [];
 
-  // 影像：mock 保底 + 本地 inpaint + codex（entry id 沿用既有 provider id）。
+  // 影像：mock 保底 + 本地 inpaint（entry id 沿用既有 provider id）。
   models.push({
     id: "mock-image",
     name: "Mock 影像（確定性佔位）",
@@ -73,58 +66,40 @@ export function buildSeedLibrary(config: SeedConfig): ModelLibrary {
     model: "mock",
   });
   models.push({ ...LOCAL_INPAINT_ENTRY });
-  models.push({
-    id: "codex-image-spike",
-    name: "Codex 影像",
-    capability: "image",
-    providerKind: "codex",
-    model: config.codex.model ?? "",
-    ...(config.codex.reasoningEffort ? { reasoningEffort: config.codex.reasoningEffort } : {}),
-  });
 
-  // 文字／搜尋：codex 一律有。
-  models.push({
-    id: "codex-text",
-    name: "Codex 文字",
-    capability: "text",
-    providerKind: "codex",
-    model: config.codex.model ?? "",
-    ...(config.codex.reasoningEffort ? { reasoningEffort: config.codex.reasoningEffort } : {}),
-  });
-  models.push({
-    id: "codex-search",
-    name: "Codex 搜尋",
-    capability: "search",
-    providerKind: "codex",
-    model: config.codex.model ?? "",
-  });
-
-  // openai 家：僅在 env 有 base URL + key 時 seed（避免半殘 entry）。
-  if (config.openai && config.openai.baseUrl && config.openai.apiKey) {
+  // openai 家：**一律** seed 連線與三個 entry，env 有值就填進去、沒有就留空待填。
+  //
+  // 舊版只在 env 齊全時才 seed（理由是「避免半殘 entry」），那在還有 codex 這個「本機一定
+  // 有」的後備時說得通。codex 移除後那個前提沒了：什麼都不 seed 的話，第一次開機的使用者
+  // 看到的是一個幾乎空的模型庫，得自己推敲出「建連線 → 建模型 → 建組合 → 指定給專案」
+  // 四層結構才能生第一份大綱；而組合缺 ref 時端點回的是 `COMBINATION_TEXT_MISSING`，
+  // 對新手等於沒說。留一份待填骨架則相反：欄位就在眼前，執行期的 availability 仍是
+  // unavailable，訊息會直接指出要設哪個值。
+  {
     connections.push({
       id: OPENAI_CONNECTION_ID,
       name: "OpenAI 相容端點",
-      baseUrl: config.openai.baseUrl,
-      apiKey: config.openai.apiKey,
+      baseUrl: config.openai?.baseUrl ?? "",
+      apiKey: config.openai?.apiKey ?? "",
       // env 遷移路徑只涵蓋 OpenAI 相容端點；Gemini 從未有對應 env，由使用者在 UI 新增。
       protocol: "openai",
-      timeoutMs: config.openai.timeoutMs,
+      ...(config.openai?.timeoutMs ? { timeoutMs: config.openai.timeoutMs } : {}),
     });
     models.push({
       id: "openai-image",
       name: "OpenAI 影像",
       capability: "image",
       providerKind: "openai",
-      model: config.openai.imageModel ?? "",
+      model: config.openai?.imageModel ?? "",
       connectionRef: OPENAI_CONNECTION_ID,
-      imageApi: config.openai.imageApi,
+      ...(config.openai?.imageApi ? { imageApi: config.openai.imageApi } : {}),
     });
     models.push({
       id: "openai-text",
       name: "OpenAI 文字",
       capability: "text",
       providerKind: "openai",
-      model: config.openai.textModel ?? "",
+      model: config.openai?.textModel ?? "",
       connectionRef: OPENAI_CONNECTION_ID,
     });
     models.push({
@@ -132,21 +107,18 @@ export function buildSeedLibrary(config: SeedConfig): ModelLibrary {
       name: "OpenAI 搜尋",
       capability: "search",
       providerKind: "openai",
-      model: config.openai.searchModel ?? config.openai.textModel ?? "",
+      model: config.openai?.searchModel ?? config.openai?.textModel ?? "",
       connectionRef: OPENAI_CONNECTION_ID,
     });
   }
 
-  // 預設組合：影像=mock 保底；文字／搜尋沿用 env 引擎選擇（行為保留）。
-  // openai 未設定時退回 codex，避免 seed 出懸空 ref。
-  const openaiSeeded = Boolean(config.openai?.baseUrl && config.openai.apiKey);
+  // 預設組合：影像用不消耗配額的 mock 保底，文字／搜尋指向上面那組待填 entry。
   const defaultCombination: ModelCombination = {
     id: "default",
     name: "預設組合",
     imageModelRef: "mock-image",
-    textModelRef: config.textEngine === "openai" && openaiSeeded ? "openai-text" : "codex-text",
-    searchModelRef:
-      config.webSearchEngine === "openai" && openaiSeeded ? "openai-search" : "codex-search",
+    textModelRef: "openai-text",
+    searchModelRef: "openai-search",
   };
 
   return modelLibrarySchema.parse({
@@ -156,8 +128,7 @@ export function buildSeedLibrary(config: SeedConfig): ModelLibrary {
     combinations: [defaultCombination],
     defaultCombinationId: defaultCombination.id,
     system: {
-      codexTimeoutMs: config.system.codexTimeoutMs,
-      codexMaxConcurrency: config.system.codexMaxConcurrency,
+      modelTimeoutMs: config.system.modelTimeoutMs,
       ocrModelTier: config.system.ocrModelTier,
       ocrDetSideLen: config.system.ocrDetSideLen,
     },

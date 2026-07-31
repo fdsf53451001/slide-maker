@@ -258,7 +258,7 @@ describe("QA generation job observability", () => {
     expect(invocations).toBe(1);
   });
 
-  it("exposes a positive timeout remainder while waiting, then fails once with CODEX_TIMEOUT", async () => {
+  it("exposes a positive timeout remainder while waiting, then fails once as PROVIDER_TIMEOUT", async () => {
     let invocations = 0;
     const provider: ImageProvider = {
       id: "qa-timeout",
@@ -271,7 +271,7 @@ describe("QA generation job observability", () => {
         await context?.onProgress?.({ phase: "launching" });
         await context?.onProgress?.({ phase: "waiting_for_codex", eventCode: "turn_started" });
         await new Promise((resolve) => setTimeout(resolve, 120));
-        throw new SafeProviderError("CODEX_TIMEOUT", "RAW-STDERR-CANARY");
+        throw new SafeProviderError("PROVIDER_CALL_TIMEOUT", "RAW-STDERR-CANARY");
       },
     };
     const { repository, project, runner } = await fixture(provider);
@@ -294,22 +294,21 @@ describe("QA generation job observability", () => {
     expect(failed).toMatchObject({
       status: "failed",
       phase: "failed",
-      errorCode: "CODEX_TIMEOUT",
+      errorCode: "PROVIDER_TIMEOUT",
       attempt: 1,
     });
-    expect(failed.error).toContain("SLIDE_MAKER_CODEX_TIMEOUT_MS");
+    expect(failed.error).toContain("逾時");
     expect(JSON.stringify(failed)).not.toContain("RAW-STDERR-CANARY");
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(invocations).toBe(1);
   });
 
+  // 這條測的是「provider 丟具名碼時，落地的是安全訊息而不是原始輸出」這個通用契約，
+  // 碼本身只是範例——取自 jobs.ts 的 PROVIDER_ERROR_MESSAGES。
   it.each([
-    [
-      "CODEX_TIMEOUT",
-      "Codex 圖片生成逾時。請確認額度與登入狀態，必要時調高 SLIDE_MAKER_CODEX_TIMEOUT_MS 後重啟 server。",
-    ],
-    ["CODEX_USAGE_LIMIT", "Codex 額度已達上限，請在額度恢復後重試。"],
-    ["CODEX_AUTH_REQUIRED", "Codex 尚未登入或授權已失效，請先在 CLI 完成登入。"],
+    ["OPENAI_AUTH_REQUIRED", "端點回報認證失敗，請確認模型庫裡這條連線的 API key。"],
+    ["GEMINI_AUTH_REQUIRED", "端點回報認證失敗，請確認模型庫裡這條連線的 API key。"],
+    ["OPENAI_USAGE_LIMIT", "模型額度已達上限，請在額度恢復後重試。"],
   ])("persists a safe, actionable %s classification", async (code, safeMessage) => {
     const provider: ImageProvider = {
       id: `qa-${code.toLowerCase()}`,

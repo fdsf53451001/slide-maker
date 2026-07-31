@@ -386,7 +386,7 @@ describe("大綱超標收斂的補充情境", () => {
     const { status, body } = await generateDeck(project.id);
 
     expect(status).toBe(400);
-    expect(body.error).toBe("CODEX_OUTLINE_COUNT_INVALID");
+    expect(body.error).toBe("OUTLINE_COUNT_INVALID");
     // 階段 2 不重試頁數：多跑兩輪只是白燒配額。
     expect(prompts).toHaveLength(2);
     const logs = errorLines

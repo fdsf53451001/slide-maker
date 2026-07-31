@@ -13,7 +13,6 @@
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@slide-maker/core": "workspace:*",
-    "@slide-maker/provider-codex": "workspace:*",
     "@slide-maker/provider-gemini": "workspace:*",
     "@slide-maker/provider-mock": "workspace:*",
     "@slide-maker/provider-openai": "workspace:*",

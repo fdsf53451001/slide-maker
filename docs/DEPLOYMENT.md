@@ -128,8 +128,6 @@ service account.
 
 ## Known gaps
 
-- Codex providers are present in the code but the Codex CLI is not installed in the image, so
-  they report unavailable.
 - Google's OpenAI-compatibility endpoint cannot return images from Gemini image models, has no
   `/images/edits`, and rejects `google_search` grounding. Style references, mask edits and web
   search need a different transport — use the native Gemini provider instead.

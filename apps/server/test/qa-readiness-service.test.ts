@@ -20,7 +20,6 @@ const capabilities = {
 function provider(
   input: {
     status?: ProviderPreflightStatus;
-    artifactContract?: "supported" | "unsupported";
     preflight?: () => Promise<{ status: ProviderPreflightStatus }>;
     availability?: ImageProvider["availability"];
   } = {},
@@ -29,7 +28,6 @@ function provider(
     id: "qa-readiness",
     name: "QA readiness",
     availability: input.availability ?? { status: "available" },
-    artifactContract: input.artifactContract ?? "supported",
     capabilities,
     preflight: input.preflight ?? (async () => ({ status: input.status ?? "ready" })),
     async generate(): Promise<GeneratedImage> {
@@ -72,13 +70,9 @@ describe("QA provider readiness service", () => {
 
   it.each([
     ["ready", false, false],
-    ["ready_experimental", false, false],
     ["disabled", true, false],
-    ["cli_missing", true, false],
-    ["incompatible", true, false],
     ["auth_required", true, false],
     ["timeout", true, false],
-    ["artifact_unsupported", true, false],
     ["unknown", false, true],
   ] as const)(
     "returns a safe allowlisted %s contract",
@@ -106,14 +100,17 @@ describe("QA provider readiness service", () => {
     },
   );
 
-  it("fail-closes a ready CLI when its image artifact contract is unsupported", async () => {
+  // provider 回一個這裡認不得的狀態（例如舊版 provider 留下的 cli_missing）不可以直接
+  // 冒出去：那會讓 blocking 判斷落在未定義行為上。一律收斂成 unknown，由呼叫端決定要不要
+  // 明確承擔風險。
+  it("collapses unrecognised preflight statuses to unknown", async () => {
     const result = await service(
-      provider({ status: "ready", artifactContract: "unsupported" }),
+      provider({ preflight: async () => ({ status: "cli_missing" as ProviderPreflightStatus }) }),
     ).check("qa-readiness");
     expect(result).toMatchObject({
-      status: "artifact_unsupported",
-      blocking: true,
-      requiresAcknowledgement: false,
+      status: "unknown",
+      blocking: false,
+      requiresAcknowledgement: true,
     });
   });
 

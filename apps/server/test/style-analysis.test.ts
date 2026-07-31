@@ -63,12 +63,12 @@ describe("style analysis output", () => {
   });
 
   it("explains the failure in a sentence the user can act on", () => {
-    // 分析頁會直接顯示這個訊息；只丟 `CODEX_STYLE_ANALYSIS_INCOMPLETE` 等於沒說明。
-    const failure = new StyleAnalysisError("CODEX_STYLE_ANALYSIS_INCOMPLETE");
-    expect(failure.code).toBe("CODEX_STYLE_ANALYSIS_INCOMPLETE");
+    // 分析頁會直接顯示這個訊息；只丟 `STYLE_ANALYSIS_INCOMPLETE` 等於沒說明。
+    const failure = new StyleAnalysisError("STYLE_ANALYSIS_INCOMPLETE");
+    expect(failure.code).toBe("STYLE_ANALYSIS_INCOMPLETE");
     expect(failure.message).toContain("設計系統");
     expect(failure.message).not.toMatch(/CODEX_/);
-    expect(new StyleAnalysisError("CODEX_STYLE_ANALYSIS_DISABLED").message).toContain("模型組合");
+    expect(new StyleAnalysisError("STYLE_ANALYSIS_DISABLED").message).toContain("模型組合");
   });
 
   it("asks for one system behind the pages rather than a per-image description", () => {

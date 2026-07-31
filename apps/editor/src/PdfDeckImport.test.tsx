@@ -209,7 +209,7 @@ describe("PDF deck analysis stage", () => {
       [`/api/projects/${project.id}/style-analysis`]: () =>
         Response.json(
           {
-            error: "CODEX_STYLE_ANALYSIS_DISABLED",
+            error: "STYLE_ANALYSIS_DISABLED",
             message: "目前選定的模型組合沒有可用的文字模型，無法分析風格。",
           },
           { status: 400 },
@@ -218,7 +218,7 @@ describe("PDF deck analysis stage", () => {
     render(<Editor />);
     fireEvent.click(await screen.findByText("Imported Deck"));
     fireEvent.click(await screen.findByRole("button", { name: "分析這份簡報的風格" }));
-    // 顯示的是使用者看得懂的原因，不是裸的 `CODEX_STYLE_ANALYSIS_DISABLED`。
+    // 顯示的是使用者看得懂的原因，不是裸的 `STYLE_ANALYSIS_DISABLED`。
     expect(await screen.findByText(/目前選定的模型組合沒有可用的文字模型/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "重試" })).toBeTruthy();
     expect(calls.some((call) => call.path.endsWith("/style-reference"))).toBe(false);

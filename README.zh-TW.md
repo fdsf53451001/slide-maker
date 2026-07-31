@@ -56,7 +56,7 @@ English documentation: [README.md](README.md)
 **Provider**
 
 - 預設是確定性的 **mock** 影像 provider：不連網、不吃配額，開發與測試都靠它。
-- 正式 transport 涵蓋 OpenAI 相容端點（CLIProxyAPI、OpenAI、LiteLLM、OpenRouter⋯）、Gemini 原生（AI Studio），以及實驗性的 Codex app-server。
+- 正式 transport 涵蓋 OpenAI 相容端點（CLIProxyAPI、OpenAI、LiteLLM、OpenRouter⋯）與 Gemini 原生（AI Studio）。
 - UI 內建**模型庫**：連線（base URL + key + protocol）、依能力分開的模型 entry（影像／文字／搜尋），以及可綁定到專案的具名組合。API key 在讀取時會被遮蔽。
 - 成本最低的實用組合是本機 CLIProxyAPI 搭 `gpt-image-2`，見[串接模型 provider](#串接模型-provider)。
 
@@ -98,12 +98,11 @@ pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預
 
 有四種方式可以把影像模型接上 Slide Maker，差別在成本、設定成本與能拿到哪些能力。
 
-| #   | 串接方式                                                                            | 設定                               | 適用                                |
-| --- | ----------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------- |
-| 1   | **Mock provider**（預設）                                                           | 不用設定                           | 開發、測試、離線試流程              |
-| 2   | **OpenAI 相容 gateway**——CLIProxyAPI（CLI2Proxy）、LiteLLM、OpenRouter、OpenAI 官方 | 起一個 gateway，UI 建一條連線      | **實際做簡報的推薦做法**            |
-| 3   | **Gemini AI Studio 原生**                                                           | 一把 AI Studio API key             | 不經 gateway 直接用 Gemini 影像模型 |
-| 4   | **Codex CLI app-server**                                                            | 本機已登入的 Codex CLI，並開啟旗標 | 實驗性質，請先看安全性說明          |
+| #   | 串接方式                                                                            | 設定                          | 適用                                |
+| --- | ----------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------- |
+| 1   | **Mock provider**（預設）                                                           | 不用設定                      | 開發、測試、離線試流程              |
+| 2   | **OpenAI 相容 gateway**——CLIProxyAPI（CLI2Proxy）、LiteLLM、OpenRouter、OpenAI 官方 | 起一個 gateway，UI 建一條連線 | **實際做簡報的推薦做法**            |
+| 3   | **Gemini AI Studio 原生**                                                           | 一把 AI Studio API key        | 不經 gateway 直接用 Gemini 影像模型 |
 
 ### 推薦：CLIProxyAPI + `gpt-image-2`
 
@@ -117,7 +116,7 @@ pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預
 
 - **連線**——protocol 選 `openai`，base URL 填 `http://localhost:8317/v1`（你的 gateway 實際監聽位址），API key 依設定填入。
 - **影像模型**——kind `openai`、model `gpt-image-2`、image API 選 `images`。
-- **文字／搜尋模型**——指到同一條連線，或維持走 Codex。
+- **文字／搜尋模型**——指到同一條連線（首次開機的種子已經留好待填的 entry）。
 - **組合**——把三者綁成一組並設為預設。
 
 若偏好用設定檔起手，等效的首次啟動環境變數：
@@ -147,7 +146,7 @@ UI 是主要途徑。在編輯器打開**模型庫**，依序建立：
 
 ### 影像 transport
 
-所有 transport 共用 `@slide-maker/core` 裡那份 provider 中立的 **Codex-baseline 影像合約**：畫布、完整投影片欄位、風格快照、資訊密度、編輯／遮罩語意、有序的參考圖角色、直接素材保真度、不可信資料邊界，以及「模型不得自己畫頁面裝飾」的明文禁令。adapter 只補上自己的呼叫方式與回應格式規則；每一張被接受的點陣圖都會正規化成畫布尺寸的 PNG。
+所有 transport 共用 `@slide-maker/core` 裡那份 provider 中立的**影像合約**：畫布、完整投影片欄位、風格快照、資訊密度、編輯／遮罩語意、有序的參考圖角色、直接素材保真度、不可信資料邊界，以及「模型不得自己畫頁面裝飾」的明文禁令。adapter 只補上自己的呼叫方式與回應格式規則；每一張被接受的點陣圖都會正規化成畫布尺寸的 PNG。
 
 | Transport                 | 模組                                | 端點                                   | 範例模型                                  | 參考圖                           |
 | ------------------------- | ----------------------------------- | -------------------------------------- | ----------------------------------------- | -------------------------------- |
@@ -155,7 +154,6 @@ UI 是主要途徑。在編輯器打開**模型庫**，依序建立：
 | OpenAI 相容 Chat          | `provider-openai/src/image-chat.ts` | `/chat/completions`                    | `gpt-5.6-terra`、`gemini-3.1-flash-image` | 支援，有序，最多 8 張            |
 | OpenRouter images         | `provider-openai`                   | `/images`                              | 依供應商而定                              | 支援，走 `input_references`      |
 | Gemini 原生               | `@slide-maker/provider-gemini`      | `:generateContent`                     | `gemini-2.5-flash-image`                  | 支援，有序 inline data           |
-| Codex app-server          | `@slide-maker/provider-codex`       | Codex CLI app-server                   | 所設定的 Codex 影像模型                   | 支援                             |
 | Mock                      | `@slide-maker/provider-mock`        | 無                                     | —                                         | —                                |
 
 實測得到的注意事項：
@@ -178,12 +176,7 @@ UI 是主要途徑。在編輯器打開**模型庫**，依序建立：
 | `SLIDE_MAKER_DATA_ROOT`                                                                                                | 專案資料目錄（預設 `.data/`）                                                          |
 | `SLIDE_MAKER_SEARCH_INDEX_PATH`                                                                                        | 把 SQLite FTS 索引移出資料目錄                                                         |
 | `SLIDE_MAKER_TRUSTED_HOSTS`                                                                                            | 額外放行的主機名；未設時只服務 localhost                                               |
-| `SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX`                                                                                | 設 `1` 才啟用 Codex 影像 provider（見下方說明）                                        |
-| `SLIDE_MAKER_CODEX_TIMEOUT_MS`                                                                                         | 30 000 – 1 800 000，預設 600 000                                                       |
-| `SLIDE_MAKER_CODEX_MAX_CONCURRENCY`                                                                                    | 1 – 4，預設 3                                                                          |
-| `SLIDE_MAKER_CODEX_MODEL`、`SLIDE_MAKER_CODEX_REASONING_EFFORT`                                                        | 覆寫 Codex CLI 自身的模型與推理強度設定                                                |
 | `SLIDE_MAKER_OPENAI_BASE_URL`、`_API_KEY`、`_IMAGE_MODEL`、`_TEXT_MODEL`、`_SEARCH_MODEL`、`_IMAGE_API`、`_TIMEOUT_MS` | OpenAI 相容端點的首次啟動 seed                                                         |
-| `SLIDE_MAKER_TEXT_ENGINE`、`SLIDE_MAKER_WEB_SEARCH_ENGINE`                                                             | `codex`（預設）或 `openai`                                                             |
 | `SLIDE_MAKER_OCR_MODEL_TIER`、`_OCR_DET_SIDE_LEN`、`_OCR_PYTHON`、`_OCR_SCRIPT`                                        | PaddleOCR 層級（`tiny`／`small`／`medium`，預設 `medium`）、偵測邊長、直譯器與腳本路徑 |
 | `SLIDE_MAKER_INPAINT_PYTHON`、`_INPAINT_SCRIPT`                                                                        | 本機 OpenCV inpaint 的路徑                                                             |
 | `SLIDE_MAKER_WEB_RENDER_ENGINE`                                                                                        | `jina`（預設）或 `none`——貼上網址時補抓動態網頁正文的第三方 render 服務                |
@@ -209,8 +202,6 @@ pnpm format           # Prettier
 - 開發模式依賴 `NODE_OPTIONS=--conditions=development` 搭配 tsconfig 的 `customConditions: ["development"]`，讓 workspace 套件解析到 `src/*.ts`。少了這個條件會安靜地解析到過時的 `dist/`。
 - TypeScript 開啟 `noUncheckedIndexedAccess` 與 `exactOptionalPropertyTypes`：索引存取的結果會是 `undefined`，optional property 不可顯式指定 `undefined`。
 
-`smoke:*` 腳本（`smoke:image:codex`、`smoke:deck:grok`⋯）是**live** 端對端測試，會消耗真實模型配額，因此刻意排除在 `pnpm check` 之外。
-
 ## 專案結構
 
 pnpm monorepo，內部相依用 `workspace:*`。
@@ -223,7 +214,6 @@ pnpm monorepo，內部相依用 `workspace:*`。
 | `packages/provider-mock`   | 確定性、零成本的影像 provider（預設）                                 |
 | `packages/provider-openai` | OpenAI 相容的影像／結構化文字／網路搜尋 adapter                       |
 | `packages/provider-gemini` | Gemini AI Studio 原生 `:generateContent` adapter                      |
-| `packages/provider-codex`  | 實驗性 Codex app-server，pin 協定 `0.144.4`                           |
 
 凡是三端必須取得共識的東西——影像語意、頁碼幾何、網址安全——`packages/core` 就是唯一真相，不要在 adapter 裡另寫一份。
 
@@ -252,9 +242,8 @@ export default function App() {
 
 - 除非你在 `SLIDE_MAKER_TRUSTED_HOSTS` 明確列出主機名，API 會拒絕任何非 localhost 的請求（`LOCAL_HOST_REQUIRED`）。它本身沒有任何身分驗證——要對外開放請在前面擺一層 proxy。
 - API key 以明文存在資料目錄的 `models.json`。
-- **Codex 影像 provider 預設關閉**（需 `SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1`），而且提供的是**軟隔離，不是安全邊界**。它 pin 實驗性的 Codex `0.144.4` app-server 協定，並要求唯讀檔案系統政策、不需核可、關閉該回合的網路存取與 ephemeral thread，拒絕檔案變更、MCP 呼叫、非 `exec` 的動態工具、網路搜尋、非預期的回應政策與無法對應的事件。即便如此，app-server 仍會載入真正的 `CODEX_HOME` 設定與工具面，所以惡意的參考素材或 prompt 依然可能造成 prompt injection、本機資料外洩、既設工具的副作用或配額消耗。請只在沒有機密、沒有特權工具的拋棄式帳號或容器裡執行。
 - **貼上網址可能把該網址與其內容送到第三方。** 原生 fetch 只拿到空殼（靠 JavaScript 渲染的頁面）時，「貼上網址」通道會退到 `SLIDE_MAKER_WEB_RENDER_ENGINE` 指定的 render 服務，**預設為 `jina`（開啟）**：目標網址會送到 `r.jina.ai`，由對方去抓該頁並回傳正文。請求一律帶 `x-no-cache`（免費模式預設回快取快照），串接前也會剝掉網址裡的帳密。設成 `none` 可完全停用這條 fallback，需要 JavaScript 的頁面會改以 `WEB_SOURCE_RENDER_UNAVAILABLE` 失敗。網路搜尋的擷取路徑一律不使用 render 服務——那些網址是模型給的，使用者沒有逐筆同意把它們送出去。
-- 模型輸出一律視為不可信：Codex 的結果必須是 job 工作目錄內、非符號連結的一般 PNG 檔，並檢查大小、尺寸、chunk 邊界、必要的 IHDR/IDAT/IEND chunk 與 CRC，之後重新渲染成精確的 1920×1080 並再驗一次。素材文件與網頁在 prompt 中都被標記為不可信資料。
+- 模型輸出一律視為不可信：每一張被接受的點陣圖都會檢查大小、尺寸、chunk 邊界、必要的 IHDR/IDAT/IEND chunk 與 CRC，之後重新渲染成精確的 1920×1080 並再驗一次。素材文件與網頁在 prompt 中都被標記為不可信資料。
 
 ## 授權
 

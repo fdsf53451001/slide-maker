@@ -8,13 +8,9 @@ export interface ImageProviderSource {
 
 const READINESS_MESSAGES: Record<ProviderPreflightStatus, string> = {
   ready: "Provider 已通過非生成 readiness 檢查。",
-  ready_experimental: "Codex CLI 與登入狀態可用；圖片產物使用版本鎖定的實驗性 app-server 契約。",
   disabled: "Provider 尚未啟用。",
-  cli_missing: "找不到 Codex CLI，請先完成本機安裝。",
-  incompatible: "Codex CLI 缺少此 provider 需要的固定參數，請升級 CLI。",
-  auth_required: "Codex CLI 尚未登入，請先執行 codex login。",
-  timeout: "Codex readiness 檢查逾時，請確認 CLI 能正常啟動後再試。",
-  artifact_unsupported: "目前 Codex CLI 沒有可安全依賴的圖片產物契約；已阻止生成以避免消耗額度。",
+  auth_required: "端點回報認證失敗，請確認模型庫裡這條連線的 API key。",
+  timeout: "Readiness 檢查逾時，請確認端點可連線後再試。",
   unknown: "無法確認 provider readiness；若仍要繼續，必須明確接受風險。",
 };
 const READINESS_STATUSES = new Set<ProviderPreflightStatus>(
@@ -87,10 +83,7 @@ export class ProviderReadinessService {
     acceptUnknownReadiness: boolean,
   ): Promise<ProviderReadiness> {
     const readiness = await this.check(providerId);
-    if (
-      ["ready", "ready_experimental"].includes(readiness.status) ||
-      (readiness.status === "unknown" && acceptUnknownReadiness)
-    )
+    if (readiness.status === "ready" || (readiness.status === "unknown" && acceptUnknownReadiness))
       return readiness;
     throw new ProviderReadinessGateError(readiness);
   }
@@ -101,11 +94,9 @@ export class ProviderReadinessService {
     if (provider.availability.status === "unavailable") {
       status = "disabled";
     } else if (!provider.preflight) {
-      status = provider.artifactContract === "unsupported" ? "artifact_unsupported" : "ready";
+      status = "ready";
     } else {
       status = await this.#boundedStatus(provider);
-      if (status === "ready" && provider.artifactContract === "unsupported")
-        status = "artifact_unsupported";
     }
     return this.#value(providerId, status);
   }
@@ -115,7 +106,7 @@ export class ProviderReadinessService {
     return {
       providerId,
       status,
-      blocking: !["ready", "ready_experimental", "unknown"].includes(status),
+      blocking: !["ready", "unknown"].includes(status),
       requiresAcknowledgement: status === "unknown",
       message: READINESS_MESSAGES[status],
       checkedAt: new Date(checkedAtMs).toISOString(),

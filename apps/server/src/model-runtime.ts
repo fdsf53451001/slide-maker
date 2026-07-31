@@ -9,11 +9,6 @@ import {
 } from "@slide-maker/core";
 import { MockImageProvider } from "@slide-maker/provider-mock";
 import {
-  CodexImageSpikeProvider,
-  CodexStructuredTextProvider,
-  CodexWebSearchProvider,
-} from "@slide-maker/provider-codex";
-import {
   OpenAiCompatibleImageProvider,
   OpenAiStructuredTextProvider,
   OpenAiWebSearchProvider,
@@ -29,23 +24,17 @@ import { LocalInpaintProvider } from "./local-inpaint.js";
 
 /** 執行環境常數（與品質無關），由 env 提供，rebuild 不變。 */
 export interface ModelRuntimeBase {
-  codexSandbox: boolean;
-  codexImageJobsRoot: string;
-  codexStructuredJobsRoot: string;
-  codexWebSearchJobsRoot: string;
   /** 本機 provider（local-inpaint）解析 `.venv-ocr` 與 `scripts/` 的 workspace 根目錄。 */
   localToolsRoot: string;
   defaults: {
-    codexTimeoutMs: number;
-    codexMaxConcurrency: number;
+    modelTimeoutMs: number;
     ocrModelTier: OcrModelTier;
     ocrDetSideLen: number;
   };
 }
 
 export interface ResolvedSystemSettings {
-  codexTimeoutMs: number;
-  codexMaxConcurrency: number;
+  modelTimeoutMs: number;
   ocrModelTier: OcrModelTier;
   ocrDetSideLen: number;
 }
@@ -125,7 +114,7 @@ export class ModelRuntime {
     const text = new ProviderRegistry<StructuredTextProvider>();
     const search = new ProviderRegistry<WebSearchProvider>();
     const system = this.#resolveSystem(library);
-    this.#buildInto(library, system, image, text, search);
+    this.#buildInto(library, image, text, search);
     this.#library = library;
     this.#system = system;
     this.#image = image;
@@ -201,20 +190,18 @@ export class ModelRuntime {
   #resolveSystem(library: ModelLibrary): ResolvedSystemSettings {
     const system = library.system;
     return {
-      codexTimeoutMs: system.codexTimeoutMs ?? this.#base.defaults.codexTimeoutMs,
-      codexMaxConcurrency: system.codexMaxConcurrency ?? this.#base.defaults.codexMaxConcurrency,
+      modelTimeoutMs: system.modelTimeoutMs ?? this.#base.defaults.modelTimeoutMs,
       ocrModelTier: system.ocrModelTier ?? this.#base.defaults.ocrModelTier,
       ocrDetSideLen: system.ocrDetSideLen ?? this.#base.defaults.ocrDetSideLen,
     };
   }
 
   #build(library: ModelLibrary): void {
-    this.#buildInto(library, this.#system, this.#image, this.#text, this.#search);
+    this.#buildInto(library, this.#image, this.#text, this.#search);
   }
 
   #buildInto(
     library: ModelLibrary,
-    system: ResolvedSystemSettings,
     image: ProviderRegistry<ImageProvider>,
     text: ProviderRegistry<StructuredTextProvider>,
     search: ProviderRegistry<WebSearchProvider>,
@@ -228,40 +215,26 @@ export class ModelRuntime {
       return {
         baseUrl: connection?.baseUrl ?? "",
         apiKey: connection?.apiKey ?? "",
-        timeoutMs: connection?.timeoutMs ?? this.#base.defaults.codexTimeoutMs,
+        timeoutMs: connection?.timeoutMs ?? this.#base.defaults.modelTimeoutMs,
       };
     };
     for (const entry of library.models) {
       if (entry.capability === "image") {
-        image.register(this.#buildImage(entry, system, connectionConfig(entry)));
+        image.register(this.#buildImage(entry, connectionConfig(entry)));
       } else if (entry.capability === "text") {
-        const provider = this.#buildText(entry, system, connectionConfig(entry));
+        const provider = this.#buildText(entry, connectionConfig(entry));
         if (provider) text.register(provider);
       } else {
-        const provider = this.#buildSearch(entry, system, connectionConfig(entry));
+        const provider = this.#buildSearch(entry, connectionConfig(entry));
         if (provider) search.register(provider);
       }
     }
   }
 
-  #buildImage(
-    entry: ModelEntry,
-    system: ResolvedSystemSettings,
-    config: OpenAiClientConfig,
-  ): ImageProvider {
+  #buildImage(entry: ModelEntry, config: OpenAiClientConfig): ImageProvider {
     if (entry.providerKind === "mock") return new MockImageProvider(entry.id);
     if (entry.providerKind === "local")
       return new LocalInpaintProvider({ id: entry.id, root: this.#base.localToolsRoot });
-    if (entry.providerKind === "codex")
-      return new CodexImageSpikeProvider({
-        id: entry.id,
-        allowExecution: this.#base.codexSandbox,
-        workspaceRoot: this.#base.codexImageJobsRoot,
-        timeoutMs: system.codexTimeoutMs,
-        maxConcurrency: system.codexMaxConcurrency,
-        ...(entry.model ? { model: entry.model } : {}),
-        ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
-      });
     if (entry.providerKind === "gemini")
       return new GeminiImageProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiCompatibleImageProvider({
@@ -272,37 +245,15 @@ export class ModelRuntime {
     });
   }
 
-  #buildText(
-    entry: ModelEntry,
-    system: ResolvedSystemSettings,
-    config: OpenAiClientConfig,
-  ): StructuredTextProvider | undefined {
+  #buildText(entry: ModelEntry, config: OpenAiClientConfig): StructuredTextProvider | undefined {
     if (entry.providerKind === "mock" || entry.providerKind === "local") return undefined;
-    if (entry.providerKind === "codex")
-      return new CodexStructuredTextProvider({
-        id: entry.id,
-        allowExecution: this.#base.codexSandbox,
-        workspaceRoot: this.#base.codexStructuredJobsRoot,
-        timeoutMs: system.codexTimeoutMs,
-      });
     if (entry.providerKind === "gemini")
       return new GeminiStructuredTextProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiStructuredTextProvider({ id: entry.id, config, model: entry.model });
   }
 
-  #buildSearch(
-    entry: ModelEntry,
-    system: ResolvedSystemSettings,
-    config: OpenAiClientConfig,
-  ): WebSearchProvider | undefined {
+  #buildSearch(entry: ModelEntry, config: OpenAiClientConfig): WebSearchProvider | undefined {
     if (entry.providerKind === "mock" || entry.providerKind === "local") return undefined;
-    if (entry.providerKind === "codex")
-      return new CodexWebSearchProvider({
-        id: entry.id,
-        allowExecution: this.#base.codexSandbox,
-        workspaceRoot: this.#base.codexWebSearchJobsRoot,
-        timeoutMs: system.codexTimeoutMs,
-      });
     if (entry.providerKind === "gemini")
       return new GeminiWebSearchProvider({ id: entry.id, config, model: entry.model });
     return new OpenAiWebSearchProvider({ id: entry.id, config, model: entry.model });
