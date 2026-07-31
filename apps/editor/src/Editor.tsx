@@ -51,7 +51,6 @@ import { PdfDeckImportModal } from "./PdfDeckImportModal.js";
 import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
 import { LibraryHeader } from "./LibraryHeader.js";
-import { useSystemSettings, type SystemSettings } from "./systemSettings.js";
 import { useOneTimeNotice } from "./oneTimeNotice.js";
 import {
   countSourceSelection,
@@ -435,22 +434,137 @@ function sameBoxes(a: readonly EditableTextBox[], b: readonly EditableTextBox[])
   });
 }
 
+/**
+ * 送出 brief 草稿時要拿掉 `webSearchMode`。
+ *
+ * 草稿都是「開專案／開精靈當下」的快照，而 `webSearchMode` 由自動搜尋勾選框獨佔
+ * （見 `useWebSearchToggle`）。PATCH /brief 是 merge（`app.ts`：`{ ...current.brief, ...patch }`），
+ * 少送這個欄位就是「不要動它」；整份送回去則會把之後（可能是另一個人）切換過的搜尋設定倒回舊值。
+ */
+function briefPatchWithoutWebSearch(brief: PresentationBrief): Partial<PresentationBrief> {
+  const patch: Partial<PresentationBrief> = { ...brief };
+  delete patch.webSearchMode;
+  return patch;
+}
+
+/**
+ * 自動搜尋網路資源的共用讀寫（精靈 STEP 3 與系統設定對話框兩個入口）。
+ *
+ * 這個值是**專案設定**：伺服器只讀 `project.brief.webSearchMode`。舊版把它存在瀏覽器
+ * localStorage 再由一條 effect 同步回專案，多人共用同一台伺服器（server 端沒有 session／user
+ * 概念）時，兩人開同一個專案就會互相覆寫，而且畫面顯示的是本機值、實際生效的是專案值。
+ * 這份 JSDoc 是這個設計理由的唯一真相，其餘地方只指過來。
+ *
+ * 三件與寫入有關的事：
+ * - 只送 `webSearchMode` 一個欄位，理由同 `briefPatchWithoutWebSearch`。
+ * - 刻意不做樂觀更新：勾選狀態直接讀專案值，讀寫同源就不會漂移，失敗時也自動停在伺服器的
+ *   實際值。代價是慢連線下按了到翻面之間有空窗，由 `busy` 的進行中樣式補上。
+ * - 防連點靠 `busyRef` 而不是把 checkbox `disabled`：disabled 元素不可聚焦，在自己的 change
+ *   handler 裡打開會把鍵盤焦點丟回 `<body>`，等於每切換一次就被踢回 Tab 序列開頭。
+ */
+function useWebSearchToggle(
+  project: PresentationProject | undefined,
+  onProject: (value: PresentationProject) => void,
+  onError: (message: string) => void,
+): { enabled: boolean; busy: boolean; toggle: (next: boolean) => void } {
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  // PATCH 在飛的時候使用者可能已經關掉對話框、切到別的專案、或退回專案列表；回應落地時若還
+  // 無條件 `onProject`，就會把人拉回舊專案。舊的同步 effect 是靠 cleanup 的 `active` 旗標擋
+  // 這件事，改成 hook 之後沒有 cleanup 可掛，改用「現在還是不是同一個專案」來判斷。
+  const activeProjectId = useRef(project?.id);
+  useEffect(() => {
+    activeProjectId.current = project?.id;
+  }, [project?.id]);
+  // 伺服器端只有 "disabled" 會跳過搜尋，enum 的 "live" 與 "cached" 行為完全相同。舊專案存的
+  // 是 "cached"，判成關閉會無聲改掉既有專案的行為，所以視同開啟——也刻意不順手改寫成 "live"。
+  const enabled = project ? project.brief.webSearchMode !== "disabled" : true;
+  const toggle = (next: boolean): void => {
+    if (!project || busyRef.current) return;
+    const projectId = project.id;
+    busyRef.current = true;
+    setBusy(true);
+    void api
+      .updateBrief(projectId, { webSearchMode: next ? "live" : "disabled" })
+      .then((updated) => {
+        if (activeProjectId.current === projectId) onProject(updated);
+      })
+      .catch((reason: unknown) => {
+        if (activeProjectId.current !== projectId) return;
+        onError(reason instanceof Error ? reason.message : "更新自動搜尋設定失敗");
+      })
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
+  };
+  return { enabled, busy, toggle };
+}
+
+/**
+ * 自動搜尋勾選框；兩個入口共用同一份文案與寫入邏輯。
+ *
+ * `busy`（自己的 PATCH 在飛）與 `disabled`（整個步驟不能動，例如精靈正在產大綱）是兩回事：
+ * 前者只上 `aria-busy` 與進行中樣式、保住焦點與可聚焦性，後者才真的 `disabled`。
+ * 進行中的指示器走 CSS `::after`，不放任何文字節點進 `<label>`——label 的文字內容就是這個
+ * checkbox 的可及名稱，多一個字就會讓「自動搜尋網路資源」這個名字對不上。
+ */
+function WebSearchToggle({
+  className,
+  enabled,
+  busy,
+  disabled,
+  onToggle,
+}: {
+  className: string;
+  enabled: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <label className={className}>
+      <input
+        type="checkbox"
+        checked={enabled}
+        disabled={disabled}
+        aria-busy={busy || undefined}
+        onChange={(event) => onToggle(event.target.checked)}
+      />
+      自動搜尋網路資源
+    </label>
+  );
+}
+
+/**
+ * 系統設定對話框。
+ *
+ * `error` 是**模態內**的失敗訊息，不能改用全域的 `ErrorToast`：`.toast` 是 `z-index: 20`、
+ * `.system-settings-backdrop` 是 `z-index: 940`，而兩者同為 `.shell` 的子節點（`.shell` 沒有
+ * transform／filter／contain，不建立 stacking context），所以 toast 會被鋪在遮罩底下。使用者
+ * 只會看到勾選框閃一下就彈回原狀、毫無說明；jsdom 沒有版面，測試還照樣是綠的。模態內的失敗
+ * 就在模態內講，不要改成把全域 toast 的 z-index 拉高（那等於讓錯誤浮在遮罩上、蓋住對話框）。
+ */
 export function SystemSettingsDialog({
-  webSearchMode,
-  onWebSearchMode,
+  webSearchEnabled,
+  webSearchBusy,
+  onWebSearchToggle,
   combinations,
   combinationId,
   onCombinationId,
   onOpenModelLibrary,
   onClose,
+  error,
 }: {
-  webSearchMode: SystemSettings["webSearchMode"];
-  onWebSearchMode: (value: SystemSettings["webSearchMode"]) => void;
+  webSearchEnabled: boolean;
+  webSearchBusy: boolean;
+  onWebSearchToggle: (next: boolean) => void;
   combinations: CombinationSummary[];
   combinationId: string | undefined;
   onCombinationId: (value: string) => void;
   onOpenModelLibrary: () => void;
   onClose: () => void;
+  error: string | undefined;
 }) {
   const defaultCombination = combinations.find((item) => item.isDefault);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -498,19 +612,20 @@ export function SystemSettingsDialog({
             ))}
           </select>
         </label>
-        <label>
-          Web Search
-          <select
-            value={webSearchMode}
-            onChange={(event) =>
-              onWebSearchMode(event.target.value as SystemSettings["webSearchMode"])
-            }
-          >
-            <option value="live">Live（即時搜尋）</option>
-            <option value="cached">Cached</option>
-            <option value="disabled">Disabled</option>
-          </select>
-        </label>
+        {/* 舊版是 live／cached／disabled 三選一，但 live 與 cached 在伺服器端行為完全相同
+            （只有 disabled 會跳過搜尋），留著三個選項只是讓人以為有差別。 */}
+        <WebSearchToggle
+          className="system-settings-toggle"
+          enabled={webSearchEnabled}
+          busy={webSearchBusy}
+          disabled={false}
+          onToggle={onWebSearchToggle}
+        />
+        {error && (
+          <p className="system-settings-error" role="alert">
+            {error}
+          </p>
+        )}
         <button type="button" className="system-settings-link" onClick={onOpenModelLibrary}>
           管理模型組合（模型庫）→
         </button>
@@ -1916,7 +2031,7 @@ function SetupFlow({
   const [materialsSubstep, setMaterialsSubstep] = useState(false);
   const providerRef = useRef<HTMLElement>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const systemSettings = useSystemSettings();
+  const webSearch = useWebSearchToggle(project, onProject, onError);
   const [combinations, setCombinations] = useState<
     { id: string; name: string; isDefault: boolean; imageModelRef?: string }[]
   >([]);
@@ -1978,9 +2093,17 @@ function SetupFlow({
       )
       .catch(() => setCombinations([]));
   }, []);
+  /*
+    重新播種 brief 草稿的依賴是「伺服器上這份 brief 的**草稿欄位**指紋」，而不是 `project.brief`
+    的物件識別：那個物件每次 `onProject` 都是新的，於是 STEP 3 的任何動作（上傳素材、切換自動
+    搜尋）都會把使用者在 STEP 2 打到一半、還沒按「下一步」的輸入洗掉。`webSearchMode` 不列入
+    指紋——它由勾選框獨佔、不屬於這份草稿（送出時也會被 `briefPatchWithoutWebSearch` 剝掉），
+    列進去等於讓「切換自動搜尋」重新獲得清空草稿的能力。
+  */
+  const serverBriefKey = JSON.stringify({ ...project.brief, webSearchMode: null });
   useEffect(() => {
     setBrief(structuredClone(project.brief));
-  }, [project.id, project.brief]);
+  }, [project.id, serverBriefKey]);
   useEffect(() => {
     setOutline(structuredClone(project.slides));
   }, [project.id, project.workflowStage]);
@@ -1988,22 +2111,16 @@ function SetupFlow({
     if (project.workflowStage === "requirements") setShowRequirements(true);
   }, [project.id, project.workflowStage]);
 
-  // "cached" 也算開啟（server 端只有 "disabled" 會跳過搜尋），勾選狀態下不把 cached 改寫成 live。
-  const webSearchEnabled = systemSettings.webSearchMode !== "disabled";
   // 關閉自動搜尋時網路來源不存在，沒有素材就沒有任何可 grounding 的內容，故擋住產生大綱。
   // 解析失敗（status: "failed"）的素材抽不出任何內容，不算數；圖片等其他狀態都算。
   const materialsRequired =
-    !webSearchEnabled && !project.sources.some((source) => source.status !== "failed");
+    !webSearch.enabled && !project.sources.some((source) => source.status !== "failed");
 
   const produceOutline = async () => {
     setBusy(true);
     onError("");
     try {
-      // App 層把系統設定同步回 brief 是非同步的，本地 brief clone 可能還帶著舊值；這裡明確覆寫。
-      const withBrief = await api.updateBrief(project.id, {
-        ...brief,
-        webSearchMode: systemSettings.webSearchMode,
-      });
+      const withBrief = await api.updateBrief(project.id, briefPatchWithoutWebSearch(brief));
       onProject(withBrief);
       // 文字模型由專案組合決定（server 端解析），前端不再傳 textEngine。
       const withOutline = await api.regenerateOutline(project.id, true);
@@ -2183,17 +2300,13 @@ function SetupFlow({
                 <span>←</span> 上一步
               </button>
               <div className="setup-materials-submit">
-                <label className="setup-websearch-toggle">
-                  <input
-                    type="checkbox"
-                    checked={webSearchEnabled}
-                    disabled={busy}
-                    onChange={(event) =>
-                      systemSettings.setWebSearchMode(event.target.checked ? "live" : "disabled")
-                    }
-                  />
-                  自動搜尋網路資源
-                </label>
+                <WebSearchToggle
+                  className="setup-websearch-toggle"
+                  enabled={webSearch.enabled}
+                  busy={webSearch.busy}
+                  disabled={busy}
+                  onToggle={webSearch.toggle}
+                />
                 <button
                   className="primary setup-submit"
                   disabled={busy || !brief.topic.trim() || materialsRequired}
@@ -2286,13 +2399,8 @@ function SetupFlow({
                 brief.desiredSlideCount > 100
               }
               onClick={() => {
-                // 同上：本地 brief clone 可能帶著舊的 webSearchMode，而 App 層的同步 effect
-                // 只在 webSearchMode 變動時重跑——一旦舊值被寫回 server 就沒有機制修正。
                 void api
-                  .updateBrief(project.id, {
-                    ...brief,
-                    webSearchMode: systemSettings.webSearchMode,
-                  })
+                  .updateBrief(project.id, briefPatchWithoutWebSearch(brief))
                   .then(onProject)
                   .catch(() => undefined);
                 setMaterialsSubstep(true);
@@ -2657,6 +2765,7 @@ export function Editor() {
   const [route, setRoute] = useState(() => window.location.pathname);
   const [projects, setProjects] = useState<PresentationProject[]>([]);
   const [project, setProject] = useState<PresentationProject>();
+  const projectId = project?.id;
   const [selectedId, setSelectedId] = useState<string>();
   const [draft, setDraft] = useState<SlideSpec>();
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -2667,9 +2776,9 @@ export function Editor() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [briefDraft, setBriefDraft] = useState<PresentationBrief>();
   const [draggedId, setDraggedId] = useState<string>();
-  const system = useSystemSettings();
-  const webSearchMode = system.webSearchMode;
   const [showSystemSettings, setShowSystemSettings] = useState(false);
+  // 系統設定對話框自己的錯誤訊息；為什麼不共用全域 toast 見 `SystemSettingsDialog` 的 JSDoc。
+  const [systemSettingsError, setSystemSettingsError] = useState<string>();
   // 影像 provider 由專案綁定的組合（或模型庫預設組合）解析，不再用 localStorage 的 providerId。
   const [combinations, setCombinations] = useState<
     { id: string; name: string; isDefault: boolean; imageModelRef?: string }[]
@@ -3156,26 +3265,36 @@ export function Editor() {
   useEffect(() => {
     if (project) setBriefDraft(structuredClone(project.brief));
   }, [project?.id]);
-  // 系統層級 Web Search Mode：當系統值與目前專案 brief 不一致時，自動同步到伺服器端 brief，
-  // 讓大綱生成 / 重建大綱等流程都使用全域偏好，而不需要在每個專案面板重新選擇。
+  // 自動搜尋開關（設計理由見 `useWebSearchToggle` 的 JSDoc）。失敗訊息收在對話框自己身上，
+  // 不走全域 toast——理由見 `SystemSettingsDialog` 的 JSDoc。
+  const webSearch = useWebSearchToggle(project, setProject, setSystemSettingsError);
+  /*
+    開啟設定對話框時重抓一次專案。
+
+    自動搜尋是專案設定，別人改過之後這裡要看得到最新值；而下面那條專案輪詢在「沒有 job 也沒有
+    來源在分析」時整條 early-return 不跑，所以閒置中的分頁會一直停在開專案當下的值——那正好戳
+    中這次改動的立論（畫面上的值與實際生效的值不一致）。開啟當下抓一次是便宜且對症的修法；
+    刻意**不**為它加常駐輪詢，那會讓每個開著的分頁固定打專案 JSON，代價遠大於收益。
+  */
   useEffect(() => {
-    if (!project || project.brief.webSearchMode === webSearchMode) return;
+    if (!showSystemSettings || !projectId) return;
+    // 上一次開著時留下的失敗訊息不該跟著這一次開啟一起出現。
+    setSystemSettingsError(undefined);
     let active = true;
     void api
-      .updateBrief(project.id, { webSearchMode })
-      .then((updated) => {
-        if (active) {
-          setProject(updated);
-          setBriefDraft(structuredClone(updated.brief));
-        }
+      .getProject(projectId)
+      .then((latest) => {
+        if (active) setProject(latest);
       })
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : "同步 Web Search 設定失敗"),
+      .catch(() =>
+        active
+          ? setSystemSettingsError("讀不到最新設定，以下顯示的可能不是伺服器上的現值。")
+          : undefined,
       );
     return () => {
       active = false;
     };
-  }, [project?.id, webSearchMode]);
+  }, [showSystemSettings, projectId]);
   /**
    * 專案輪詢：生成中的 job，以及背景分析中的來源（上傳圖片後伺服器會跑內容描述）。
    *
@@ -4622,20 +4741,24 @@ export function Editor() {
       </header>
       {showSystemSettings && (
         <SystemSettingsDialog
-          webSearchMode={system.webSearchMode}
-          onWebSearchMode={system.setWebSearchMode}
+          webSearchEnabled={webSearch.enabled}
+          webSearchBusy={webSearch.busy}
+          onWebSearchToggle={webSearch.toggle}
           combinations={combinations}
           combinationId={project.combinationId}
           onCombinationId={(combinationId) => {
+            setSystemSettingsError(undefined);
             void api
               .setProjectCombination(project.id, combinationId)
               .then((updated) => setProject(updated))
+              // 與勾選框同一個坑：全域 toast 被遮罩蓋住，這裡的失敗只能在模態內講。
               .catch((reason: unknown) =>
-                setError(reason instanceof Error ? reason.message : "設定組合失敗"),
+                setSystemSettingsError(reason instanceof Error ? reason.message : "設定組合失敗"),
               );
           }}
           onOpenModelLibrary={() => navigate("/models")}
           onClose={() => setShowSystemSettings(false)}
+          error={systemSettingsError}
         />
       )}
       <aside className="rail">
@@ -5979,9 +6102,9 @@ export function Editor() {
                 disabled={briefBusy !== undefined}
                 onClick={() => {
                   setBriefBusy("save");
-                  void run(() => api.updateBrief(project.id, briefDraft)).finally(() =>
-                    setBriefBusy(undefined),
-                  );
+                  void run(() =>
+                    api.updateBrief(project.id, briefPatchWithoutWebSearch(briefDraft)),
+                  ).finally(() => setBriefBusy(undefined));
                 }}
               >
                 {briefBusy === "save" ? "正在儲存…" : "儲存 Brief"}

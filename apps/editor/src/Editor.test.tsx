@@ -3117,21 +3117,19 @@ describe("簡報級頁碼", () => {
 });
 
 describe("STEP 3 自動搜尋網路資源", () => {
-  // systemSettings 是模組層單例，測試間必須重置，否則關掉的自動搜尋會漏到下一個測試。
-  afterEach(() => resetSystemSettings());
-
-  const STORAGE_KEY = "slide-maker:system-settings";
-  const storedWebSearchMode = (): unknown =>
-    (JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as { webSearchMode?: unknown })
-      .webSearchMode;
-
-  const materialsStep = async (sources: PresentationProject["sources"]) => {
+  const materialsStep = async (
+    sources: PresentationProject["sources"],
+    webSearchMode?: "live" | "cached" | "disabled",
+  ) => {
     const now = new Date().toISOString();
     let project: PresentationProject = {
-      ...createProject({ topic: "自動搜尋開關", brief: { desiredSlideCount: 3 } }),
+      ...createProject({
+        topic: "自動搜尋開關",
+        brief: { desiredSlideCount: 3, ...(webSearchMode ? { webSearchMode } : {}) },
+      }),
       sources,
     };
-    // 每一筆 PATCH /brief 的 body（App 層同步與 produceOutline 都會經過這裡）。
+    // 每一筆 PATCH /brief 的 body（勾選框與 produceOutline 都會經過這裡）。
     const briefPatches: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -3200,13 +3198,20 @@ describe("STEP 3 自動搜尋網路資源", () => {
     return {
       fetchMock,
       briefPatches,
+      /** 伺服器（mock）上那份專案的現值；勾選框的效果要看它，不是看瀏覽器本機狀態。 */
+      serverBrief: () => project.brief,
       toggle: screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement,
       submit: screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement,
     };
   };
 
-  // produceOutline 送出整份 brief（含 topic）；STEP 2 的「下一步」也會送整份 brief，
-  // App 層同步則只帶 webSearchMode，所以要從按下產生大綱之後的那批 patch 裡找。
+  const toggleNow = () => screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement;
+  /** 勾選狀態直接讀專案 brief，翻不翻要等 PATCH 回來（in-flight 期間 checkbox 是 disabled）。 */
+  const waitForToggle = (checked: boolean) =>
+    waitFor(() => expect(toggleNow().checked).toBe(checked));
+
+  // produceOutline 送出整份 brief 草稿（含 topic）；STEP 2 的「下一步」也會送整份 brief，
+  // 勾選框則只帶 webSearchMode，所以要從按下產生大綱之後的那批 patch 裡找。
   const outlinePatch = (
     briefPatches: Record<string, unknown>[],
     fromIndex: number,
@@ -3279,28 +3284,56 @@ describe("STEP 3 自動搜尋網路資源", () => {
     ];
   };
 
+  /*
+    這一組是**核心迴歸**：舊版在 Editor() 有一條 effect，開／切專案時把瀏覽器 localStorage 的
+    webSearchMode 同步回專案 brief。多人共用同一台伺服器（server 沒有 session／user 概念）時，
+    後開專案的那個人會用自己的本機偏好蓋掉先開那個剛設好的值——而且是**開專案就發生**，不需要
+    任何操作。測試環境裡那個本機偏好一律是 DEFAULTS 的 "cached"（`resetSystemSettings()` 寫的
+    就是它），所以「專案是 disabled／live」正是舊版會發出覆寫 PATCH 的兩種情形；用 "cached"
+    當被害者測不出來（值相同，舊版那條 effect 也會 early-return）。
+
+    刻意不去 localStorage 塞值來加強：systemSettings 的 `cache` 在模組載入時就讀好，測試從
+    外面寫 localStorage 影響不到它（`onStorage` 只在有訂閱者時才掛上，而 `useSystemSettings`
+    現在一個生產呼叫點都沒有）。用專案值當變因才是真的會紅的寫法。
+  */
+  it.each(["disabled", "live"] as const)(
+    "開啟 brief 為 %s 的專案時，一筆 PATCH /brief 都不發（本機偏好不得覆寫專案）",
+    async (mode) => {
+      const { briefPatches, serverBrief, toggle } = await materialsStep([], mode);
+
+      // 進到 STEP 3 為止只有 STEP 2「下一步」那一筆草稿 PATCH，且它不含 webSearchMode。
+      expect(briefPatches.every((patch) => !("webSearchMode" in patch))).toBe(true);
+      // 同步是非同步的：多等一輪 microtask/timer，確認沒有遲來的覆寫。
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(briefPatches.every((patch) => !("webSearchMode" in patch))).toBe(true);
+      expect(serverBrief().webSearchMode).toBe(mode);
+      // 畫面顯示的必須就是專案的實際值，不是本機的 "cached"。
+      expect(toggle.checked).toBe(mode !== "disabled");
+    },
+  );
+
   it("關掉自動搜尋且沒有素材時擋住產生大綱，並說明原因", async () => {
-    const { toggle, submit, fetchMock } = await materialsStep([]);
+    const { toggle, submit, fetchMock, serverBrief } = await materialsStep([]);
     expect(toggle.checked).toBe(true);
     expect(submit.disabled).toBe(false);
 
     fireEvent.click(toggle);
 
-    expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(false);
+    await waitForToggle(false);
     expect(
       (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(screen.getByText(/已關閉自動搜尋，請先上傳或貼上至少一項素材/)).toBeTruthy();
-    // 勾選狀態寫進 systemSettings，App 層才會把它同步回專案 brief。
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/api\/projects\/[^/]+\/brief$/),
-        expect.objectContaining({
-          method: "PATCH",
-          body: JSON.stringify({ webSearchMode: "disabled" }),
-        }),
-      ),
+    // 勾選框直接寫專案 brief，而且只送這一個欄位：PATCH /brief 是 merge，整份送回去會把
+    // 伺服器上別人剛改的欄位一起蓋成自己開專案當下的快照。
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/projects\/[^/]+\/brief$/),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ webSearchMode: "disabled" }),
+      }),
     );
+    expect(serverBrief().webSearchMode).toBe("disabled");
   });
 
   it("開著自動搜尋時，沒有素材也能產生大綱", async () => {
@@ -3313,6 +3346,7 @@ describe("STEP 3 自動搜尋網路資源", () => {
   it("關掉自動搜尋但已有素材時仍可產生大綱", async () => {
     const { toggle } = await materialsStep(textSource());
     fireEvent.click(toggle);
+    await waitForToggle(false);
     expect(
       (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -3322,6 +3356,7 @@ describe("STEP 3 自動搜尋網路資源", () => {
   it("關掉自動搜尋時，圖片素材也算數，可產生大綱", async () => {
     const { toggle } = await materialsStep(imageSource());
     fireEvent.click(toggle);
+    await waitForToggle(false);
     expect(
       (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -3331,6 +3366,7 @@ describe("STEP 3 自動搜尋網路資源", () => {
   it("關掉自動搜尋時，只有解析失敗的素材仍視為沒有素材", async () => {
     const { toggle } = await materialsStep(failedSource());
     fireEvent.click(toggle);
+    await waitForToggle(false);
     expect(
       (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -3340,6 +3376,7 @@ describe("STEP 3 自動搜尋網路資源", () => {
   it("素材從 0 變 1 時解鎖產生大綱按鈕", async () => {
     const { toggle } = await materialsStep([]);
     fireEvent.click(toggle);
+    await waitForToggle(false);
     expect(
       (screen.getByRole("button", { name: /產生 3 頁大綱/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -3358,46 +3395,67 @@ describe("STEP 3 自動搜尋網路資源", () => {
     expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(false);
   });
 
-  it("localStorage 既有的 cached 視為已勾選，產生大綱時原樣送出而不改寫成 live", async () => {
-    // resetSystemSettings() 會把 DEFAULTS（webSearchMode: "cached"）寫進 localStorage，
-    // 等同「使用者上次留下 cached」的既有狀態。
-    resetSystemSettings();
-    expect(storedWebSearchMode()).toBe("cached");
-
-    const { toggle, submit, briefPatches } = await materialsStep([]);
+  it("專案存的 cached 視為已勾選，產生大綱時不會被改寫成 live", async () => {
+    // 舊專案的 brief 存的就是 "cached"（core 的預設值）。伺服器只有 "disabled" 會跳過搜尋，
+    // 判成關閉或順手改寫成 "live" 都是無聲改掉既有專案的設定。
+    const { toggle, submit, briefPatches, serverBrief } = await materialsStep([], "cached");
     expect(toggle.checked).toBe(true);
 
     const before = briefPatches.length;
     fireEvent.click(submit);
 
-    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("cached"));
-    expect(briefPatches.some((patch) => patch.webSearchMode === "live")).toBe(false);
-    expect(storedWebSearchMode()).toBe("cached");
+    // 大綱那趟送的是 brief 草稿，webSearchMode 由勾選框獨佔、不在裡面。
+    await waitFor(() => expect(outlinePatch(briefPatches, before)).toBeTruthy());
+    expect(outlinePatch(briefPatches, before)).not.toHaveProperty("webSearchMode");
+    expect(briefPatches.some((patch) => "webSearchMode" in patch)).toBe(false);
+    expect(serverBrief().webSearchMode).toBe("cached");
   });
 
-  it("重新勾選自動搜尋會寫回 live，並隨產生大綱一起送出", async () => {
-    const { toggle, briefPatches } = await materialsStep([]);
+  it("重新勾選自動搜尋會寫回專案 brief 的 live", async () => {
+    const { toggle, briefPatches, serverBrief } = await materialsStep([]);
 
     fireEvent.click(toggle);
-    expect(storedWebSearchMode()).toBe("disabled");
-    fireEvent.click(screen.getByLabelText("自動搜尋網路資源"));
-    expect(storedWebSearchMode()).toBe("live");
-    expect((screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement).checked).toBe(true);
+    await waitForToggle(false);
+    fireEvent.click(toggleNow());
+    await waitForToggle(true);
 
+    expect(briefPatches.filter((patch) => "webSearchMode" in patch)).toEqual([
+      { webSearchMode: "disabled" },
+      { webSearchMode: "live" },
+    ]);
+    expect(serverBrief().webSearchMode).toBe("live");
+  });
+
+  it("關閉自動搜尋後產生大綱，大綱那趟不會把 disabled 蓋回去", async () => {
+    const { toggle, briefPatches, serverBrief } = await materialsStep(textSource());
+
+    fireEvent.click(toggle);
+    await waitForToggle(false);
     const before = briefPatches.length;
     fireEvent.click(screen.getByRole("button", { name: /產生 3 頁大綱/ }));
 
-    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("live"));
+    await waitFor(() => expect(outlinePatch(briefPatches, before)).toBeTruthy());
+    expect(briefPatches.slice(before).every((patch) => !("webSearchMode" in patch))).toBe(true);
+    expect(serverBrief().webSearchMode).toBe("disabled");
   });
 
-  it("關閉自動搜尋後產生大綱，PATCH /brief 帶的是 disabled", async () => {
-    const { toggle, briefPatches } = await materialsStep(textSource());
+  it("PATCH 失敗時勾選框回到伺服器的實際值，並顯示錯誤", async () => {
+    const { toggle, fetchMock } = await materialsStep([]);
+    expect(toggle.checked).toBe(true);
+    // 下一次 PATCH /brief 失敗；勾選狀態讀的是專案值，所以應該原地不動。
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(raw, "http://local.test").pathname.endsWith("/brief"))
+        return Response.json({ code: "BOOM", message: "寫入失敗" }, { status: 500 });
+      return original(input, init);
+    });
 
     fireEvent.click(toggle);
-    const before = briefPatches.length;
-    fireEvent.click(screen.getByRole("button", { name: /產生 3 頁大綱/ }));
 
-    await waitFor(() => expect(outlinePatch(briefPatches, before).webSearchMode).toBe("disabled"));
+    expect(await screen.findByText("寫入失敗")).toBeTruthy();
+    expect(toggleNow().checked).toBe(true);
+    expect(toggleNow().disabled).toBe(false);
   });
 
   it("STEP 1 不再有 Web Search 下拉，只留模型組合", async () => {
@@ -3406,6 +3464,97 @@ describe("STEP 3 自動搜尋網路資源", () => {
     expect(within(step1).queryByLabelText("Web Search")).toBeNull();
     expect(within(step1).getAllByRole("combobox")).toHaveLength(1);
     expect(screen.queryByText("Live（即時搜尋）")).toBeNull();
+  });
+});
+
+describe("精靈的 brief 草稿不被伺服器更新洗掉", () => {
+  /*
+    `SetupFlow` 的重新播種 effect 曾以 `project.brief` 的**物件識別**當依賴，而那個物件每次
+    `onProject` 都是新的（伺服器回的是新 JSON），所以 STEP 3 的任何一次專案更新都會把使用者在
+    STEP 2 打到一半、還沒送出的輸入整份洗回伺服器值。
+
+    構造這條路的關鍵是「不按下一步也能進 STEP 3」：`stepClickable()` 在 `outlineExists` 為真時
+    讓進度列每一步都可點，而 `goToStep(3)` 只切 UI 狀態、**不送任何 PATCH**。`createProject`
+    一開始就會依 brief 生出頁面，所以 outline 從第一秒就存在，這條路一直都走得到。
+    改動後依賴改成「草稿欄位的指紋」，內容沒變就不重播種，草稿因此活得下來。
+  */
+  it("用進度列跳到 STEP 3 再上傳素材，STEP 2 改到一半的頁數不會被洗掉", async () => {
+    const now = new Date().toISOString();
+    let project = createProject({ topic: "草稿保留", brief: { desiredSlideCount: 3 } });
+    const briefPatches: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const raw =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(raw, "http://local.test");
+        const path = url.pathname;
+        const method = init?.method ?? "GET";
+        if (path === "/api/projects" && method === "GET") return Response.json([project]);
+        if (path === "/api/providers")
+          return Response.json([
+            {
+              id: "mock-image",
+              name: "Mock",
+              availability: { status: "available" },
+              capabilities: { fullSlideGeneration: true },
+            },
+          ]);
+        if (path === "/api/styles") return Response.json([createDefaultStyle(now)]);
+        if (path === "/api/model-library")
+          return Response.json({ connections: [], models: [], combinations: [] });
+        if (path === "/api/text-providers") return Response.json([]);
+        if (path.endsWith("/brief") && method === "PATCH") {
+          const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          briefPatches.push(patch);
+          project = { ...project, brief: { ...project.brief, ...patch } };
+          return Response.json(project);
+        }
+        if (path.endsWith("/sources") && method === "POST") {
+          const name = url.searchParams.get("name") ?? "素材.md";
+          project = structuredClone(project);
+          project.sources.push({
+            id: "uploaded-1",
+            name,
+            mediaType: "text/markdown",
+            usage: "content",
+            allowModelAccess: true,
+            status: "indexed",
+            assetPath: `assets/sources/uploaded/${name}`,
+            sizeBytes: 12,
+            extractedText: name,
+            chunks: [{ id: "chunk-1", text: name }],
+            metadata: {},
+            createdAt: now,
+            updatedAt: now,
+          });
+          return Response.json(project, { status: 201 });
+        }
+        return Response.json(project);
+      }),
+    );
+
+    render(<Editor />);
+    fireEvent.click(await screen.findByText("草稿保留"));
+    expect(await screen.findByText("STEP 2 · 需求")).toBeTruthy();
+
+    // 改了頁數但**不按「下一步」**——草稿此刻只活在前端。
+    fireEvent.change(screen.getByLabelText("簡報頁數"), { target: { value: "9" } });
+    // 改走進度列進 STEP 3（"3 上傳素材"，不是「下一步：上傳素材」）：這條路不送 PATCH。
+    fireEvent.click(screen.getByRole("button", { name: "3 上傳素材" }));
+    expect(await screen.findByText("STEP 3 · 上傳素材")).toBeTruthy();
+    expect(briefPatches).toEqual([]);
+
+    // 上傳素材會讓伺服器回一份新的專案 JSON —— 舊版就是在這一刻把 9 洗回 3 的。
+    fireEvent.change(screen.getByLabelText("上傳來源檔案"), {
+      target: { files: [new File(["研究"], "研究.md", { type: "text/markdown" })] },
+    });
+    await waitFor(() => expect(screen.getAllByText("研究.md").length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole("button", { name: /頁大綱/ }));
+
+    await waitFor(() => expect(briefPatches.length).toBeGreaterThan(0));
+    expect(briefPatches[0]).toHaveProperty("desiredSlideCount", 9);
   });
 });
 
@@ -3892,7 +4041,7 @@ describe("文字圖層鍵盤快捷鍵", () => {
     await enterProject("對話框擋住畫布");
     fireEvent.pointerDown(boxElements()[0]!);
     fireEvent.click(screen.getByRole("button", { name: "系統設定" }));
-    expect(await screen.findByLabelText("Web Search")).toBeTruthy();
+    expect(await screen.findByLabelText("自動搜尋網路資源")).toBeTruthy();
 
     fireEvent.keyDown(window, { key: "Delete" });
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -4193,19 +4342,18 @@ describe("文字圖層鍵盤快捷鍵", () => {
   });
 });
 
-describe("系統設定對話框", () => {
-  afterEach(() => resetSystemSettings());
-
-  it("仍保留 Web Search 三段模式下拉", async () => {
-    const project = createProject({
-      topic: "系統設定保留搜尋模式",
-      brief: { desiredSlideCount: 1 },
+describe("系統設定對話框的自動搜尋開關", () => {
+  const enterEditing = async (webSearchMode: "live" | "cached" | "disabled") => {
+    let project = createProject({
+      topic: "系統設定自動搜尋",
+      brief: { desiredSlideCount: 1, webSearchMode },
     });
     project.workflowStage = "editing";
     const now = new Date().toISOString();
+    const briefPatches: Record<string, unknown>[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: string | URL | Request) => {
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const raw =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         const path = new URL(raw, "http://local.test").pathname;
@@ -4223,21 +4371,178 @@ describe("系統設定對話框", () => {
         if (path === "/api/model-library")
           return Response.json({ connections: [], models: [], combinations: [] });
         if (path === "/api/text-providers") return Response.json([]);
+        if (path.endsWith("/brief") && (init?.method ?? "GET") === "PATCH") {
+          const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          briefPatches.push(patch);
+          project = { ...project, brief: { ...project.brief, ...patch } };
+          return Response.json(project);
+        }
         return Response.json(project);
       }),
     );
 
     render(<Editor />);
-    fireEvent.click(await screen.findByText("系統設定保留搜尋模式"));
-    fireEvent.click(await screen.findByRole("button", { name: "系統設定" }));
+    fireEvent.click(await screen.findByText("系統設定自動搜尋"));
+    await screen.findByRole("button", { name: "系統設定" });
+    return {
+      briefPatches,
+      serverBrief: () => project.brief,
+      /** 模擬「另一個人在別的瀏覽器改了這個專案」——只動伺服器那一份，不碰前端狀態。 */
+      setServerWebSearchMode: (mode: "live" | "cached" | "disabled") => {
+        project = { ...project, brief: { ...project.brief, webSearchMode: mode } };
+      },
+    };
+  };
 
-    const select = (await screen.findByLabelText("Web Search")) as HTMLSelectElement;
-    expect(select.value).toBe("cached");
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "live",
-      "cached",
-      "disabled",
-    ]);
+  const openSettings = async (webSearchMode: "live" | "cached" | "disabled") => {
+    const state = await enterEditing(webSearchMode);
+    fireEvent.click(screen.getByRole("button", { name: "系統設定" }));
+    return {
+      ...state,
+      toggle: (await screen.findByLabelText("自動搜尋網路資源")) as HTMLInputElement,
+    };
+  };
+
+  const settingsToggle = () => screen.getByLabelText("自動搜尋網路資源") as HTMLInputElement;
+
+  /*
+    核心迴歸，編輯畫面這一側：舊版那條同步 effect 就住在 Editor()，開專案當下就會把本機
+    localStorage 的偏好（測試環境是 DEFAULTS 的 "cached"）PATCH 回專案 brief。所以「專案存
+    的是 disabled 或 live」正是舊版會靜默覆寫的兩種情形——而且完全不需要使用者做任何事。
+    只有 "cached" 那一組測不到（值相同、舊版 early-return），既有的 cached 測試因此**不是**
+    這條迴歸的證據，只是「開對話框不會亂寫」的補強。
+  */
+  it.each(["disabled", "live"] as const)(
+    "開啟 brief 為 %s 的專案時，一筆 PATCH /brief 都不發（本機偏好不得覆寫專案）",
+    async (mode) => {
+      const { briefPatches, serverBrief } = await enterEditing(mode);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(briefPatches).toEqual([]);
+      expect(serverBrief().webSearchMode).toBe(mode);
+
+      // 開了對話框之後看到的也必須是專案值。
+      fireEvent.click(screen.getByRole("button", { name: "系統設定" }));
+      expect((await screen.findByLabelText("自動搜尋網路資源")).matches(":checked")).toBe(
+        mode !== "disabled",
+      );
+      expect(briefPatches).toEqual([]);
+    },
+  );
+
+  /*
+    dev 宣稱的不變量：其他會寫 brief 的動作一律不碰 webSearchMode（`briefPatchWithoutWebSearch`）。
+    這裡走的是最容易破功的那條——`briefDraft` 是**開專案當下**的 clone，切換勾選只更新
+    `project`、不會回填 draft，所以草稿裡一直帶著開專案時的舊 webSearchMode。整份送出就會把
+    剛關掉的搜尋倒回 live，而使用者只是按了「儲存 Brief」。
+  */
+  it("切掉自動搜尋之後按「儲存 Brief」，不會把 webSearchMode 倒回舊值", async () => {
+    const { briefPatches, serverBrief } = await openSettings("live");
+
+    fireEvent.click(settingsToggle());
+    await waitFor(() => expect(settingsToggle().checked).toBe(false));
+    expect(serverBrief().webSearchMode).toBe("disabled");
+
+    fireEvent.click(screen.getByRole("button", { name: "關閉系統設定" }));
+    fireEvent.click(screen.getByRole("button", { name: "專案" }));
+    const before = briefPatches.length;
+    fireEvent.click(await screen.findByText("儲存 Brief"));
+
+    await waitFor(() => expect(briefPatches.length).toBe(before + 1));
+    const saved = briefPatches[before]!;
+    // 草稿有送出去（topic 在裡面），但 webSearchMode 被剝掉了——PATCH 是 merge，少送＝不動它。
+    expect(saved).toHaveProperty("topic", "系統設定自動搜尋");
+    expect(saved).not.toHaveProperty("webSearchMode");
+    expect(serverBrief().webSearchMode).toBe("disabled");
+  });
+
+  it("PATCH 失敗時勾選框回到伺服器的實際值、恢復可點，並顯示錯誤", async () => {
+    const { serverBrief } = await openSettings("live");
+    expect(settingsToggle().checked).toBe(true);
+
+    const original = (globalThis.fetch as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const raw =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const path = new URL(raw, "http://local.test").pathname;
+        if (path.endsWith("/brief") && (init?.method ?? "GET") === "PATCH")
+          return Response.json({ code: "BOOM", message: "寫入失敗" }, { status: 500 });
+        return original(input, init);
+      },
+    );
+
+    fireEvent.click(settingsToggle());
+
+    /*
+      訊息必須長在**對話框裡面**，不能只靠全域的 `ErrorToast`：`.toast` 是 z-index 20、
+      `.system-settings-backdrop` 是 940，兩者同為 `.shell` 的子節點（`.shell` 不建立 stacking
+      context），所以 toast 會整條被鋪在遮罩底下。jsdom 沒有版面，光斷言「畫面上找得到這串字」
+      的話，改回全域 toast 也照樣綠——所以這裡把範圍收進 dialog。
+    */
+    const dialog = await screen.findByRole("dialog", { name: "系統設定" });
+    expect(await within(dialog).findByText("寫入失敗")).toBeTruthy();
+    // 讀的是專案值，所以停在伺服器的實際值；`finally` 也必須把 busy 放掉，否則卡在轉圈狀態。
+    expect(settingsToggle().checked).toBe(true);
+    expect(settingsToggle().disabled).toBe(false);
+    expect(settingsToggle().getAttribute("aria-busy")).toBeNull();
+    expect(serverBrief().webSearchMode).toBe("live");
+  });
+
+  it("開啟對話框時重抓一次專案，顯示別人剛改過的值", async () => {
+    // 專案輪詢在沒有 job／沒有來源分析時整條不跑，所以閒置的分頁會停在開專案當下的值——
+    // 那正好是這次改動要解決的「畫面上的值不是實際生效的值」。開啟當下抓一次就對症。
+    const { serverBrief, setServerWebSearchMode } = await enterEditing("live");
+    // 另一個人在這期間把它關掉了。
+    setServerWebSearchMode("disabled");
+
+    fireEvent.click(screen.getByRole("button", { name: "系統設定" }));
+
+    await waitFor(() => expect(settingsToggle().checked).toBe(false));
+    expect(serverBrief().webSearchMode).toBe("disabled");
+  });
+
+  it("顯示的是專案 brief 的值，不是瀏覽器本機偏好", async () => {
+    // 舊版讀 localStorage：兩個人開同一個專案，畫面上顯示的是各自的本機值，實際生效的卻是
+    // 專案值，兩者不一致時 UI 上完全看不出來。
+    const { toggle } = await openSettings("disabled");
+    expect(toggle.checked).toBe(false);
+    // 三選一的下拉已收成二元勾選：live 與 cached 在伺服器端行為完全相同。
+    expect(screen.queryByLabelText("Web Search")).toBeNull();
+    expect(screen.queryByText("Live（即時搜尋）")).toBeNull();
+  });
+
+  it("cached 視同開啟，且不會在開啟對話框時被改寫", async () => {
+    const { toggle, briefPatches, serverBrief } = await openSettings("cached");
+    expect(toggle.checked).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(briefPatches).toEqual([]);
+    expect(serverBrief().webSearchMode).toBe("cached");
+  });
+
+  it("勾選只 PATCH webSearchMode 一個欄位，連點也只送一筆", async () => {
+    const { toggle, briefPatches, serverBrief } = await openSettings("disabled");
+
+    toggle.focus();
+    fireEvent.click(toggle);
+
+    /*
+      進行中**不可**用 `disabled` 表示：disabled 元素不可聚焦，在自己的 change handler 裡打開
+      會讓焦點當場掉回 <body>，鍵盤使用者每切換一次自動搜尋就被踢回 Tab 序列開頭。所以這裡釘
+      的是「仍可聚焦、焦點還在、只多了 aria-busy」——防連點改由 handler 內的 busy guard 承擔，
+      也就是下面那兩下不得再產生 PATCH。
+    */
+    expect(settingsToggle().disabled).toBe(false);
+    expect(document.activeElement).toBe(settingsToggle());
+    expect(settingsToggle().getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(settingsToggle());
+    fireEvent.click(settingsToggle());
+
+    await waitFor(() => expect(settingsToggle().checked).toBe(true));
+    expect(briefPatches).toEqual([{ webSearchMode: "live" }]);
+    expect(serverBrief().webSearchMode).toBe("live");
+    // 收工後 aria-busy 要拿掉，否則轉圈會永遠留在畫面上。
+    expect(settingsToggle().getAttribute("aria-busy")).toBeNull();
   });
 });
 

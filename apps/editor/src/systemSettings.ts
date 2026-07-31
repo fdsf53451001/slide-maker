@@ -1,18 +1,25 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export type WebSearchMode = "cached" | "live" | "disabled";
-
+/*
+ * 「這台瀏覽器的偏好」存放處。
+ *
+ * **這個模組目前沒有任何生產消費者**：`providerId` 與 `textEngine` 都已被專案綁定的模型組合
+ * 取代，`webSearchMode` 則搬進了專案 brief（設計理由見 Editor.tsx 的 `useWebSearchToggle`，
+ * 那份 JSDoc 是唯一真相）。現在只剩測試在呼叫 `resetSystemSettings()`。要不要整個刪掉留待
+ * 決定——別把這段註解當成「還有人在用」的證據。
+ *
+ * localStorage 裡殘留的舊 `webSearchMode` 不做 migration：讀取時當成未知欄位略過，而下一次
+ * `write()` 會以不含它的物件整份覆寫，那個欄位就此消失，不會留著日後被誤讀。
+ */
 export interface SystemSettings {
   providerId: string;
   textEngine: string;
-  webSearchMode: WebSearchMode;
 }
 
 const STORAGE_KEY = "slide-maker:system-settings";
 const DEFAULTS: SystemSettings = {
   providerId: "mock-image",
   textEngine: "",
-  webSearchMode: "cached",
 };
 
 type Listener = () => void;
@@ -30,12 +37,6 @@ function readStorage(): SystemSettings {
           ? parsed.providerId
           : DEFAULTS.providerId,
       textEngine: typeof parsed.textEngine === "string" ? parsed.textEngine : DEFAULTS.textEngine,
-      webSearchMode:
-        parsed.webSearchMode === "live" ||
-        parsed.webSearchMode === "cached" ||
-        parsed.webSearchMode === "disabled"
-          ? parsed.webSearchMode
-          : DEFAULTS.webSearchMode,
     };
   } catch {
     return DEFAULTS;
@@ -82,10 +83,8 @@ function getSnapshot(): SystemSettings {
 export function useSystemSettings(): {
   providerId: string;
   textEngine: string;
-  webSearchMode: WebSearchMode;
   setProviderId: (value: string) => void;
   setTextEngine: (value: string) => void;
-  setWebSearchMode: (value: WebSearchMode) => void;
 } {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const setProviderId = useCallback((value: string) => {
@@ -94,16 +93,11 @@ export function useSystemSettings(): {
   const setTextEngine = useCallback((value: string) => {
     write({ ...cache, textEngine: value });
   }, []);
-  const setWebSearchMode = useCallback((value: WebSearchMode) => {
-    write({ ...cache, webSearchMode: value });
-  }, []);
   return {
     providerId: snapshot.providerId,
     textEngine: snapshot.textEngine,
-    webSearchMode: snapshot.webSearchMode,
     setProviderId,
     setTextEngine,
-    setWebSearchMode,
   };
 }
 

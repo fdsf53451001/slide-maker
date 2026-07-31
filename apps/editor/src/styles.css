@@ -4693,6 +4693,73 @@ header {
 .system-settings-dialog select:focus {
   border-color: var(--accent);
 }
+/* 勾選框列：上面那條 `> label` 是給下拉用的 block，checkbox 要與文字排成一列 */
+.system-settings-dialog > label.system-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.system-settings-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+/* 原生 checkbox 不畫 border，少了這條在深色底上等同看不見焦點（比照 .setup-websearch-toggle） */
+.system-settings-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.system-settings-toggle:has(input:disabled) {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+/* 模態內的失敗訊息。不能共用全域 `.toast`：它是 z-index 20，而遮罩是 940（見
+   SystemSettingsDialog 的 JSDoc），toast 會整條被鋪在遮罩底下、使用者一個字都看不到。 */
+.system-settings-error {
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border: 1px solid #6b2e29;
+  border-radius: 7px;
+  background: #3c1d1d;
+  color: #ffc0b4;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* ── 自動搜尋勾選框的「儲存中」 ───────────────────────────────────────
+   進行中**不能**用 disabled 表示：disabled 元素不可聚焦，在自己的 change handler 裡打開會
+   把鍵盤焦點丟回 <body>。所以進行中只上 aria-busy，樣式靠 `:has()` 掛在外層 label 上。
+   指示器一律是 ::after 的純樣式節點——label 的文字內容就是 checkbox 的可及名稱，塞任何文字
+   進去都會讓「自動搜尋網路資源」這個名字對不上。 */
+.setup-websearch-toggle:has(input[aria-busy="true"])::after,
+.system-settings-toggle:has(input[aria-busy="true"])::after {
+  content: "";
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: websearch-toggle-spin 0.7s linear infinite;
+}
+@keyframes websearch-toggle-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 轉圈是唯一的進行中訊號，不能整個拿掉；改成不會動的環，位置與尺寸不變。 */
+@media (prefers-reduced-motion: reduce) {
+  .setup-websearch-toggle:has(input[aria-busy="true"])::after,
+  .system-settings-toggle:has(input[aria-busy="true"])::after {
+    animation: none;
+    border-top-color: var(--accent);
+    opacity: 0.55;
+  }
+}
 
 /* ── 模型庫 ─────────────────────────────────────────────────────────── */
 .model-library-content {
