@@ -107,6 +107,10 @@ pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預
 
 ### 推薦：CLIProxyAPI + `gpt-image-2`
 
+> **想一次把兩邊都裝好？**[`docker/README.md`](docker/README.md) 有一份 `docker compose`，
+> 同時起 Slide Maker 與 CLIProxyAPI，只要跑一次 `--codex-login`，生圖與大綱就都燒你的
+> ChatGPT／Codex 訂閱額度，而不是按張計費的 API。
+
 **成本最低又能產出像樣簡報**的組合，是本機 **CLIProxyAPI（CLI2Proxy）** gateway 搭 **`gpt-image-2`**，走 Images API transport。它沿用你既有的 CLI 訂閱，而不是按張數計費的 API；而 `gpt-image-2` 在 `/images/generations` + `/images/edits` 上涵蓋完整功能面——生成、參考圖（以 edit 端點的 `image[]` 陣列傳入）與遮罩編輯。
 
 在模型庫建立：

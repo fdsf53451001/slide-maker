@@ -27,3 +27,8 @@ test-results
 infra
 Dockerfile
 .dockerignore
+# compose 自己的檔案（含 gateway 憑證與 api-key）不進映像。
+docker
+docker-compose.yml
+.env
+.env.example

@@ -150,6 +150,11 @@ which capabilities you get.
 
 ### Recommended: CLIProxyAPI + `gpt-image-2`
 
+> **Want both halves in one command?** [`docker/README.md`](docker/README.md) ships a
+> `docker compose` stack that runs Slide Maker and CLIProxyAPI together, with a one-off
+> `--codex-login` step so image generation and outlines burn your ChatGPT/Codex
+> subscription instead of per-image API billing.
+
 The cheapest setup that still produces good decks is a local **CLIProxyAPI (CLI2Proxy)**
 gateway with **`gpt-image-2`** on the Images API transport. It reuses your existing CLI
 subscription instead of billing per-image API calls, and `gpt-image-2` on

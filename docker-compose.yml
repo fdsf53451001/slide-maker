@@ -1,0 +1,122 @@
+# Slide Maker ＋ CLIProxyAPI（CLI2Proxy）的推薦本機部署：用你既有的 ChatGPT／Codex
+# 訂閱額度生圖與寫大綱，而不是按張計費的 API key。
+#
+#   1. cp docker/cliproxy/config.example.yaml docker/cliproxy/config.yaml
+#   2. docker compose --profile login run --rm --service-ports codex-login
+#   3. docker compose up -d --build
+#   4. 開 http://localhost:4173 → 模型庫 → 把預設組合的影像模型改成「OpenAI 影像」
+#
+# 完整說明（含每一步會發生什麼、踩雷點與更新流程）見 docker/README.md。
+
+name: slide-maker
+
+services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # CLIProxyAPI：把 Codex CLI 的登入態包成 OpenAI 相容端點
+  # ──────────────────────────────────────────────────────────────────────────
+  cli-proxy-api:
+    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    container_name: slide-maker-cli-proxy
+    restart: unless-stopped
+    # 只綁 loopback。這個 port 背後是你的訂閱額度，config.yaml 裡那把 api-key 是唯一
+    # 的門——不該讓同網段的其他機器打得到。Slide Maker 走 compose 內部網路
+    # （http://cli-proxy-api:8317/v1），不經過這個映射，所以拿掉它 Slide Maker 照樣能用；
+    # 保留是為了讓你能用 curl 或別的客戶端查同一個 gateway。
+    ports:
+      - "127.0.0.1:${CLI_PROXY_PORT:-8317}:8317"
+    volumes:
+      # 這個檔案必須先存在。Docker 對「來源不存在」的 bind mount 會**建一個同名目錄**，
+      # 於是 CLIProxyAPI 讀設定時看到目錄而啟動失敗——先跑上面第 1 步的 cp。
+      - ./docker/cliproxy/config.yaml:/CLIProxyAPI/config.yaml
+      # 登入憑證落在這裡。刪掉這個目錄等於登出，要重跑一次 codex-login。
+      - ./docker/cliproxy/auths:/root/.cli-proxy-api
+      - ./docker/cliproxy/logs:/CLIProxyAPI/logs
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Slide Maker：Express API ＋ React 編輯器，同一個 port
+  # ──────────────────────────────────────────────────────────────────────────
+  slide-maker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${SLIDE_MAKER_IMAGE:-slide-maker:local}
+    container_name: slide-maker
+    restart: unless-stopped
+    depends_on:
+      - cli-proxy-api
+    # 容器內固定 8080（Dockerfile 設的），對外預設對齊 `pnpm dev` 的 4173。
+    # 一樣只綁 loopback：伺服器本身沒有任何登入機制，資料目錄裡就是你的專案全文。
+    ports:
+      - "127.0.0.1:${SLIDE_MAKER_PORT:-4173}:8080"
+    volumes:
+      # 專案、風格、版本、models.json 全在這裡。`docker compose down` 不會動到它；
+      # 要連資料一起清掉才需要 `down -v`。備份見 docker/README.md。
+      - slide-maker-data:/data
+    environment:
+      # --- 模型庫的首次啟動 seed ---------------------------------------------
+      # 這幾個變數**只在 /data/models.json 還不存在時**生效一次。該檔一旦寫出來就是
+      # 唯一真相，之後改這裡不會有任何效果——請改在 UI 的模型庫編輯。
+      SLIDE_MAKER_OPENAI_BASE_URL: http://cli-proxy-api:8317/v1
+      # 必須與 docker/cliproxy/config.yaml 的 api-keys 其中一把完全相同。
+      SLIDE_MAKER_OPENAI_API_KEY: ${CLI_PROXY_API_KEY:-slide-maker-local}
+      # gpt-image-2 走 /images/generations ＋ /images/edits，生成、參考圖與遮罩編輯
+      # 三種能力都涵蓋，是這條路上功能最完整的影像模型。
+      SLIDE_MAKER_OPENAI_IMAGE_MODEL: ${SLIDE_MAKER_IMAGE_MODEL:-gpt-image-2}
+      SLIDE_MAKER_OPENAI_IMAGE_API: images
+      # 文字與搜尋沿用同一條連線。可用的 slug 以 gateway 實際回報為準：
+      #   curl -H "Authorization: Bearer <api-key>" http://localhost:8317/v1/models
+      SLIDE_MAKER_OPENAI_TEXT_MODEL: ${SLIDE_MAKER_TEXT_MODEL:-gpt-5.6-terra}
+      SLIDE_MAKER_OPENAI_SEARCH_MODEL: ${SLIDE_MAKER_SEARCH_MODEL:-gpt-5.6-terra}
+      # 生圖一次動輒一分鐘以上，預設的 120 秒太緊。上限 30 分鐘。
+      SLIDE_MAKER_OPENAI_TIMEOUT_MS: ${SLIDE_MAKER_OPENAI_TIMEOUT_MS:-300000}
+      # 這兩個**必須**是 openai：預設值 codex 指的是「本機安裝並登入的 Codex CLI」，
+      # 這個映像裡沒有它，維持預設會讓大綱與搜尋在執行期才失敗。
+      SLIDE_MAKER_TEXT_ENGINE: openai
+      SLIDE_MAKER_WEB_SEARCH_ENGINE: openai
+
+      # --- 其餘設定 -----------------------------------------------------------
+      # 「貼上網址」抓到空殼頁時，要不要用第三方 render 服務（Jina AI）補抓正文。
+      # 選 jina 等於把該網址與其內容送給第三方；不想外送就設 none。
+      SLIDE_MAKER_WEB_RENDER_ENGINE: ${SLIDE_MAKER_WEB_RENDER_ENGINE:-jina}
+      # PaddleOCR 層級：medium（預設）精度最好但每頁 6–8 秒；機器吃力可改 small。
+      SLIDE_MAKER_OCR_MODEL_TIER: ${SLIDE_MAKER_OCR_MODEL_TIER:-medium}
+      # 只有要從非 localhost 的網址開編輯器時才需要（例如區網其他機器）。逗號分隔、
+      # 不接受萬用字元；放行一個主機名等於把這道防線交出去，請自行確保前面有驗證層。
+      SLIDE_MAKER_TRUSTED_HOSTS: ${SLIDE_MAKER_TRUSTED_HOSTS:-}
+    healthcheck:
+      # slim 基底沒有 curl／wget，用映像裡一定有的 node。
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      # 首次啟動要重建搜尋索引，專案多時要一段時間，別讓它在這段期間被判成不健康。
+      start_period: 120s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 一次性的 Codex 登入。跑法：
+  #   docker compose --profile login run --rm --service-ports codex-login
+  # 它會印一段網址，貼到你自己的瀏覽器完成授權；OAuth 會 callback 回
+  # localhost:1455，由下面的映射轉進容器。授權完成後容器自己結束，憑證留在
+  # docker/cliproxy/auths/。profiles 讓它不會被 `docker compose up` 帶起來。
+  # ──────────────────────────────────────────────────────────────────────────
+  codex-login:
+    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    container_name: slide-maker-codex-login
+    profiles: ["login"]
+    # 映像的 CMD 是 ./CLIProxyAPI（沒有 entrypoint），所以要連執行檔一起覆寫。
+    # --no-browser 是必要的：容器裡沒有瀏覽器可開。
+    command: ["/CLIProxyAPI/CLIProxyAPI", "--codex-login", "--no-browser"]
+    ports:
+      - "127.0.0.1:1455:1455"
+    volumes:
+      - ./docker/cliproxy/config.yaml:/CLIProxyAPI/config.yaml
+      - ./docker/cliproxy/auths:/root/.cli-proxy-api
+
+volumes:
+  slide-maker-data:
