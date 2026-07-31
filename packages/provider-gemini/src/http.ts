@@ -2,6 +2,7 @@ import {
   logError,
   logWarn,
   type ProviderPreflightStatus,
+  readBoundedResponseBytes,
   SafeProviderError,
 } from "@slide-maker/core";
 
@@ -25,55 +26,6 @@ interface RequestInitLike {
   path: string;
   body?: unknown;
   signal?: AbortSignal;
-}
-
-/**
- * 逐塊讀取 response body，累計一超過 `limit` 立即取消串流並丟 GEMINI_RESPONSE_TOO_LARGE。
- *
- * content-length 只在端點願意宣告時才擋得住上限；chunked／串流回應缺這個 header，若先
- * `arrayBuffer()` 讀完整個 body 再看 `.length`，body 早已進了記憶體，上限形同虛設。改用
- * reader 邊收邊記，過線就 `cancel()` 釋放連線，失控或惡意的端點吐不出比上限大的量。
- * `response.body` 為 null（理論上只在無 body 的回應）時退回 `arrayBuffer()`，並仍做上限檢查。
- */
-async function readBoundedBody(response: Response, limit: number): Promise<Uint8Array> {
-  const body = response.body;
-  if (!body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > limit)
-      throw new SafeProviderError("GEMINI_RESPONSE_TOO_LARGE", "Gemini 回應過大。");
-    return bytes;
-  }
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > limit)
-        throw new SafeProviderError("GEMINI_RESPONSE_TOO_LARGE", "Gemini 回應過大。");
-      chunks.push(value);
-    }
-  } catch (error) {
-    // 過線或讀取中斷都要主動取消，否則底層連線會晾在那裡等 body 讀完。
-    await reader.cancel().catch(() => undefined);
-    throw error;
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // reader 可能已隨串流關閉而釋放；釋放失敗不該蓋掉真正的錯誤。
-    }
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
 }
 
 /** 把 fetch/timeout/abort 分類成不洩漏原文的 SafeProviderError。 */
@@ -120,17 +72,13 @@ export async function requestJson(
   }
   if (!response!.ok) {
     const status = response!.status;
-    const bodyText = await response!.text().catch(() => "");
     const logFields = {
       status,
-      url: joinUrl(config.baseUrl, init.path).split("?")[0],
-      // 空 key 是合法設定（keyless 本機 gateway）；replaceAll("") 會把替換字插進
-      // 每個字元之間，故僅在 key 非空時遮蔽。
-      bodyPreview: (config.apiKey
-        ? bodyText.replaceAll(config.apiKey, "[REDACTED]")
-        : bodyText
-      ).slice(0, 2000),
+      // base URL 可能帶 userinfo／私有 gateway path；log 只留內部固定的 API path。
+      path: init.path.split("?", 1)[0],
     };
+    // 非嚴格 gateway 會在錯誤 body 原樣回聲 prompt；不讀取、不記錄，只取消未讀 stream。
+    await response!.body?.cancel().catch(() => undefined);
     // 401/403/429 是已分類、預期內的失敗（未登入、readiness probe 常態性打到），
     // 用 WARNING 避免每次 readiness 重新檢查就固定噴 ERROR，稀釋真正異常的告警訊號。
     if (status === 401 || status === 403 || status === 429)
@@ -145,13 +93,11 @@ export async function requestJson(
       throw new SafeProviderError("GEMINI_USAGE_LIMIT", "Gemini 端點達到配額或速率限制。");
     throw new SafeProviderError("GEMINI_REQUEST_FAILED", `Gemini 端點回應 HTTP ${status}。`);
   }
-  const declared = Number(response!.headers.get("content-length") ?? "0");
-  if (declared > MAX_RESPONSE_BYTES) {
-    // 預檢命中就直接拒收：取消 body 才不會讓連線卡著等永遠不會被讀的 payload。
-    void response!.body?.cancel().catch(() => undefined);
-    throw new SafeProviderError("GEMINI_RESPONSE_TOO_LARGE", "Gemini 回應過大。");
-  }
-  const bytes = await readBoundedBody(response!, MAX_RESPONSE_BYTES);
+  const bytes = await readBoundedResponseBytes(
+    response!,
+    MAX_RESPONSE_BYTES,
+    () => new SafeProviderError("GEMINI_RESPONSE_TOO_LARGE", "Gemini 回應過大。"),
+  );
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: false }).decode(bytes)) as unknown;
   } catch {

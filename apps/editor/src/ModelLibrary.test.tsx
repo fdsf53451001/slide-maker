@@ -298,6 +298,27 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
     expect(writeRequests(fetchMock)).toHaveLength(0);
   });
 
+  it("既有連線改成非 HTTP 完整網址時就地報錯，且不送出請求", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await waitFor(() =>
+      expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
+    );
+    const row = container.querySelector(".model-library-connection-row") as HTMLElement;
+
+    fireEvent.change(within(row).getByLabelText("Base URL"), {
+      target: { value: "localhost:8317/v1" },
+    });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    expect(
+      within(row)
+        .getAllByRole("alert")
+        .some((node) => /http／https/.test(node.textContent ?? "")),
+    ).toBe(true);
+    expect(writeRequests(fetchMock)).toHaveLength(0);
+  });
+
   it("系統設定的數字欄位擋掉非數字，不讓 NaN 送到伺服器", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);

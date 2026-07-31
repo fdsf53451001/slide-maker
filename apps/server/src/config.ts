@@ -1,3 +1,23 @@
+interface BoundedIntegerEnvOptions {
+  name: string;
+  defaultValue: number;
+  min: number;
+  max: number;
+  integerUnit?: string;
+}
+
+function parseBoundedIntegerEnv(
+  value: string | undefined,
+  { name, defaultValue, min, max, integerUnit = "" }: BoundedIntegerEnvOptions,
+): number {
+  if (value === undefined || value.trim() === "") return defaultValue;
+  if (!/^\d+$/.test(value)) throw new Error(`${name} must be an integer${integerUnit}`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max)
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  return parsed;
+}
+
 /**
  * 模型呼叫的預設逾時：連線自己沒設 `timeoutMs` 時的回退值，三家 provider 共用。
  * 上下限沿用原本 codex 通道的值（30 秒～30 分），那是實際跑過長簡報生成校準出來的。
@@ -7,20 +27,13 @@ export const MIN_MODEL_TIMEOUT_MS = 30_000;
 export const MAX_MODEL_TIMEOUT_MS = 30 * 60_000;
 
 export function parseModelTimeoutMs(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_MODEL_TIMEOUT_MS;
-  if (!/^\d+$/.test(value))
-    throw new Error("SLIDE_MAKER_MODEL_TIMEOUT_MS must be an integer in milliseconds");
-  const timeout = Number(value);
-  if (
-    !Number.isSafeInteger(timeout) ||
-    timeout < MIN_MODEL_TIMEOUT_MS ||
-    timeout > MAX_MODEL_TIMEOUT_MS
-  ) {
-    throw new Error(
-      `SLIDE_MAKER_MODEL_TIMEOUT_MS must be between ${MIN_MODEL_TIMEOUT_MS} and ${MAX_MODEL_TIMEOUT_MS}`,
-    );
-  }
-  return timeout;
+  return parseBoundedIntegerEnv(value, {
+    name: "SLIDE_MAKER_MODEL_TIMEOUT_MS",
+    defaultValue: DEFAULT_MODEL_TIMEOUT_MS,
+    min: MIN_MODEL_TIMEOUT_MS,
+    max: MAX_MODEL_TIMEOUT_MS,
+    integerUnit: " in milliseconds",
+  });
 }
 
 // PP-OCRv6 的層級命名（tiny 1.5M／small 7.7M／medium 34.5M 參數）。
@@ -50,19 +63,12 @@ export function parseOcrModelTier(value: string | undefined): OcrModelTier {
 }
 
 export function parseOcrDetSideLen(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_OCR_DET_SIDE_LEN;
-  if (!/^\d+$/.test(value)) throw new Error("SLIDE_MAKER_OCR_DET_SIDE_LEN must be an integer");
-  const sideLen = Number(value);
-  if (
-    !Number.isSafeInteger(sideLen) ||
-    sideLen < MIN_OCR_DET_SIDE_LEN ||
-    sideLen > MAX_OCR_DET_SIDE_LEN
-  ) {
-    throw new Error(
-      `SLIDE_MAKER_OCR_DET_SIDE_LEN must be between ${MIN_OCR_DET_SIDE_LEN} and ${MAX_OCR_DET_SIDE_LEN}`,
-    );
-  }
-  return sideLen;
+  return parseBoundedIntegerEnv(value, {
+    name: "SLIDE_MAKER_OCR_DET_SIDE_LEN",
+    defaultValue: DEFAULT_OCR_DET_SIDE_LEN,
+    min: MIN_OCR_DET_SIDE_LEN,
+    max: MAX_OCR_DET_SIDE_LEN,
+  });
 }
 
 /** 永遠放行的主機名。這三個以外一律要靠 SLIDE_MAKER_TRUSTED_HOSTS 明確列出。 */
@@ -134,20 +140,13 @@ export function parseOptionalString(value: string | undefined): string | undefin
 }
 
 export function parseOpenAiTimeoutMs(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_OPENAI_TIMEOUT_MS;
-  if (!/^\d+$/.test(value))
-    throw new Error("SLIDE_MAKER_OPENAI_TIMEOUT_MS must be an integer in milliseconds");
-  const timeout = Number(value);
-  if (
-    !Number.isSafeInteger(timeout) ||
-    timeout < MIN_OPENAI_TIMEOUT_MS ||
-    timeout > MAX_OPENAI_TIMEOUT_MS
-  ) {
-    throw new Error(
-      `SLIDE_MAKER_OPENAI_TIMEOUT_MS must be between ${MIN_OPENAI_TIMEOUT_MS} and ${MAX_OPENAI_TIMEOUT_MS}`,
-    );
-  }
-  return timeout;
+  return parseBoundedIntegerEnv(value, {
+    name: "SLIDE_MAKER_OPENAI_TIMEOUT_MS",
+    defaultValue: DEFAULT_OPENAI_TIMEOUT_MS,
+    min: MIN_OPENAI_TIMEOUT_MS,
+    max: MAX_OPENAI_TIMEOUT_MS,
+    integerUnit: " in milliseconds",
+  });
 }
 
 export const WEB_RENDER_ENGINES = ["jina", "none"] as const;
@@ -189,20 +188,13 @@ export function parseWebRenderEngine(value: string | undefined): WebRenderEngine
  * SPA，遠比純 fetch 慢，沿用 `captureWebPage` 的 15 秒會在動態頁上幾乎必逾時。
  */
 export function parseWebRenderTimeoutMs(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return DEFAULT_WEB_RENDER_TIMEOUT_MS;
-  if (!/^\d+$/.test(value))
-    throw new Error("SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be an integer in milliseconds");
-  const timeout = Number(value);
-  if (
-    !Number.isSafeInteger(timeout) ||
-    timeout < MIN_WEB_RENDER_TIMEOUT_MS ||
-    timeout > MAX_WEB_RENDER_TIMEOUT_MS
-  ) {
-    throw new Error(
-      `SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be between ${MIN_WEB_RENDER_TIMEOUT_MS} and ${MAX_WEB_RENDER_TIMEOUT_MS}`,
-    );
-  }
-  return timeout;
+  return parseBoundedIntegerEnv(value, {
+    name: "SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS",
+    defaultValue: DEFAULT_WEB_RENDER_TIMEOUT_MS,
+    min: MIN_WEB_RENDER_TIMEOUT_MS,
+    max: MAX_WEB_RENDER_TIMEOUT_MS,
+    integerUnit: " in milliseconds",
+  });
 }
 
 export const IMAGE_DESCRIPTION_MODES = ["on", "off"] as const;

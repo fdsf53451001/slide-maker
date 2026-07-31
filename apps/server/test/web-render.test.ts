@@ -109,6 +109,35 @@ describe("Jina Reader renderer", () => {
     );
   });
 
+  it("chunked 回應超限時及早取消串流，不先緩衝完整 body", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 100) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(1024 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const renderer = createJinaRenderer({
+      // 不帶 content-length，讓實際串流位元組數成為唯一硬邊界。
+      fetcher: async () => new Response(stream),
+    });
+
+    await expect(renderer.render(new URL("https://example.com/"))).rejects.toThrow(
+      "WEB_RENDER_TOO_LARGE",
+    );
+    expect(cancelled).toBe(true);
+    // 2MiB 上限在第 3 個 1MiB chunk 就超過，不能繼續拉完 100 個 chunk。
+    expect(pulled).toBeLessThan(10);
+  });
+
   it("串接前先驗網址：私有位址不會被送去第三方", async () => {
     const fetcher = vi.fn(ok("正文"));
     const renderer = createJinaRenderer({ fetcher });

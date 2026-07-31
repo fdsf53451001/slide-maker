@@ -6,6 +6,7 @@ import {
   createDefaultStyle,
   createSlidesFromBrief,
   editableTextBoxSchema,
+  STYLE_REFERENCE_IMAGE_LIMIT,
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
@@ -345,7 +346,13 @@ describe("Editor MVP navigation", () => {
       id: "team-visual",
       name: "團隊科技風",
       system: false,
-      referenceImages: [],
+      referenceImages: Array.from({ length: STYLE_REFERENCE_IMAGE_LIMIT }, (_, index) => ({
+        id: `reference-${index}`,
+        name: `reference-${index}.png`,
+        mediaType: "image/png" as const,
+        assetPath: `assets/reference-${index}.png`,
+        createdAt: now,
+      })),
     };
     vi.stubGlobal("prompt", vi.fn());
     vi.stubGlobal(
@@ -388,7 +395,12 @@ describe("Editor MVP navigation", () => {
 
     expect(await screen.findByRole("dialog", { name: "選擇風格" })).toBeTruthy();
     expect(screen.getByText("建立新風格")).toBeTruthy();
-    expect(screen.getByText("團隊科技風")).toBeTruthy();
+    const styleCard = screen.getByText("團隊科技風").closest("button") as HTMLButtonElement;
+    expect(styleCard.textContent).toContain(
+      `參考圖 ${STYLE_REFERENCE_IMAGE_LIMIT}/${STYLE_REFERENCE_IMAGE_LIMIT}`,
+    );
+    expect(styleCard.disabled).toBe(true);
+    expect(within(styleCard).getByText("參考圖已滿")).toBeTruthy();
     expect(prompt).not.toHaveBeenCalled();
   });
 
@@ -3847,6 +3859,18 @@ describe("文字圖層鍵盤快捷鍵", () => {
     expect(boxElements()).toHaveLength(1);
   });
 
+  it("undo／redo 堆疊為空時不攔截瀏覽器原生快捷鍵", async () => {
+    const project = textLayerProject("空歷史放行");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("空歷史放行");
+
+    expect(fireEvent.keyDown(window, { key: "z", ctrlKey: true })).toBe(true);
+    expect(fireEvent.keyDown(window, { key: "z", metaKey: true, shiftKey: true })).toBe(true);
+    expect(boxElements()).toHaveLength(1);
+  });
+
   it("長按不會連發：event.repeat 一律忽略", async () => {
     // 壓住 ⌘V 兩秒就是數十個框，每個都推一筆 undo 歷史，足以把 60 筆歷史全擠掉。
     const project = textLayerProject("長按貼上");
@@ -4234,6 +4258,27 @@ describe("文字圖層鍵盤快捷鍵", () => {
     // 再重做一次是把那次刪除也重做回來，所以回到 1 個框。
     fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
     await waitFor(() => expect(boxElements()).toHaveLength(1));
+  });
+
+  it("還原移除選取中的框後，重做不會讓過期選取狀態復活", async () => {
+    const project = textLayerProject("還原清除選取");
+    stubTextLayerApi(project);
+
+    render(<Editor />);
+    await enterProject("還原清除選取");
+    fireEvent.pointerDown(boxElements()[0]!);
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+    expect(boxElements()[1]!.className).toContain("selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "復原" }));
+    await waitFor(() => expect(boxElements()).toHaveLength(1));
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(boxElements()).toHaveLength(2));
+
+    expect(boxElements().every((box) => !box.className.includes("selected"))).toBe(true);
+    expect(screen.getByRole("button", { name: "刪除文字框" })).toHaveProperty("disabled", true);
   });
 
   it("有文字圖層時進簡報模式：滾輪只換頁，文字框一個都沒動", async () => {

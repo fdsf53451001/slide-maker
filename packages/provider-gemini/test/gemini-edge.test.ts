@@ -1,13 +1,15 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { SafeProviderError, type ImageGenerationRequest } from "@slide-maker/core";
+import type { HostLookup } from "@slide-maker/core/url-safety";
 import {
   type GeminiClientConfig,
   GeminiImageProvider,
   GeminiStructuredTextProvider,
-  GeminiWebSearchProvider,
+  GeminiWebSearchProvider as BaseGeminiWebSearchProvider,
+  type GeminiWebSearchOptions,
   listGeminiModelIds,
 } from "../src/index.js";
 
@@ -38,6 +40,15 @@ const config: GeminiClientConfig = {
   apiKey: "test-key",
   timeoutMs: 5_000,
 };
+
+/** 搜尋測試的 fetch 全是 mock；同時注入固定公網 DNS 結果，避免測試偷打真 resolver。 */
+const publicHostLookup: HostLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
+class GeminiWebSearchProvider extends BaseGeminiWebSearchProvider {
+  constructor(options: GeminiWebSearchOptions) {
+    super({ ...options, hostLookup: options.hostLookup ?? publicHostLookup });
+  }
+}
 
 const originalFetch = globalThis.fetch;
 let captured: Captured[] = [];
@@ -86,6 +97,7 @@ function mockFetch(handler: (call: Captured) => MockReply): Captured[] {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  vi.restoreAllMocks();
 });
 
 const REAL_PNG =
@@ -463,6 +475,45 @@ describe("transport error classification", () => {
     await expect(listGeminiModelIds(config)).rejects.toMatchObject({
       code: "GEMINI_AUTH_REQUIRED",
     });
+  });
+
+  it("never reads or logs a non-2xx body that echoes prompts and credentials", async () => {
+    const apiKey = "gemini-provider-log-secret";
+    const baseUrlSecret = "gemini-base-url-userinfo-secret";
+    const promptMarker = "GEMINI_PROMPT_MARKER_MUST_NOT_REACH_LOGS";
+    const upstreamBody = JSON.stringify({
+      error: "GEMINI_UPSTREAM_BODY_SHOULD_NEVER_BE_LOGGED",
+      prompt: promptMarker,
+      credential: apiKey,
+    });
+    const response = new Response(upstreamBody, { status: 500 });
+    const readBody = vi.spyOn(response, "text");
+    const cancelBody = vi.spyOn(response.body!, "cancel");
+    globalThis.fetch = vi.fn(async () => response) as typeof fetch;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      listGeminiModelIds({
+        ...config,
+        apiKey,
+        baseUrl: `https://${baseUrlSecret}@gemini.test/private/v1beta`,
+      }),
+    ).rejects.toMatchObject({ code: "GEMINI_REQUEST_FAILED" });
+
+    expect(readBody).not.toHaveBeenCalled();
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    const serializedLog = errorLog.mock.calls.flat().join("\n");
+    expect(serializedLog).toContain('"status":500');
+    expect(serializedLog).toContain('"path":"models"');
+    expect(serializedLog).not.toContain(promptMarker);
+    expect(serializedLog).not.toContain(apiKey);
+    expect(serializedLog).not.toContain(baseUrlSecret);
+    expect(serializedLog).not.toContain("gemini.test");
+    expect(serializedLog).not.toContain("GEMINI_UPSTREAM_BODY_SHOULD_NEVER_BE_LOGGED");
+    expect(serializedLog).not.toContain(upstreamBody);
   });
 
   it("maps a request timeout to GEMINI_TIMEOUT", async () => {
@@ -991,6 +1042,139 @@ describe("redirect resolution", () => {
       [{ web: { uri: `${REDIRECT_PREFIX}A`, title: "udn.com" } }],
       [{ segment: { text: "段落。" }, groundingChunkIndices: [0] }],
     );
+
+  it("drops public-looking hosts that resolve to private IPs before issuing HEAD", async () => {
+    const privateHosts = new Map([
+      ["loopback.example", "127.0.0.1"],
+      ["metadata.example", "169.254.169.254"],
+      ["internal.example", "10.0.0.8"],
+    ]);
+    const hostLookup = vi.fn<HostLookup>(async (hostname) => {
+      const address = privateHosts.get(hostname) ?? "93.184.216.34";
+      return [{ address, family: 4 }];
+    });
+    const chunks = [...privateHosts.keys()].map((hostname) => ({
+      web: { uri: `https://${hostname}/redirect`, title: hostname },
+    }));
+    const supports = chunks.map((_, index) => ({
+      segment: { text: `private candidate ${index}` },
+      groundingChunkIndices: [index],
+    }));
+    const calls = mockFetch((call) =>
+      call.url.startsWith(config.baseUrl)
+        ? { json: grounded(chunks, supports) }
+        : { status: 302, headers: { location: "https://should-not-run.example/" } },
+    );
+    const provider = new GeminiWebSearchProvider({
+      config,
+      model: "gemini-3.6-flash",
+      hostLookup,
+    });
+
+    await expect(provider.search("q", 5, "zh-TW")).rejects.toMatchObject({
+      code: "GEMINI_WEB_SEARCH_EMPTY",
+    });
+    expect(calls.filter((call) => call.method === "HEAD")).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(hostLookup.mock.calls.map(([hostname]) => hostname).sort()).toEqual(
+      [...privateHosts.keys()].sort(),
+    );
+  });
+
+  it("issues HEAD for a hostname whose injected DNS lookup is public", async () => {
+    const hostLookup = vi.fn<HostLookup>(async () => [{ address: "93.184.216.34", family: 4 }]);
+    const calls = mockFetch((call) =>
+      call.url.startsWith(REDIRECT_PREFIX)
+        ? { status: 302, headers: { location: "https://safe-target.example/article" } }
+        : { json: singleChunk() },
+    );
+    const provider = new GeminiWebSearchProvider({
+      config,
+      model: "gemini-3.6-flash",
+      hostLookup,
+    });
+
+    const { results } = await provider.search("q", 5, "zh-TW");
+    expect(calls.filter((call) => call.method === "HEAD")).toHaveLength(1);
+    expect(results[0]!.url).toBe("https://safe-target.example/article");
+    expect(hostLookup).toHaveBeenCalledWith("vertexaisearch.cloud.google.com");
+    expect(hostLookup).toHaveBeenCalledWith("safe-target.example");
+  });
+
+  it("keeps the original uri when DNS lookup fails as a network operation", async () => {
+    const hostLookup = vi.fn<HostLookup>(async () => {
+      throw Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
+    });
+    const calls = mockFetch((call) =>
+      call.url.startsWith(REDIRECT_PREFIX) ? { status: 500 } : { json: singleChunk() },
+    );
+    const provider = new GeminiWebSearchProvider({
+      config,
+      model: "gemini-3.6-flash",
+      hostLookup,
+    });
+
+    const { results } = await provider.search("q", 5, "zh-TW");
+    expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
+    expect(calls.filter((call) => call.method === "HEAD")).toHaveLength(0);
+  });
+
+  it("aborts promptly while an injected DNS lookup is still pending and never issues HEAD", async () => {
+    let markLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      markLookupStarted = resolve;
+    });
+    const hostLookup = vi.fn<HostLookup>(() => {
+      markLookupStarted();
+      return new Promise<ReadonlyArray<{ address: string; family: number }>>(() => undefined);
+    });
+    const calls = mockFetch((call) =>
+      call.url.startsWith(REDIRECT_PREFIX) ? { status: 500 } : { json: singleChunk() },
+    );
+    const provider = new GeminiWebSearchProvider({
+      config,
+      model: "gemini-3.6-flash",
+      hostLookup,
+    });
+    const controller = new AbortController();
+    const pending = provider.search("q", 5, "zh-TW", controller.signal);
+
+    // 先確認 search 已卡在不會 settle 的 lookup，再取消；不靠 setTimeout 競態。
+    await lookupStarted;
+    controller.abort();
+    const error = (await pending.catch((reason: unknown) => reason)) as Error;
+
+    expect(error.name).toBe("AbortError");
+    expect(hostLookup).toHaveBeenCalledTimes(1);
+    expect(calls.filter((call) => call.method === "HEAD")).toHaveLength(0);
+    expect(calls).toHaveLength(1); // 只有 generateContent，沒有 redirect HEAD。
+  });
+
+  it("keeps the safe original uri when a public-looking redirect target resolves privately", async () => {
+    const hostLookup = vi.fn<HostLookup>(async (hostname) => [
+      {
+        address: hostname === "private-target.example" ? "10.0.0.9" : "93.184.216.34",
+        family: 4,
+      },
+    ]);
+    mockFetch((call) =>
+      call.url.startsWith(REDIRECT_PREFIX)
+        ? { status: 302, headers: { location: "https://private-target.example/admin" } }
+        : { json: singleChunk() },
+    );
+    const provider = new GeminiWebSearchProvider({
+      config,
+      model: "gemini-3.6-flash",
+      hostLookup,
+    });
+
+    const { results } = await provider.search("q", 5, "zh-TW");
+    expect(results[0]!.url).toBe(`${REDIRECT_PREFIX}A`);
+    expect(hostLookup).toHaveBeenCalledWith("private-target.example");
+    expect(captured.some((call) => call.url.startsWith("https://private-target.example"))).toBe(
+      false,
+    );
+  });
 
   it("resolves a 302 to its absolute location", async () => {
     mockFetch((call) =>

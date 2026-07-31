@@ -8,7 +8,8 @@ import {
   webSearchResultSchema,
 } from "@slide-maker/core";
 import {
-  assertPublicHttpUrl,
+  assertPublicHttpUrlResolved,
+  type HostLookup,
   isPublicHttpUrl,
   isReadableWebUrl,
 } from "@slide-maker/core/url-safety";
@@ -20,6 +21,8 @@ export interface GeminiWebSearchOptions {
   model: string;
   /** Registry id 覆寫（模型庫 entry id）。未設回退 "gemini"。 */
   id?: string;
+  /** 僅供 DNS 安全驗證與測試注入；未設時由 core 以系統 resolver 解析。 */
+  hostLookup?: HostLookup;
 }
 
 const MAX_SUMMARY_CHARS = 4_000;
@@ -116,6 +119,28 @@ function summaryText(support: ChunkSupport | undefined): string {
   ].join("\n");
 }
 
+/** 將無法接收 signal 的 DNS lookup 納入單筆／整批共用的 abort 預算。 */
+function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** 字面網址或解析結果確定不安全；DNS 連線錯誤不屬於這一類。 */
+function isUnsafeUrlError(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof Error &&
+      (error.message === "WEB_SOURCE_URL_UNSUPPORTED" ||
+        error.message === "WEB_SOURCE_URL_PRIVATE"))
+  );
+}
+
 /**
  * 把 grounding 的 302 中繼網址解成真實網址。
  *
@@ -129,26 +154,37 @@ function summaryText(support: ChunkSupport | undefined): string {
  * 整個大綱生成回 500，等於一筆爛候選毒死整次生成。網路層失敗（連不上、逾時、HEAD 不
  * 被支援、無 location）則退回原 uri，中繼網址本身仍可被下游追蹤，沒必要丟掉候選。
  */
-async function resolveRedirect(uri: string, signal?: AbortSignal): Promise<string | undefined> {
+async function resolveRedirect(
+  uri: string,
+  signal?: AbortSignal,
+  hostLookup?: HostLookup,
+): Promise<string | undefined> {
+  const timeout = AbortSignal.timeout(REDIRECT_TIMEOUT_MS);
+  const requestSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   let start: URL;
   try {
-    start = assertPublicHttpUrl(uri);
-  } catch {
-    return undefined;
+    start = await withAbort(assertPublicHttpUrlResolved(uri, hostLookup), requestSignal);
+  } catch (error) {
+    // 只有確定不安全的起點才捨棄；DNS 失敗／預算到期仍沿用既有降級語意回原 uri。
+    return isUnsafeUrlError(error) ? undefined : uri;
   }
   let response: Response | undefined;
   try {
-    const timeout = AbortSignal.timeout(REDIRECT_TIMEOUT_MS);
     response = await fetch(start, {
       method: "HEAD",
       redirect: "manual",
-      signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+      signal: requestSignal,
       headers: { "User-Agent": "SlideMaker/0.1 source-capture" },
     });
     if (response.status < 300 || response.status >= 400) return uri;
     const location = response.headers.get("location");
     if (!location) return uri;
-    const target = assertPublicHttpUrl(new URL(location, start).toString()).toString();
+    const target = (
+      await withAbort(
+        assertPublicHttpUrlResolved(new URL(location, start).toString(), hostLookup),
+        requestSignal,
+      )
+    ).toString();
     return target;
   } catch {
     return uri;
@@ -239,7 +275,9 @@ export class GeminiWebSearchProvider implements WebSearchProvider {
     const resolveSignal = signal ? AbortSignal.any([budget, signal]) : budget;
     const pending = candidates.slice(0, limit * 2);
     const resolved = await Promise.all(
-      pending.map((candidate) => resolveRedirect(candidate.uri, resolveSignal)),
+      pending.map((candidate) =>
+        resolveRedirect(candidate.uri, resolveSignal, this.#options.hostLookup),
+      ),
     );
     if (signal?.aborted) throw new DOMException("Gemini search cancelled", "AbortError");
 

@@ -126,6 +126,22 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+type ConnectionFieldErrors = {
+  name?: string | undefined;
+  baseUrl?: string | undefined;
+};
+
+/** 新增與編輯連線共用的純欄位驗證；兩個入口必須回報完全相同的就地訊息。 */
+function connectionFieldErrors(name: string, baseUrl: string): ConnectionFieldErrors {
+  const errors: ConnectionFieldErrors = {};
+  if (!name.trim()) errors.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
+  const url = baseUrl.trim();
+  if (!url) errors.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
+  else if (!isHttpUrl(url))
+    errors.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
+  return errors;
+}
+
 /**
  * 表單欄位旁的錯誤字。
  *
@@ -332,11 +348,11 @@ function ConnectionsSection({
   const [protocol, setProtocol] = useState<ConnectionProtocol>("openai");
   // 顯式帶上 `| undefined`：`exactOptionalPropertyTypes` 下，清掉單一欄位的錯誤
   // （`{ ...current, name: undefined }`）對純 optional 屬性是型別錯誤。
-  const [fieldErrors, setFieldErrors] = useState<{
-    name?: string | undefined;
-    baseUrl?: string | undefined;
-  }>({});
-  const { pending, rowError, act } = useRowAction(run, [name, baseUrl, apiKey, protocol].join(" "));
+  const [fieldErrors, setFieldErrors] = useState<ConnectionFieldErrors>({});
+  const { pending, rowError, act } = useRowAction(
+    run,
+    [name, baseUrl, apiKey, protocol].join("\0"),
+  );
   /**
    * 送出前擋掉必填缺漏，訊息就顯示在出問題的那個欄位旁邊。
    *
@@ -344,18 +360,10 @@ function ConnectionsSection({
    * 留空照樣建得起來——建出來的連線在畫面上一切正常，要等到某天生成或抽字時才變成一句
    * 難懂的 HTTP 錯誤，那時已經沒有人會把它連回「當初那個空欄位」。
    */
-  const validate = () => {
-    const next: { name?: string; baseUrl?: string } = {};
-    if (!name.trim()) next.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
-    const url = baseUrl.trim();
-    if (!url) next.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
-    else if (!isHttpUrl(url))
-      next.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
-    setFieldErrors(next);
-    return !next.name && !next.baseUrl;
-  };
   const create = async () => {
-    if (!validate()) return;
+    const errors = connectionFieldErrors(name, baseUrl);
+    setFieldErrors(errors);
+    if (errors.name || errors.baseUrl) return;
     const before = new Set(library.connections.map((connection) => connection.id));
     const ok = await act("create", "新增連線", async () => {
       const next = await api.createConnection({
@@ -485,10 +493,7 @@ function ConnectionRow({
   const [apiKey, setApiKey] = useState("");
   const [protocol, setProtocol] = useState<ConnectionProtocol>(connection.protocol);
   const [testing, setTesting] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<{
-    name?: string | undefined;
-    baseUrl?: string | undefined;
-  }>({});
+  const [fieldErrors, setFieldErrors] = useState<ConnectionFieldErrors>({});
   const { pending, rowError, act } = useRowAction(run, [name, baseUrl, apiKey, protocol].join(" "));
   /**
    * 與「新增連線」同一份必填檢查。
@@ -497,16 +502,6 @@ function ConnectionRow({
    * 畫面上看起來正常，要到某天生成或抽字時才變成一句難懂的 HTTP 錯誤，那時沒有人會把它連回
    * 「當初把那個欄位清掉」。同一個陷阱只是換一個畫面出現。
    */
-  const validate = () => {
-    const next: { name?: string; baseUrl?: string } = {};
-    if (!name.trim()) next.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
-    const url = baseUrl.trim();
-    if (!url) next.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
-    else if (!isHttpUrl(url))
-      next.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
-    setFieldErrors(next);
-    return !next.name && !next.baseUrl;
-  };
   const dirty =
     name !== connection.name ||
     baseUrl !== connection.baseUrl ||
@@ -567,7 +562,9 @@ function ConnectionRow({
         <button
           disabled={busy || !dirty}
           onClick={() => {
-            if (!validate()) return;
+            const errors = connectionFieldErrors(name, baseUrl);
+            setFieldErrors(errors);
+            if (errors.name || errors.baseUrl) return;
             void act("save", "儲存連線", async () => {
               const result = await api.updateConnection(connection.id, {
                 name,

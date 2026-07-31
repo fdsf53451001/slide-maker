@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SafeProviderError, type ImageGenerationRequest } from "@slide-maker/core";
+import type { HostLookup } from "@slide-maker/core/url-safety";
 import {
   type GeminiClientConfig,
   GeminiImageProvider,
   GeminiStructuredTextProvider,
-  GeminiWebSearchProvider,
+  GeminiWebSearchProvider as BaseGeminiWebSearchProvider,
+  type GeminiWebSearchOptions,
   listGeminiModelIds,
 } from "../src/index.js";
 
@@ -33,6 +35,15 @@ const config: GeminiClientConfig = {
   apiKey: "test-key",
   timeoutMs: 5_000,
 };
+
+/** 搜尋測試的 fetch 全是 mock；同時注入固定公網 DNS 結果，避免測試偷打真 resolver。 */
+const publicHostLookup: HostLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
+class GeminiWebSearchProvider extends BaseGeminiWebSearchProvider {
+  constructor(options: GeminiWebSearchOptions) {
+    super({ ...options, hostLookup: options.hostLookup ?? publicHostLookup });
+  }
+}
 
 const originalFetch = globalThis.fetch;
 let captured: Captured[] = [];

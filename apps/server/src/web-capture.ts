@@ -1,5 +1,6 @@
 import type { WebSearchResult } from "@slide-maker/core";
 import { assertPublicHttpUrlResolved } from "@slide-maker/core/url-safety";
+import { readCappedBytes } from "./web-body.js";
 import type { HtmlRenderer } from "./web-render.js";
 
 export type { WebSearchResult } from "@slide-maker/core";
@@ -185,50 +186,6 @@ function failureCode(error: unknown, codes: { timeout: string; fallback: string 
   return codes.fallback;
 }
 
-/**
- * 逐塊讀 body 並累計位元組數，一超過 `limit` 立即 throw 並取消串流。
- *
- * `response.arrayBuffer()` 會先把整個 body 緩衝進記憶體才輪到呼叫端檢查長度：對 chunked
- * （沒有誠實 content-length）或謊報 content-length 的回應，那個 2MiB 上限形同虛設，攻擊端
- * 可用一個超大 body 撐爆記憶體。改成邊讀邊數，超標就 throw 並 `cancel()` 掉底層串流。
- *
- * `response.body` 為 null（某些 runtime／假 Response）時退回 `arrayBuffer()`，但仍再做一次
- * 長度檢查作為最後防線。
- */
-async function readCappedBytes(response: Response, limit: number): Promise<Uint8Array> {
-  const stream = response.body;
-  if (!stream) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > limit) throw new Error("WEB_SOURCE_TOO_LARGE");
-    return bytes;
-  }
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > limit) {
-        await reader.cancel();
-        throw new Error("WEB_SOURCE_TOO_LARGE");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return merged;
-}
-
 export interface CapturePageOptions {
   /**
    * 第三方 render fallback。不傳就完全維持純 fetch 行為（既有的搜尋擷取路徑正是這樣呼叫，
@@ -302,10 +259,7 @@ export async function captureWebPage(
     if (!response) throw new Error("WEB_SOURCE_EMPTY_RESPONSE");
     if (!response.ok) throw new Error(`WEB_SOURCE_HTTP_${response.status}`);
     if (response.url) resolvedUrl = (await resolveUrl(response.url)).toString();
-    const declared = Number(response.headers.get("content-length") ?? "0");
-    if (declared > MAX_WEB_BYTES) throw new Error("WEB_SOURCE_TOO_LARGE");
-    // 逐塊累計位元組數：content-length 是誠實預檢，串流上限才是硬邊界（chunked／謊報時）。
-    const bytes = await readCappedBytes(response, MAX_WEB_BYTES);
+    const bytes = await readCappedBytes(response, MAX_WEB_BYTES, "WEB_SOURCE_TOO_LARGE");
     const mediaType =
       response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     if (

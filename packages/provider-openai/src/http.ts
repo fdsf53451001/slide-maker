@@ -4,6 +4,7 @@ import {
   logError,
   logWarn,
   type ProviderPreflightStatus,
+  readBoundedResponseBytes,
   SafeProviderError,
 } from "@slide-maker/core";
 
@@ -70,17 +71,14 @@ export async function requestJson(
   }
   if (!response!.ok) {
     const status = response!.status;
-    const bodyText = await response!.text().catch(() => "");
     const logFields = {
       status,
-      url: joinUrl(config.baseUrl, init.path).split("?")[0],
-      // 空 key 是合法設定（keyless 本機 gateway）；replaceAll("") 會把替換字插進
-      // 每個字元之間，故僅在 key 非空時遮蔽。
-      bodyPreview: (config.apiKey
-        ? bodyText.replaceAll(config.apiKey, "[REDACTED]")
-        : bodyText
-      ).slice(0, 2000),
+      // base URL 可能帶 userinfo／私有 gateway path；log 只留內部固定的 API path。
+      path: init.path.split("?", 1)[0],
     };
+    // 上游錯誤 body 可能回聲整份 prompt／圖片內文，也可能夾帶憑證。不讀取、
+    // 不記錄，只取消未讀 stream；以字串替換 API key 無法遮住其他正文。
+    await response!.body?.cancel().catch(() => undefined);
     // 401/403/429 是已分類、預期內的失敗（未登入、readiness probe 常態性打到），
     // 用 WARNING 避免每次 readiness 重新檢查就固定噴 ERROR，稀釋真正異常的告警訊號。
     if (status === 401 || status === 403 || status === 429)
@@ -95,12 +93,11 @@ export async function requestJson(
       throw new SafeProviderError("OPENAI_USAGE_LIMIT", "OpenAI 端點達到配額或速率限制。");
     throw new SafeProviderError("OPENAI_REQUEST_FAILED", `OpenAI 端點回應 HTTP ${status}。`);
   }
-  const declared = Number(response!.headers.get("content-length") ?? "0");
-  if (declared > MAX_RESPONSE_BYTES)
-    throw new SafeProviderError("OPENAI_RESPONSE_TOO_LARGE", "OpenAI 回應過大。");
-  const bytes = new Uint8Array(await response!.arrayBuffer());
-  if (bytes.length > MAX_RESPONSE_BYTES)
-    throw new SafeProviderError("OPENAI_RESPONSE_TOO_LARGE", "OpenAI 回應過大。");
+  const bytes = await readBoundedResponseBytes(
+    response!,
+    MAX_RESPONSE_BYTES,
+    () => new SafeProviderError("OPENAI_RESPONSE_TOO_LARGE", "OpenAI 回應過大。"),
+  );
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: false }).decode(bytes)) as unknown;
   } catch {

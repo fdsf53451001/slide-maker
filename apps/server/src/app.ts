@@ -150,6 +150,11 @@ import { traditionalizeBoxes } from "./traditionalize.js";
 import { UsageLedger, type UsageRecordInput } from "./usage-ledger.js";
 
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
+export const projectStyleAnalysisInputSchema = z.object({
+  slideIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
+  combinationId: idSchema.optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+});
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
 const OUTLINE_MAX_ATTEMPTS = 3;
 /**
@@ -2102,13 +2107,7 @@ export async function createApp(
    */
   app.post("/api/projects/:projectId/style-analysis", async (request, response) => {
     const projectId = idSchema.parse(request.params.projectId);
-    const input = z
-      .object({
-        slideIds: z.array(idSchema).min(1).max(4),
-        combinationId: idSchema.optional(),
-        name: z.string().trim().min(1).max(120).optional(),
-      })
-      .parse(request.body ?? {});
+    const input = projectStyleAnalysisInputSchema.parse(request.body ?? {});
     const project = await repository.loadProject(projectId);
     if (!project) throw new Error("Project not found");
     const created: StyleReferenceImage[] = [];

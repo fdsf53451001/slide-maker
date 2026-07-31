@@ -32,6 +32,7 @@ import {
   type SourceAsset,
   type StylePreset,
   SOURCE_COUNT_LIMIT,
+  STYLE_REFERENCE_IMAGE_LIMIT,
 } from "@slide-maker/core";
 import {
   api,
@@ -3469,6 +3470,32 @@ export function Editor() {
     !showImageEdit &&
     !stylePickerVersion &&
     !showSystemSettings;
+  /**
+   * 文字歷史的唯一狀態轉移：鍵盤快捷鍵與工具列按鈕都走這裡，避免其中一條漏推另一側
+   * 堆疊，或忘了清掉已不在快照裡的選取項。
+   *
+   * 回傳 false 代表來源堆疊是空的；鍵盤呼叫端靠它決定不攔截瀏覽器原生的 undo／redo。
+   */
+  const applyTextHistory = useCallback(
+    (direction: "undo" | "redo"): boolean => {
+      const source = direction === "undo" ? textUndo : textRedo;
+      const snapshot = source.at(-1);
+      if (!snapshot) return false;
+      textDirty.current = true;
+      if (direction === "undo") {
+        setTextRedo((history) => pushHistory(history, textBoxes));
+        setTextUndo((history) => history.slice(0, -1));
+      } else {
+        setTextUndo((history) => pushHistory(history, textBoxes));
+        setTextRedo((history) => history.slice(0, -1));
+      }
+      setTextBoxes(snapshot);
+      if (selectedTextId && !snapshot.some((box) => box.id === selectedTextId))
+        setSelectedTextId(undefined);
+      return true;
+    },
+    [selectedTextId, textBoxes, textRedo, textUndo],
+  );
   useEffect(() => {
     if (!textEditing) return;
     // 與 Delete／複製貼上、方向鍵換頁共用同一份「畫布是不是當前互動面」判定：漏掉這道
@@ -3488,27 +3515,13 @@ export function Editor() {
         (target.matches("input, textarea, select") || target.isContentEditable)
       )
         return;
-      const source = event.shiftKey ? textRedo : textUndo;
-      const snapshot = source.at(-1);
-      if (!snapshot) return; // 空堆疊時放行，不吞掉瀏覽器原生的 Cmd/Ctrl+Z
+      // 空堆疊時放行，不吞掉瀏覽器原生的 Cmd/Ctrl+Z。
+      if (!applyTextHistory(event.shiftKey ? "redo" : "undo")) return;
       event.preventDefault();
-      textDirty.current = true;
-      if (event.shiftKey) {
-        setTextUndo((history) => pushHistory(history, textBoxes));
-        setTextBoxes(snapshot);
-        setTextRedo((history) => history.slice(0, -1));
-      } else {
-        setTextRedo((history) => pushHistory(history, textBoxes));
-        setTextBoxes(snapshot);
-        setTextUndo((history) => history.slice(0, -1));
-      }
-      // 還原後若選中的文字框不在快照中，清掉選取狀態，與按鈕列的還原/重做一致。
-      if (selectedTextId && !snapshot.some((box) => box.id === selectedTextId))
-        setSelectedTextId(undefined);
     };
     window.addEventListener("keydown", onUndo);
     return () => window.removeEventListener("keydown", onUndo);
-  }, [textBoxes, selectedTextId, textEditing, textRedo, textUndo, canvasIsActiveSurface]);
+  }, [applyTextHistory, textEditing, canvasIsActiveSurface]);
   /**
    * 文字框層級的複製／貼上／刪除。
    *
@@ -5059,17 +5072,7 @@ export function Editor() {
                 disabled={!activeTextLayer || !textUndo.length}
                 aria-label="復原"
                 title="復原（⌘/Ctrl+Z）"
-                onClick={() => {
-                  const previous = textUndo.at(-1);
-                  if (!previous) return;
-                  textDirty.current = true;
-                  setTextRedo((history) => pushHistory(history, textBoxes));
-                  setTextBoxes(previous);
-                  setTextUndo((history) => history.slice(0, -1));
-                  // 還原後若選中的文字框已不在快照中，清掉選取，避免「刪除」按鈕看起來莫名熄滅。
-                  if (selectedTextId && !previous.some((box) => box.id === selectedTextId))
-                    setSelectedTextId(undefined);
-                }}
+                onClick={() => applyTextHistory("undo")}
               >
                 <TextToolIcon shape="undo" />
               </button>
@@ -5077,16 +5080,7 @@ export function Editor() {
                 disabled={!activeTextLayer || !textRedo.length}
                 aria-label="重做"
                 title="重做（⇧⌘/Ctrl+Shift+Z）"
-                onClick={() => {
-                  const next = textRedo.at(-1);
-                  if (!next) return;
-                  textDirty.current = true;
-                  setTextUndo((history) => pushHistory(history, textBoxes));
-                  setTextBoxes(next);
-                  setTextRedo((history) => history.slice(0, -1));
-                  if (selectedTextId && !next.some((box) => box.id === selectedTextId))
-                    setSelectedTextId(undefined);
-                }}
+                onClick={() => applyTextHistory("redo")}
               >
                 <TextToolIcon shape="redo" />
               </button>
@@ -6360,7 +6354,7 @@ export function Editor() {
                   const cover =
                     style.referenceImages.find((item) => item.id === style.coverImageId) ??
                     style.referenceImages[0];
-                  const full = style.referenceImages.length >= 4;
+                  const full = style.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT;
                   return (
                     <button
                       key={style.id}
@@ -6385,7 +6379,7 @@ export function Editor() {
                             : style.density === "medium"
                               ? "中"
                               : "低"}{" "}
-                          · 參考圖 {style.referenceImages.length}/4
+                          · 參考圖 {style.referenceImages.length}/{STYLE_REFERENCE_IMAGE_LIMIT}
                         </small>
                         {full && <em>參考圖已滿</em>}
                       </span>

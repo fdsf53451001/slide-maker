@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createDefaultStyle, type StylePreset, type StyleReferenceImage } from "@slide-maker/core";
+import {
+  createDefaultStyle,
+  STYLE_REFERENCE_IMAGE_LIMIT,
+  type StylePreset,
+  type StyleReferenceImage,
+} from "@slide-maker/core";
 import { StyleEditor } from "./StyleEditor.js";
 
 afterEach(() => {
@@ -88,10 +93,92 @@ describe("StyleEditor cover", () => {
     });
     expect(await screen.findByAltText("cover.png")).toBeTruthy();
 
-    // 猜錯第三顆就是刪掉一張參考圖（上限 4 張、順序有語意），所以名稱不能只是「×」。
+    // 猜錯第三顆就是刪掉一張參考圖（數量有上限、順序有語意），所以名稱不能只是「×」。
     expect(screen.getByRole("button", { name: "往上移動" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "往下移動" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "刪除參考圖 cover.png" })).toBeTruthy();
+  });
+
+  it("參考圖計數與上傳 disabled 都跟隨 core 的共用上限", async () => {
+    const now = new Date().toISOString();
+    const references = Array.from(
+      { length: STYLE_REFERENCE_IMAGE_LIMIT },
+      (_, index): StyleReferenceImage => ({
+        id: `ref-${index}`,
+        name: `reference-${index}.png`,
+        mediaType: "image/png",
+        assetPath: `assets/ref-${index}.png`,
+        createdAt: now,
+      }),
+    );
+    const style = {
+      ...createDefaultStyle(now),
+      id: "full-style",
+      name: "已滿風格",
+      system: false,
+      referenceImages: references,
+    } satisfies StylePreset;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path = typeof input === "string" ? input : new URL(String(input)).pathname;
+        if (path === "/api/styles/full-style/versions") return Response.json([style]);
+        if (path === "/api/model-library")
+          return Response.json({ connections: [], models: [], combinations: [] });
+        return Response.json({ error: "not found" }, { status: 404 });
+      }),
+    );
+
+    const { container } = render(
+      <StyleEditor styleId="full-style" onSaved={vi.fn()} onExit={vi.fn()} />,
+    );
+
+    expect(
+      await screen.findByText(
+        `REFERENCE IMAGES · ${STYLE_REFERENCE_IMAGE_LIMIT}/${STYLE_REFERENCE_IMAGE_LIMIT}`,
+      ),
+    ).toBeTruthy();
+    expect(container.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "＋ 從 PDF 匯入參考圖" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("PDF 匯入的 remaining 也由共用上限扣除現有參考圖", async () => {
+    const now = new Date().toISOString();
+    const existing: StyleReferenceImage = {
+      id: "existing-reference",
+      name: "existing.png",
+      mediaType: "image/png",
+      assetPath: "assets/existing.png",
+      createdAt: now,
+    };
+    const style = {
+      ...createDefaultStyle(now),
+      id: "almost-full-style",
+      name: "待匯入風格",
+      system: false,
+      referenceImages: [existing],
+    } satisfies StylePreset;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const path = typeof input === "string" ? input : new URL(String(input)).pathname;
+        if (path === "/api/styles/almost-full-style/versions") return Response.json([style]);
+        if (path === "/api/model-library")
+          return Response.json({ connections: [], models: [], combinations: [] });
+        return Response.json({ error: "not found" }, { status: 404 });
+      }),
+    );
+
+    render(<StyleEditor styleId="almost-full-style" onSaved={vi.fn()} onExit={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "＋ 從 PDF 匯入參考圖" }));
+
+    expect(
+      await screen.findByText(
+        `PowerPoint／Keynote 可先「另存為 PDF」再匯入。此風格還可加入 ${STYLE_REFERENCE_IMAGE_LIMIT - 1} 張參考圖。`,
+      ),
+    ).toBeTruthy();
   });
 });
 

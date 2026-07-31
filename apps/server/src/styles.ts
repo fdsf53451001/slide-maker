@@ -4,6 +4,7 @@ import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/p
 import { basename, extname, join, resolve, sep } from "node:path";
 import {
   SCHEMA_VERSION,
+  STYLE_REFERENCE_IMAGE_LIMIT,
   createDefaultStyle,
   stylePresetInputSchema,
   stylePresetSchema,
@@ -132,7 +133,7 @@ export class FileStyleRepository {
     coverImageId?: string,
   ): Promise<void> {
     if (
-      referenceImages.length > 4 ||
+      referenceImages.length > STYLE_REFERENCE_IMAGE_LIMIT ||
       new Set(referenceImages.map((image) => image.id)).size !== referenceImages.length
     ) {
       throw new Error("STYLE_REFERENCE_LIMIT");

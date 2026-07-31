@@ -154,21 +154,24 @@ export class ModelRuntime {
     const resolved = this.resolveCombination(combinationId);
     if (!resolved.textModelRef)
       throw new ModelLibraryError("COMBINATION_TEXT_MISSING", "此組合未設定文字模型。");
-    try {
-      return this.#text.get(resolved.textModelRef);
-    } catch {
-      throw new ModelLibraryError(
-        "TEXT_MODEL_NOT_FOUND",
-        "此組合指定的文字模型無法使用：它可能已從模型庫刪除，或它的種類（例如 mock）本來就不會產生文字。請到模型庫改掉這個組合的文字模型。",
-      );
-    }
+    return this.#resolveRegisteredProvider(
+      this.#text,
+      resolved.textModelRef,
+      "TEXT_MODEL_NOT_FOUND",
+      "此組合指定的文字模型無法使用：它可能已從模型庫刪除，或它的種類（例如 mock）本來就不會產生文字。請到模型庫改掉這個組合的文字模型。",
+    );
   }
 
   resolveSearchProvider(combinationId: string | undefined): WebSearchProvider {
     const resolved = this.resolveCombination(combinationId);
     if (!resolved.searchModelRef)
       throw new ModelLibraryError("COMBINATION_SEARCH_MISSING", "此組合未設定搜尋模型。");
-    return this.#search.get(resolved.searchModelRef);
+    return this.#resolveRegisteredProvider(
+      this.#search,
+      resolved.searchModelRef,
+      "SEARCH_MODEL_NOT_FOUND",
+      "此組合指定的搜尋模型無法使用：它可能已從模型庫刪除，或它的種類（例如 mock、local）本來就不會提供搜尋。請到模型庫改掉這個組合的搜尋模型。",
+    );
   }
 
   resolveImageEntryId(combinationId: string | undefined): string {
@@ -176,6 +179,19 @@ export class ModelRuntime {
     if (!resolved.imageModelRef)
       throw new ModelLibraryError("COMBINATION_IMAGE_MISSING", "此組合未設定影像模型。");
     return resolved.imageModelRef;
+  }
+
+  #resolveRegisteredProvider<T extends { readonly id: string }>(
+    registry: ProviderRegistry<T>,
+    modelRef: string,
+    code: string,
+    message: string,
+  ): T {
+    try {
+      return registry.get(modelRef);
+    } catch {
+      throw new ModelLibraryError(code, message);
+    }
   }
 
   #toResolved(combination: ModelCombination): ResolvedCombination {

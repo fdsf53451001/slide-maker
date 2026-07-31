@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import type { StylePreset, StyleReferenceImage } from "@slide-maker/core";
+import {
+  STYLE_REFERENCE_IMAGE_LIMIT,
+  type StylePreset,
+  type StyleReferenceImage,
+} from "@slide-maker/core";
 import { api, styleAssetUrl } from "./api.js";
 import { PdfImportModal } from "./PdfImportModal.js";
 import { ErrorToast } from "./ErrorToast.js";
@@ -159,7 +163,7 @@ export function StyleEditor({
     try {
       const reference = JSON.parse(serialized) as StyleReferenceImage;
       setDraft((value) =>
-        value.referenceImages.length >= 4
+        value.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT
           ? value
           : {
               ...value,
@@ -445,20 +449,22 @@ export function StyleEditor({
             >
               <span>{cover ? "封面參考圖" : draft.name || "風格預覽"}</span>
             </div>
-            <div className="section-label">REFERENCE IMAGES · {draft.referenceImages.length}/4</div>
+            <div className="section-label">
+              REFERENCE IMAGES · {draft.referenceImages.length}/{STYLE_REFERENCE_IMAGE_LIMIT}
+            </div>
             {!readOnly && (
               /*
-                disabled 原本只看「是否已滿 4 張」：上傳期間這顆仍然可按，文字也還寫著
+                disabled 原本只看「是否已滿」：上傳期間這顆仍然可按，文字也還寫著
                 「＋ 加入 PNG / JPG 參考圖」，於是連選兩個檔會有兩筆上傳同時在跑，兩份
-                setDraft 依回應先後把清單擠到 4 張以上或互相覆蓋。旁邊的「從 PDF 匯入」
+                setDraft 依回應先後把清單擠過上限或互相覆蓋。旁邊的「從 PDF 匯入」
                 早就擋了 busy，這顆只是漏掉。
               */
               <label
-                className={`upload-source ${busy || draft.referenceImages.length >= 4 ? "disabled" : ""}`}
+                className={`upload-source ${busy || draft.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT ? "disabled" : ""}`}
               >
                 ＋ {running("upload") ? "上傳中…" : "加入 PNG / JPG 參考圖"}
                 <input
-                  disabled={busy || draft.referenceImages.length >= 4}
+                  disabled={busy || draft.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT}
                   type="file"
                   accept="image/png,image/jpeg"
                   onChange={(event) => {
@@ -484,8 +490,8 @@ export function StyleEditor({
             {!readOnly && (
               <button
                 type="button"
-                className={`upload-source pdf-source ${draft.referenceImages.length >= 4 ? "disabled" : ""}`}
-                disabled={busy || draft.referenceImages.length >= 4}
+                className={`upload-source pdf-source ${draft.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT ? "disabled" : ""}`}
+                disabled={busy || draft.referenceImages.length >= STYLE_REFERENCE_IMAGE_LIMIT}
                 onClick={() => setPdfImport(true)}
               >
                 ＋ 從 PDF 匯入參考圖
@@ -511,7 +517,7 @@ export function StyleEditor({
                     /*
                       三顆按鈕原本只有「↑」「↓」「×」當可及名稱，螢幕閱讀器念的是符號名
                       （或直接跳過）。順序有語意（coverImageId 依賴它）、第三顆會刪掉一張
-                      參考圖而上限只有 4 張，猜錯的代價是實際的資料損失。名稱與 Editor.tsx
+                      參考圖而且有數量上限，猜錯的代價是實際的資料損失。名稱與 Editor.tsx
                       大綱頁那組同功能按鈕一致（往上移動／往下移動），刪除則帶上是哪一張。
                     */
                     <span>
@@ -624,11 +630,14 @@ export function StyleEditor({
       )}
       {pdfImport && (
         <PdfImportModal
-          remaining={4 - draft.referenceImages.length}
+          remaining={STYLE_REFERENCE_IMAGE_LIMIT - draft.referenceImages.length}
           onClose={() => setPdfImport(false)}
           onImported={(references) => {
             setDraft((value) => {
-              const added = references.slice(0, 4 - value.referenceImages.length);
+              const added = references.slice(
+                0,
+                STYLE_REFERENCE_IMAGE_LIMIT - value.referenceImages.length,
+              );
               return {
                 ...value,
                 referenceImages: [...value.referenceImages, ...added],

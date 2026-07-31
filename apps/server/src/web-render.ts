@@ -11,6 +11,7 @@
 
 import { assertPublicHttpUrl } from "@slide-maker/core/url-safety";
 import { DEFAULT_WEB_RENDER_TIMEOUT_MS, type WebRenderEngine } from "./config.js";
+import { readCappedBytes } from "./web-body.js";
 import { MAX_WEB_BYTES } from "./web-capture.js";
 
 /** render 服務回來的一頁：正文，外加它自己宣告的標題（沒有就空字串）。 */
@@ -145,11 +146,8 @@ export function createJinaRenderer({
       if (response.status === 429) throw new Error("WEB_RENDER_RATE_LIMITED");
       if (!response.ok) throw new Error(`WEB_RENDER_HTTP_${response.status}`);
       // 上限沿用 `captureWebPage` 的 `MAX_WEB_BYTES`：兩條路抓的是同一份網頁正文，
-      // 各自定一個數字遲早會分歧。宣告值與實際位元組都檢查，前者只是省下白讀的成本。
-      if (Number(response.headers.get("content-length") ?? "0") > MAX_WEB_BYTES)
-        throw new Error("WEB_RENDER_TOO_LARGE");
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.length > MAX_WEB_BYTES) throw new Error("WEB_RENDER_TOO_LARGE");
+      // 各自定一個數字遲早會分歧。共用 reader 同時檢查宣告與實際位元組數。
+      const bytes = await readCappedBytes(response, MAX_WEB_BYTES, "WEB_RENDER_TOO_LARGE");
       const raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
       if (!raw) throw new Error("WEB_RENDER_EMPTY");
       const { fields, body } = parseJinaReader(raw);

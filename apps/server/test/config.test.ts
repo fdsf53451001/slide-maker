@@ -183,3 +183,46 @@ describe("parseImageDescriptionMode", () => {
     expect(() => parseImageDescriptionMode(value)).toThrow(/SLIDE_MAKER_IMAGE_DESCRIPTION/),
   );
 });
+
+describe("bounded integer configuration error messages", () => {
+  it.each([
+    {
+      name: "model timeout",
+      parse: parseModelTimeoutMs,
+      malformed: "nope",
+      outOfRange: String(MIN_MODEL_TIMEOUT_MS - 1),
+      malformedMessage: "SLIDE_MAKER_MODEL_TIMEOUT_MS must be an integer in milliseconds",
+      rangeMessage: `SLIDE_MAKER_MODEL_TIMEOUT_MS must be between ${MIN_MODEL_TIMEOUT_MS} and ${MAX_MODEL_TIMEOUT_MS}`,
+    },
+    {
+      name: "OCR side length",
+      parse: parseOcrDetSideLen,
+      malformed: "1920px",
+      outOfRange: String(MIN_OCR_DET_SIDE_LEN - 1),
+      malformedMessage: "SLIDE_MAKER_OCR_DET_SIDE_LEN must be an integer",
+      rangeMessage: `SLIDE_MAKER_OCR_DET_SIDE_LEN must be between ${MIN_OCR_DET_SIDE_LEN} and ${MAX_OCR_DET_SIDE_LEN}`,
+    },
+    {
+      name: "OpenAI timeout",
+      parse: parseOpenAiTimeoutMs,
+      malformed: "nope",
+      outOfRange: String(MIN_OPENAI_TIMEOUT_MS - 1),
+      malformedMessage: "SLIDE_MAKER_OPENAI_TIMEOUT_MS must be an integer in milliseconds",
+      rangeMessage: `SLIDE_MAKER_OPENAI_TIMEOUT_MS must be between ${MIN_OPENAI_TIMEOUT_MS} and ${MAX_OPENAI_TIMEOUT_MS}`,
+    },
+    {
+      name: "web render timeout",
+      parse: parseWebRenderTimeoutMs,
+      malformed: "30s",
+      outOfRange: String(MIN_WEB_RENDER_TIMEOUT_MS - 1),
+      malformedMessage: "SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be an integer in milliseconds",
+      rangeMessage: `SLIDE_MAKER_WEB_RENDER_TIMEOUT_MS must be between ${MIN_WEB_RENDER_TIMEOUT_MS} and ${MAX_WEB_RENDER_TIMEOUT_MS}`,
+    },
+  ])(
+    "keeps $name errors exact",
+    ({ parse, malformed, outOfRange, malformedMessage, rangeMessage }) => {
+      expect(() => parse(malformed)).toThrowError(new Error(malformedMessage));
+      expect(() => parse(outOfRange)).toThrowError(new Error(rangeMessage));
+    },
+  );
+});
