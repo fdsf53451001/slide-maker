@@ -5,7 +5,7 @@ import {
   type ProviderUsage,
   withProviderUsage,
 } from "@slide-maker/core";
-import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
+import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/core/png-canvas";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 import { parseOpenRouterUsage } from "./usage.js";

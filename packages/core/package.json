@@ -19,6 +19,11 @@
       "development": "./src/url-safety.ts",
       "types": "./dist/url-safety.d.ts",
       "import": "./dist/url-safety.js"
+    },
+    "./png-canvas": {
+      "development": "./src/png-canvas.ts",
+      "types": "./dist/png-canvas.d.ts",
+      "import": "./dist/png-canvas.js"
     }
   },
   "scripts": {
@@ -27,6 +32,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "zod": "^3.25.76"
   }
 }

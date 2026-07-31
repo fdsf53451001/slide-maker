@@ -1,6 +1,6 @@
 import { Resvg } from "@resvg/resvg-js";
 import { SafeProviderError, type ImageGenerationRequest } from "@slide-maker/core";
-import { validatePngStructure } from "@slide-maker/provider-codex";
+import { validatePngStructure } from "@slide-maker/core/png-canvas";
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const SUPPORTED_RASTER = ["image/png", "image/jpeg", "image/webp"];

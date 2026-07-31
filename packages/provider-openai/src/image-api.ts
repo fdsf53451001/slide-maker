@@ -5,7 +5,7 @@ import {
   type ProviderUsage,
   withProviderUsage,
 } from "@slide-maker/core";
-import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/provider-codex";
+import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/core/png-canvas";
 import {
   detectImageMediaType,
   type OpenAiClientConfig,
