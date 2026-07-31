@@ -157,10 +157,15 @@ describe("GeminiImageProvider", () => {
     expect(call.headers["x-goog-api-key"]).toBe("test-key");
     expect(call.headers).not.toHaveProperty("authorization");
     const body = call.body as {
-      generationConfig: { responseModalities: string[]; imageConfig?: { aspectRatio: string } };
+      generationConfig: {
+        responseModalities: string[];
+        imageConfig?: { aspectRatio?: string; imageSize?: string };
+      };
     };
     expect(body.generationConfig.responseModalities).toEqual(["IMAGE"]);
     expect(body.generationConfig.imageConfig?.aspectRatio).toBe("16:9");
+    // 少了 imageSize 模型只回 1376×768，正規化要放大 1.40×（銳利度掉一半）。
+    expect(body.generationConfig.imageConfig?.imageSize).toBe("2K");
     const prompt = requestParts(call)[0]!.text ?? "";
     expect(prompt).toContain("slide.content field is the authoritative visible copy");
     expect(prompt).toContain('"layoutHint": "左文右圖"');

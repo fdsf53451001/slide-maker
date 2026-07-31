@@ -183,7 +183,7 @@ export class GeminiImageProvider implements ImageProvider {
           // gemini-3-pro-image、gemini-2.5-flash-image、gemini-3.1-flash-lite-image），
           // 沒有任何一個要求併帶 "TEXT"。
           responseModalities: ["IMAGE"],
-          ...(aspectRatio(request.width, request.height) ?? {}),
+          ...imageConfig(request.width, request.height),
           // 2026-07-23 實測（6 取樣 vs 6 對照）：temperature 0 使文字抽離的漏抹率大幅
           // 下降（平均 ~22 區 → ~5 區）；一般生成／編輯不帶 temperature，保留預設創意度。
           ...(request.edit?.purpose === "text-removal" ? { temperature: 0 } : {}),
@@ -192,8 +192,8 @@ export class GeminiImageProvider implements ImageProvider {
       context?.signal,
     );
     await context?.onProgress?.({ phase: "validating_output" });
-    // 回應可能是 JPEG 或 PNG（依模型而異，實測 1376×768），一律交給共用的 cover
-    // 正規化轉成 canvas 尺寸的 PNG。
+    // 回應可能是 JPEG 或 PNG（依模型而異；`imageSize:"2K"` 下實測 2752×1536），一律交給
+    // 共用的 cover 正規化轉成 canvas 尺寸的 PNG——2K 對 1920×1080 是下採樣，見 imageConfig()。
     // usage 先解出來，解圖再包進 withProviderUsage：`GEMINI_IMAGE_MISSING`（模型不支援
     // 圖片輸出、只回了文字）是**往返成功之後**才失敗的，token 已經燒掉，錯誤必須把它帶走。
     const usage = parseGeminiUsage(payload);
@@ -216,16 +216,27 @@ export class GeminiImageProvider implements ImageProvider {
 }
 
 /**
- * 本專案畫布恆為 16:9（`capabilities.supportedSizes` 只有 1920×1080），所以非 16:9 分支
- * 實務上打不到，純屬防禦：真的收到別的比例時寧可不指定 aspectRatio，因為送一個與畫布
- * 不符的比例會讓模型照錯的比例構圖，正規化再 cover 裁切一次就吃掉版面邊緣。
+ * `imageSize` 固定 `2K`——這是畫質的關鍵，不是可有可無的調校。
+ *
+ * 2026-07-31 實測（AI Studio 原生端點與 CLIProxyAPI 的 chat translator 行為一致）：不送
+ * `imageSize` 時模型只回 **1376×768**，`rasterToCanvasPng` 得**放大 1.40×** 才填滿 1920×1080
+ * 畫布；送 `2K` 則回 **2752×1536**，變成**下採樣 0.70×**——放大會糊，下採樣反而銳利。
+ * 端到端跑真實投影片 fixture：銳利度（Laplacian 變異數）**99.3 → 430.1**、0.87–1.0 頻段
+ * 高頻能量 0.0042% → 0.0300%，代價是耗時 +17%、token +16%（3296 → 3819）。
+ * （拿純色測試圖估會低估收益、高估成本：那組只有 34.8 → 66.9，成本卻是 +60%／+36%。
+ * 影像的量測一律要用有內容的 fixture。）`4K` 回 5504×3072／9 MB，對這個畫布是浪費。
+ *
+ * `aspectRatio` 與 `imageSize` 分開判斷：解析度與比例無關，所以非 16:9 時仍然要送
+ * `imageSize`。本專案畫布恆為 16:9（`capabilities.supportedSizes` 只有 1920×1080），
+ * 那個分支實務上打不到，純屬防禦：真的收到別的比例時寧可不指定 aspectRatio，因為送一個
+ * 與畫布不符的比例會讓模型照錯的比例構圖，正規化再 cover 裁切一次就吃掉版面邊緣。
  */
-function aspectRatio(
+function imageConfig(
   width: number,
   height: number,
-): { imageConfig: { aspectRatio: string } } | undefined {
-  if (height <= 0) return undefined;
-  return Math.abs(width / height - 16 / 9) < 0.02
-    ? { imageConfig: { aspectRatio: "16:9" } }
-    : undefined;
+): { imageConfig: { imageSize: string; aspectRatio?: string } } {
+  const sixteenByNine = height > 0 && Math.abs(width / height - 16 / 9) < 0.02;
+  return {
+    imageConfig: { imageSize: "2K", ...(sixteenByNine ? { aspectRatio: "16:9" } : {}) },
+  };
 }

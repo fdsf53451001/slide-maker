@@ -52,6 +52,31 @@ export function extractChatImage(payload: unknown): string {
   );
 }
 
+/**
+ * Gemini 專屬的 OpenRouter 風格 `image_config`，**只對 gemini 系模型送**。
+ *
+ * CLIProxyAPI 的 gemini chat translator 認得這個頂層欄位，會翻成原生的
+ * `generationConfig.imageConfig.{aspectRatio,imageSize}`；其他路由（GPT tool image 等）沒有
+ * 對應翻譯，而嚴格的 OpenAI 端點可能直接拒絕未知欄位，所以判斷方式比照 `web-search.ts`
+ * 的 `searchTool()`——那裡也是同一個 translator 的同一種擴充。
+ *
+ * `imageSize:"2K"` 是畫質關鍵而非可選調校：2026-07-31 實測不送時模型只回 1376×768，
+ * `rasterToCanvasPng` 得放大 1.40× 才填滿 1920×1080；送 `2K` 回 2752×1536，變成下採樣 0.70×。
+ * 端到端跑真實投影片 fixture：銳利度（Laplacian 變異數）99.3 → 430.1，耗時 +17%、token +16%。
+ * 與 `packages/provider-gemini` 的 `imageConfig()` 是同一個決定，兩條路都要送。
+ */
+function geminiImageConfig(
+  model: string,
+  width: number,
+  height: number,
+): { image_config: { image_size: string; aspect_ratio?: string } } | undefined {
+  if (!/^gemini-/i.test(model)) return undefined;
+  const sixteenByNine = height > 0 && Math.abs(width / height - 16 / 9) < 0.02;
+  return {
+    image_config: { image_size: "2K", ...(sixteenByNine ? { aspect_ratio: "16:9" } : {}) },
+  };
+}
+
 function validateEditReferences(request: ImageGenerationRequest): void {
   if (!request.edit) return;
   if (!request.references[request.edit.baseImageIndex])
@@ -91,7 +116,11 @@ export async function generateViaChat(
   const payload = await requestJson(config, {
     method: "POST",
     path: "/chat/completions",
-    body: { model, messages: [{ role: "user", content: parts }] },
+    body: {
+      model,
+      ...(geminiImageConfig(model, request.width, request.height) ?? {}),
+      messages: [{ role: "user", content: parts }],
+    },
     ...(signal ? { signal } : {}),
   });
   // 這條走的是 /chat/completions，usage 形狀與文字／搜尋相同（見 usage.ts 的 (a)）。

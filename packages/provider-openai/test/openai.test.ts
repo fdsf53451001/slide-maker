@@ -357,6 +357,56 @@ describe("OpenAiCompatibleImageProvider", () => {
   );
 
   it(
+    "chat shape sends image_config only for gemini models",
+    async () => {
+      const realPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGM8YKn9nwEPGCEKAMMnESErIVVKAAAAAElFTkSuQmCC";
+      const reply = () => ({
+        status: 200,
+        json: {
+          choices: [
+            {
+              message: {
+                images: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${realPng}` } },
+                ],
+              },
+            },
+          ],
+        },
+      });
+
+      // gemini：CLIProxyAPI 的 translator 認得這個頂層欄位，會翻成原生
+      // generationConfig.imageConfig。少了 image_size 模型只回 1376×768（放大 1.40×）。
+      active = await startFake(reply);
+      await new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gemini-3.1-flash-image",
+        apiShape: "chat",
+      }).generate(imageRequest());
+      const geminiBody = active.requests[0]!.body as {
+        image_config?: { image_size?: string; aspect_ratio?: string };
+      };
+      expect(geminiBody.image_config?.image_size).toBe("2K");
+      expect(geminiBody.image_config?.aspect_ratio).toBe("16:9");
+      active.server.closeAllConnections();
+      await new Promise<void>((resolve) => active!.server.close(() => resolve()));
+
+      // 非 gemini：其他路由沒有對應翻譯，嚴格的 OpenAI 端點還可能拒絕未知欄位，
+      // 所以這個欄位一個字都不能出現。
+      active = await startFake(reply);
+      await new OpenAiCompatibleImageProvider({
+        config: active.config,
+        model: "gpt-image-2",
+        apiShape: "chat",
+      }).generate(imageRequest());
+      const gptBody = active.requests[0]!.body as Record<string, unknown>;
+      expect(gptBody).not.toHaveProperty("image_config");
+    },
+    RASTER_TIMEOUT_MS,
+  );
+
+  it(
     "chat edits attach base, mask, and supplemental references in manifest order",
     async () => {
       const realPng =

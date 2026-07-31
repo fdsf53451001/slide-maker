@@ -377,12 +377,17 @@ describe("image normalisation", () => {
     }
   });
 
-  it("omits imageConfig when the canvas is not 16:9", async () => {
+  // 解析度與比例是兩件事：非 16:9 時仍要送 imageSize（不送等於退回 1376×768，正規化得
+  // 放大 1.40×），只有 aspectRatio 要省略——送一個與畫布不符的比例會讓模型照錯的比例構圖。
+  it("keeps imageSize but omits aspectRatio when the canvas is not 16:9", async () => {
     const calls = mockFetch(imageReply);
     const provider = new GeminiImageProvider({ config, model: "gemini-3.1-flash-image" });
     await provider.generate({ ...imageRequest(), width: 1080, height: 1080 });
-    const body = calls[0]!.body as { generationConfig: { imageConfig?: unknown } };
-    expect(body.generationConfig.imageConfig).toBeUndefined();
+    const body = calls[0]!.body as {
+      generationConfig: { imageConfig?: { imageSize?: string; aspectRatio?: string } };
+    };
+    expect(body.generationConfig.imageConfig?.imageSize).toBe("2K");
+    expect(body.generationConfig.imageConfig?.aspectRatio).toBeUndefined();
   });
 
   it("reports an unsupported inline mime type as a Gemini error, never an OPENAI_ code", async () => {
