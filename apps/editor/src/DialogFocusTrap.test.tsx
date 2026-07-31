@@ -6,7 +6,6 @@ import { createDefaultStyle, createProject, type PresentationProject } from "@sl
 import { Editor } from "./Editor.js";
 import { SourcePanel } from "./SourcePanel.js";
 import { focusableWithin, useDialogA11y } from "./useDialogA11y.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * `useDialogA11y` 的兩個承諾：Tab 關在框內、關閉後焦點回到觸發它的那顆按鈕。
@@ -21,7 +20,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 import { UsagePanel, formatCount, isUsageSummary } from "./UsagePanel.js";
 import type { UsageBucket, UsageModelBucket, UsageSummary } from "./api.js";
 
@@ -19,7 +18,6 @@ import type { UsageBucket, UsageModelBucket, UsageSummary } from "./api.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

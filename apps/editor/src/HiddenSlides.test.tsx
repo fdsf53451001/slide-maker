@@ -3,12 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor, firstPresentableIndex, nextVisibleIndex } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  resetSystemSettings();
 });
 
 describe("換頁的可見頁邊界只有一份", () => {

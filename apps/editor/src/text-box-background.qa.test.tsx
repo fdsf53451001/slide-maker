@@ -8,7 +8,6 @@ import {
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor, TextLayerCanvas, textBoxBackground } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 文字框底色的**對抗性**驗證（編輯器端）。
@@ -21,7 +20,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

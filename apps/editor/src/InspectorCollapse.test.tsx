@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 側邊欄收納鈕。jsdom 不套用外部樣式表，所以量不到真實寬度——能釘住的是**驅動版面的
@@ -17,7 +16,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

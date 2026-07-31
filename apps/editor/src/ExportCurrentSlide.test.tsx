@@ -3,12 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  resetSystemSettings();
 });
 
 /** `withImage` 為 false 的頁面沒有目前版本——單頁 PNG 沒有位元組可輸出。 */

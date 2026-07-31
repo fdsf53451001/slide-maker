@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 簡報模式的**邊界**與**跨端頁碼**，補在 `HiddenSlides.test.tsx` 之外：
@@ -18,7 +17,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  resetSystemSettings();
 });
 
 function hiddenDeck(topic: string, hiddenOrders: number[] = [], count = 4) {

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * UI/UX 稽核修好的那幾件事的回歸測試。
@@ -15,7 +14,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

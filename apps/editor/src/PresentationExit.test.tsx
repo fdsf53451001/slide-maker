@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createDefaultStyle, createProject, type PresentationProject } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 離開簡報模式後，編輯器選取的是**剛剛在放映的那一頁**。
@@ -17,7 +16,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  resetSystemSettings();
   // 有幾則會操作 history（回專案列表、換專案）；jsdom 的 window 是整個檔案共用的，
   // 不歸零會讓下一則以 `/projects/…` 當起始路由。
   window.history.replaceState({}, "", "/");

@@ -11,7 +11,6 @@ import {
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor, TextLayerCanvas, strokeCssColor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 文字描邊（編輯器端）。
@@ -22,7 +21,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });

@@ -9,7 +9,6 @@ import {
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor, TextLayerCanvas } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
@@ -3288,13 +3287,9 @@ describe("STEP 3 自動搜尋網路資源", () => {
     這一組是**核心迴歸**：舊版在 Editor() 有一條 effect，開／切專案時把瀏覽器 localStorage 的
     webSearchMode 同步回專案 brief。多人共用同一台伺服器（server 沒有 session／user 概念）時，
     後開專案的那個人會用自己的本機偏好蓋掉先開那個剛設好的值——而且是**開專案就發生**，不需要
-    任何操作。測試環境裡那個本機偏好一律是 DEFAULTS 的 "cached"（`resetSystemSettings()` 寫的
-    就是它），所以「專案是 disabled／live」正是舊版會發出覆寫 PATCH 的兩種情形；用 "cached"
-    當被害者測不出來（值相同，舊版那條 effect 也會 early-return）。
-
-    刻意不去 localStorage 塞值來加強：systemSettings 的 `cache` 在模組載入時就讀好，測試從
-    外面寫 localStorage 影響不到它（`onStorage` 只在有訂閱者時才掛上，而 `useSystemSettings`
-    現在一個生產呼叫點都沒有）。用專案值當變因才是真的會紅的寫法。
+    任何操作。舊版那個本機偏好的預設值是 "cached"，所以「專案是 disabled／live」正是它會發出
+    覆寫 PATCH 的兩種情形；用 "cached" 當被害者測不出來（值相同，舊版那條 effect 也會
+    early-return）。變因放在專案值而不是 localStorage，才是真的會紅的寫法。
   */
   it.each(["disabled", "live"] as const)(
     "開啟 brief 為 %s 的專案時，一筆 PATCH /brief 都不發（本機偏好不得覆寫專案）",
@@ -3563,7 +3558,6 @@ describe("文字圖層鍵盤快捷鍵", () => {
   // 另有一條會把網址推到 /styles 去驗路由 gate：不推回來的話，後面測試裡新掛的 Editor
   // 會以 /styles 當初始路由開在風格庫畫面，連專案都點不到。
   afterEach(() => {
-    resetSystemSettings();
     window.history.pushState({}, "", "/");
   });
 
@@ -4800,7 +4794,6 @@ describe("簡報模式滾輪換頁", () => {
 
 describe("文字框底色", () => {
   afterEach(() => {
-    resetSystemSettings();
     window.history.pushState({}, "", "/");
   });
 

@@ -8,7 +8,6 @@ import {
   type PresentationProject,
 } from "@slide-maker/core";
 import { Editor } from "./Editor.js";
-import { resetSystemSettings } from "./systemSettings.js";
 
 /**
  * 兩項「把沒用的東西拿掉」的需求，各自的**兩個方向**都要釘住：拿掉的真的不見了，
@@ -22,7 +21,6 @@ import { resetSystemSettings } from "./systemSettings.js";
 
 afterEach(() => {
   cleanup();
-  resetSystemSettings();
   window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });
