@@ -98,7 +98,50 @@ editing, or the extracted text layer — not by dragging text boxes.
 - The cheapest practical setup is a local CLIProxyAPI gateway with `gpt-image-2` — see
   [Connecting a model provider](#connecting-a-model-provider).
 
-## Requirements
+## Install
+
+Two ways in. **Docker Compose** is the shortest path to decks you would actually show
+someone — it brings its own model gateway. **From source** is what you want if you are going
+to change the code.
+
+|                | Docker Compose                                              | From source                            |
+| -------------- | ----------------------------------------------------------- | -------------------------------------- |
+| You need       | Docker with Compose v2, ~6 GB disk                          | Node.js 24+, pnpm 10.13.1, macOS/Linux |
+| Model provider | CLIProxyAPI included; burns your Codex/ChatGPT subscription | Bring your own, or run offline on mock |
+| OCR            | Baked into the image                                        | One extra command (`pnpm setup:ocr`)   |
+| First run      | 10–25 min build                                             | A couple of minutes                    |
+
+### Option A — Docker Compose (recommended)
+
+One `docker compose` runs **Slide Maker** and a **CLIProxyAPI (CLI2Proxy)** gateway together,
+so image generation and outlines burn your existing **ChatGPT/Codex subscription** instead of
+per-image API billing.
+
+```bash
+cp docker/cliproxy/config.example.yaml docker/cliproxy/config.yaml   # must exist before step 2
+docker compose --profile login run --rm --service-ports codex-login  # one-off Codex OAuth
+docker compose up -d --build
+```
+
+Step 2 prints an authorization URL — open it in your own browser; the callback returns to
+`localhost:1455` and the container exits on its own, leaving credentials in
+`docker/cliproxy/auths/` (that directory _is_ your login — never commit it).
+
+Then open <http://localhost:4173> and go to the **model library**: the first boot seeds a
+connection and image/text/search entries pointing at the gateway, but the default
+combination's image model is deliberately left on **mock**. Switch it to the OpenAI image
+entry, or every page comes out a deterministic fake.
+
+Both published ports bind to `127.0.0.1` only. Projects live in the named volume
+`slide-maker-data`; `docker compose down` keeps them, `down -v` deletes them.
+
+Copy `.env.example` to `.env` to override ports, model slugs, the OCR tier or the gateway key
+— everything has a working default, so `.env` is optional.
+
+**[`docker/README.md`](docker/README.md)** has the long version: what each step actually does,
+backup and restore, the update flow, and a troubleshooting table.
+
+### Option B — From source
 
 |         |                                                                                         |
 | ------- | --------------------------------------------------------------------------------------- |
@@ -108,8 +151,6 @@ editing, or the extracted text layer — not by dragging text boxes.
 | Python  | Optional, **3.9–3.12**, only for OCR / local inpainting                                 |
 
 No API key is needed to start: the mock provider produces deterministic slides offline.
-
-## Quick start
 
 ```bash
 npx pnpm@10.13.1 install
@@ -125,9 +166,12 @@ For UI-only work, run `pnpm dev:web` in a second terminal and open Vite's URL in
 Project data is written to `.data/` by default (override with `SLIDE_MAKER_DATA_ROOT`) and is
 intentionally ignored by Git.
 
-### Optional: OCR and local inpainting
+To point it at a real model, see [Connecting a model provider](#connecting-a-model-provider).
 
-Needed only for **Extract text** on generated pages. PDF deck import does not use it.
+#### Optional: OCR and local inpainting
+
+Needed only for **Extract text** on generated pages. PDF deck import does not use it, and the
+Docker image already ships it.
 
 ```bash
 pnpm setup:ocr     # creates .venv-ocr with paddlepaddle + paddleocr, downloads model weights
@@ -138,8 +182,9 @@ The script picks the newest available `python3.12`…`python3.9`. Restart the se
 
 ## Connecting a model provider
 
-There are four ways to give Slide Maker an image model. They differ in cost, setup effort and
-which capabilities you get.
+There are three ways to give Slide Maker an image model. They differ in cost, setup effort and
+which capabilities you get. (Docker Compose users already have #2 wired up — this section is
+what the compose stack does for you, and what to do instead if you install from source.)
 
 | #   | Way to connect                                                                              | Setup                                                 | Best for                                        |
 | --- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------- |
@@ -149,10 +194,9 @@ which capabilities you get.
 
 ### Recommended: CLIProxyAPI + `gpt-image-2`
 
-> **Want both halves in one command?** [`docker/README.md`](docker/README.md) ships a
-> `docker compose` stack that runs Slide Maker and CLIProxyAPI together, with a one-off
-> `--codex-login` step so image generation and outlines burn your ChatGPT/Codex
-> subscription instead of per-image API billing.
+> **Want both halves in one command?** [Option A](#option-a--docker-compose-recommended)
+> runs Slide Maker and CLIProxyAPI as one `docker compose` stack and does all of the below
+> for you, apart from the one manual click that switches the image model off mock.
 
 The cheapest setup that still produces good decks is a local **CLIProxyAPI (CLI2Proxy)**
 gateway with **`gpt-image-2`** on the Images API transport. It reuses your existing CLI

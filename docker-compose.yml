@@ -69,10 +69,8 @@ services:
       SLIDE_MAKER_OPENAI_SEARCH_MODEL: ${SLIDE_MAKER_SEARCH_MODEL:-gpt-5.6-terra}
       # 生圖一次動輒一分鐘以上，預設的 120 秒太緊。上限 30 分鐘。
       SLIDE_MAKER_OPENAI_TIMEOUT_MS: ${SLIDE_MAKER_OPENAI_TIMEOUT_MS:-300000}
-      # 這兩個**必須**是 openai：預設值 codex 指的是「本機安裝並登入的 Codex CLI」，
-      # 這個映像裡沒有它，維持預設會讓大綱與搜尋在執行期才失敗。
-      SLIDE_MAKER_TEXT_ENGINE: openai
-      SLIDE_MAKER_WEB_SEARCH_ENGINE: openai
+      # （曾經還要設 SLIDE_MAKER_TEXT_ENGINE／_WEB_SEARCH_ENGINE 把引擎從 codex 扳回
+      # openai；本機 Codex CLI 通道已於 2026-07-31 移除，這兩個變數不再存在。）
 
       # --- 其餘設定 -----------------------------------------------------------
       # 「貼上網址」抓到空殼頁時，要不要用第三方 render 服務（Jina AI）補抓正文。

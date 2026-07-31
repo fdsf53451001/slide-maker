@@ -160,18 +160,18 @@ docker compose up -d
 
 ## 疑難排解
 
-| 症狀                                      | 原因與處理                                                                                                       |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| gateway 起不來，log 提到 config 是目錄    | 漏了步驟 1 的 `cp`。刪掉被自動建出來的 `docker/cliproxy/config.yaml` 目錄，改成複製檔案。                        |
-| 生成失敗，gateway log 顯示 401            | `config.yaml` 的 `api-keys` 與 `.env` 的 `CLI_PROXY_API_KEY` 不一致；`models.json` 已存在時要改在 UI 的模型庫。  |
-| 每一頁都是同樣風格的假圖                  | 預設組合的影像模型還停在 mock，見步驟 4。                                                                        |
-| 生成失敗，訊息提到找不到模型              | 模型 slug 過期。用上面那行 `curl .../v1/models` 查實際清單，在模型庫改掉。                                       |
-| 大綱一直失敗                              | 文字引擎跑到 `codex` 去了（那指的是本機安裝的 Codex CLI，容器裡沒有）。模型庫裡把文字模型指到 gateway 那條連線。 |
-| 網路搜尋沒有結果                          | 搜尋能不能用取決於 gateway／模型有沒有接 `web_search` 工具，不保證普遍可用。做大綱時不勾網路搜尋即可。           |
-| `port is already allocated`（8317／1455） | 你已經有一份手動跑的 CLIProxyAPI。停掉它並搬憑證，或改 `CLI_PROXY_PORT`——見步驟 2 末段。                         |
-| `/v1/models` 回空陣列                     | key 對了但還沒登入（gateway log 會寫 `0 clients`）。回步驟 2。                                                   |
-| 生圖逾時                                  | 調大 `SLIDE_MAKER_OPENAI_TIMEOUT_MS`（上限 1800000）。已 seed 過的話改模型庫裡那條連線的超時。                   |
-| 抽出文字很慢                              | PaddleOCR 走 CPU，medium 層級每頁 6–8 秒。可把 `SLIDE_MAKER_OCR_MODEL_TIER` 改 `small`。                         |
+| 症狀                                      | 原因與處理                                                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| gateway 起不來，log 提到 config 是目錄    | 漏了步驟 1 的 `cp`。刪掉被自動建出來的 `docker/cliproxy/config.yaml` 目錄，改成複製檔案。                       |
+| 生成失敗，gateway log 顯示 401            | `config.yaml` 的 `api-keys` 與 `.env` 的 `CLI_PROXY_API_KEY` 不一致；`models.json` 已存在時要改在 UI 的模型庫。 |
+| 每一頁都是同樣風格的假圖                  | 預設組合的影像模型還停在 mock，見步驟 4。                                                                       |
+| 生成失敗，訊息提到找不到模型              | 模型 slug 過期。用上面那行 `curl .../v1/models` 查實際清單，在模型庫改掉。                                      |
+| 大綱一直失敗                              | 模型庫裡的文字模型沒指到 gateway 那條連線，或那個 slug 已經不在 `/v1/models` 清單裡。                           |
+| 網路搜尋沒有結果                          | 搜尋能不能用取決於 gateway／模型有沒有接 `web_search` 工具，不保證普遍可用。做大綱時不勾網路搜尋即可。          |
+| `port is already allocated`（8317／1455） | 你已經有一份手動跑的 CLIProxyAPI。停掉它並搬憑證，或改 `CLI_PROXY_PORT`——見步驟 2 末段。                        |
+| `/v1/models` 回空陣列                     | key 對了但還沒登入（gateway log 會寫 `0 clients`）。回步驟 2。                                                  |
+| 生圖逾時                                  | 調大 `SLIDE_MAKER_OPENAI_TIMEOUT_MS`（上限 1800000）。已 seed 過的話改模型庫裡那條連線的超時。                  |
+| 抽出文字很慢                              | PaddleOCR 走 CPU，medium 層級每頁 6–8 秒。可把 `SLIDE_MAKER_OCR_MODEL_TIER` 改 `small`。                        |
 
 ---
 

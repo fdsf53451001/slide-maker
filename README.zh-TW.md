@@ -60,7 +60,38 @@ English documentation: [README.md](README.md)
 - UI 內建**模型庫**：連線（base URL + key + protocol）、依能力分開的模型 entry（影像／文字／搜尋），以及可綁定到專案的具名組合。API key 在讀取時會被遮蔽。
 - 成本最低的實用組合是本機 CLIProxyAPI 搭 `gpt-image-2`，見[串接模型 provider](#串接模型-provider)。
 
-## 環境需求
+## 安裝
+
+兩條路。**Docker Compose** 是最快拿到「能拿出去給人看的簡報」的一條——它連模型 gateway 一起帶；**從原始碼裝**則適合你打算改程式碼的時候。
+
+|          | Docker Compose                               | 從原始碼裝                             |
+| -------- | -------------------------------------------- | -------------------------------------- |
+| 需要什麼 | Docker（Compose v2）、約 6 GB 磁碟           | Node.js 24+、pnpm 10.13.1、macOS/Linux |
+| 模型     | 內含 CLIProxyAPI，燒你的 ChatGPT／Codex 訂閱 | 自備，或離線用 mock                    |
+| OCR      | 已烘進映像                                   | 多跑一行 `pnpm setup:ocr`              |
+| 首次啟動 | build 10–25 分鐘                             | 幾分鐘                                 |
+
+### 做法 A：Docker Compose（推薦）
+
+一份 `docker compose` 同時起 **Slide Maker** 與 **CLIProxyAPI（CLI2Proxy）**，讓生圖與寫大綱燒你既有的 **ChatGPT／Codex 訂閱額度**，而不是按張計費的 API key。
+
+```bash
+cp docker/cliproxy/config.example.yaml docker/cliproxy/config.yaml   # 第 2 步之前這個檔案必須存在
+docker compose --profile login run --rm --service-ports codex-login  # 一次性的 Codex OAuth 登入
+docker compose up -d --build
+```
+
+第 2 步會印出一段授權網址——貼到你自己的瀏覽器完成授權，OAuth 會 callback 回 `localhost:1455`，容器隨即自己結束，憑證留在 `docker/cliproxy/auths/`（**那個目錄等同你的登入態**，不要提交、不要外流）。
+
+接著開 <http://localhost:4173> 進**模型庫**：首次啟動已經 seed 好一條指向 gateway 的連線與影像／文字／搜尋三個 entry，但預設組合的影像模型刻意停在 **mock**。手動把它改成 OpenAI 影像那一筆，否則每一頁都是離線用的確定性假圖。
+
+兩個對外 port 都只綁 `127.0.0.1`。專案資料在具名 volume `slide-maker-data`：`docker compose down` 不會動到它，`down -v` 才會刪掉。
+
+想改 port、模型 slug、OCR 層級或 gateway 的 key，就 `cp .env.example .env` 後編輯——全部都有預設值，不建 `.env` 也跑得起來。
+
+完整版（每一步實際做了什麼、備份還原、更新流程、疑難排解表）見 **[`docker/README.md`](docker/README.md)**。
+
+### 做法 B：從原始碼裝
 
 |          |                                                                       |
 | -------- | --------------------------------------------------------------------- |
@@ -70,8 +101,6 @@ English documentation: [README.md](README.md)
 | Python   | 選用，**3.9–3.12**，只有 OCR／本機 inpaint 才需要                     |
 
 不需要任何 API key 就能啟動：mock provider 離線就能產出確定性的頁面。
-
-## 快速開始
 
 ```bash
 npx pnpm@10.13.1 install
@@ -84,9 +113,11 @@ npx pnpm@10.13.1 dev
 
 專案資料預設寫在 `.data/`（可用 `SLIDE_MAKER_DATA_ROOT` 覆寫），並刻意被 Git 忽略。
 
-### 選用：OCR 與本機 inpaint
+要接上真的模型，見[串接模型 provider](#串接模型-provider)。
 
-只有對生成頁面做「抽出文字」時才需要，PDF 匯入簡報用不到。
+#### 選用：OCR 與本機 inpaint
+
+只有對生成頁面做「抽出文字」時才需要，PDF 匯入簡報用不到，Docker 映像也已經內含。
 
 ```bash
 pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預先下載模型權重
@@ -96,7 +127,7 @@ pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預
 
 ## 串接模型 provider
 
-有四種方式可以把影像模型接上 Slide Maker，差別在成本、設定成本與能拿到哪些能力。
+有三種方式可以把影像模型接上 Slide Maker，差別在成本、設定成本與能拿到哪些能力。（用 Docker Compose 的話第 2 種已經接好了——這一節講的就是 compose 幫你做掉的事，以及從原始碼裝時該怎麼自己來。）
 
 | #   | 串接方式                                                                            | 設定                          | 適用                                |
 | --- | ----------------------------------------------------------------------------------- | ----------------------------- | ----------------------------------- |
@@ -106,9 +137,9 @@ pnpm setup:ocr     # 建立 .venv-ocr，安裝 paddlepaddle + paddleocr，並預
 
 ### 推薦：CLIProxyAPI + `gpt-image-2`
 
-> **想一次把兩邊都裝好？**[`docker/README.md`](docker/README.md) 有一份 `docker compose`，
-> 同時起 Slide Maker 與 CLIProxyAPI，只要跑一次 `--codex-login`，生圖與大綱就都燒你的
-> ChatGPT／Codex 訂閱額度，而不是按張計費的 API。
+> **想一次把兩邊都裝好？**上面的〈做法 A〉用一份 `docker compose` 同時起
+> Slide Maker 與 CLIProxyAPI，下面這些設定它都幫你做掉了，只剩「把影像模型從 mock 改掉」
+> 那一次手動操作。
 
 **成本最低又能產出像樣簡報**的組合，是本機 **CLIProxyAPI（CLI2Proxy）** gateway 搭 **`gpt-image-2`**，走 Images API transport。它沿用你既有的 CLI 訂閱，而不是按張數計費的 API；而 `gpt-image-2` 在 `/images/generations` + `/images/edits` 上涵蓋完整功能面——生成、參考圖（以 edit 端點的 `image[]` 陣列傳入）與遮罩編輯。
 
