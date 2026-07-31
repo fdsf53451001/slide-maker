@@ -1,0 +1,33 @@
+# CLIProxyAPI 設定（Slide Maker 的 docker compose 用）。
+#
+#   cp docker/cliproxy/config.example.yaml docker/cliproxy/config.yaml
+#
+# 複製出來的 config.yaml 不入版控（裡面有 api-key），而且 CLIProxyAPI 執行期可能會
+# 寫回它，所以務必掛可寫的實體檔案而不是唯讀設定。
+#
+# 完整選項見上游的 config.example.yaml：
+# https://github.com/router-for-me/CLIProxyAPI/blob/main/config.example.yaml
+
+# 綁全介面。容器內這樣才收得到 compose 網路與 port 映射的流量；對外暴露範圍由
+# docker-compose.yml 的 `127.0.0.1:8317:8317` 控制，不是由這裡控制。
+host: ""
+port: 8317
+
+# 客戶端要帶的 key（Authorization: Bearer <key>）。
+#
+# **改這裡就要一起改 .env 的 CLI_PROXY_API_KEY**——Slide Maker 是靠那個變數 seed 出
+# 連線設定的，兩邊不一致的話 gateway 會回 401，而 Slide Maker 只會顯示「生成失敗」。
+api-keys:
+  - "slide-maker-local"
+
+# 登入憑證的落點。~ 展開成 /root，對應 compose 掛的 ./docker/cliproxy/auths。
+auth-dir: "~/.cli-proxy-api"
+
+# 管理 API／控制面板。secret-key 留空＝整組停用（所有 /v0/management 路由回 404）。
+# 要用的話填一個密碼並保持 allow-remote: false，只從本機連。
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
+# 排查用。開了會把每個請求的細節寫進 logs/，包含 prompt 內容。
+debug: false
