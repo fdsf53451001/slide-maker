@@ -16,7 +16,6 @@ import {
   TEXT_STROKE_DEFAULT_WIDTH_EM,
   TEXT_STROKE_MAX_WIDTH_EM,
   type EditableTextBox,
-  type PageNumberSettings,
   type PresentationBrief,
   type PresentationProject,
   type SlideSpec,
@@ -93,12 +92,8 @@ import {
   PHASE_LABELS,
   VERSION_DELETE_MESSAGES,
 } from "./editor/projectHelpers.js";
-import {
-  mergePageNumber,
-  PAGE_NUMBER_DEBOUNCE_MS,
-  type PageNumberPatch,
-} from "./editor/pageNumberModel.js";
 import { useIsomorphicLayoutEffect } from "./editor/useIsomorphicLayoutEffect.js";
+import { usePageNumberDraft } from "./editor/usePageNumberDraft.js";
 import { useWebSearchToggle } from "./editor/webSearch.js";
 import { SlideVisibilityIcon, TextToolIcon } from "./editor/icons.js";
 import { SlideSourceChips } from "./editor/SlideSourceChips.js";
@@ -390,32 +385,8 @@ export function Editor() {
    * 區域變數會連同冷卻與累積量一起被重置，慣性尾巴就攔不住了。
    */
   const presentationWheel = useRef({ accumulated: 0, lastEventAt: 0, lockUntil: 0, lockCap: 0 });
-  /**
-   * 頁碼設定的樂觀本地值（未定義代表「就用伺服器上那份」）。
-   *
-   * 滑桿拖一次會連發數十個 change，每一次都送 PATCH 等於讓
-   * `repository.updateProject`（取檔鎖 → 讀 project.json → 全量 zod 驗證 → 原子寫）跑數十趟；
-   * 150 頁 PDF 匯入專案的 project.json 相當大。連續型控制項因此先寫進這裡讓畫布即時反應，
-   * 真正的請求 debounce 之後只送最後一次。
-   */
-  const [pageNumberDraft, setPageNumberDraft] = useState<PageNumberSettings>();
-  /** 遞增的請求序號：debounce 之後仍可能兩筆在途，回應亂序時只認最新那一筆。 */
-  const pageNumberSeq = useRef(0);
-  const pageNumberTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  /** 還沒送出的欄位。debounce 期間改到別的欄位要併進同一筆，否則前一筆會被計時器取消掉。 */
-  const pageNumberPending = useRef<PageNumberPatch>({});
-  // 換專案時丟掉樂觀值與在途請求，免得上一份專案的頁碼設定套到下一份上。
-  useEffect(() => {
-    setPageNumberDraft(undefined);
-    pageNumberPending.current = {};
-    return () => {
-      pageNumberSeq.current += 1;
-      pageNumberPending.current = {};
-      if (pageNumberTimer.current === undefined) return;
-      clearTimeout(pageNumberTimer.current);
-      pageNumberTimer.current = undefined;
-    };
-  }, [project?.id]);
+  // 頁碼設定的樂觀值、序號防亂序與 debounce 寫回（整簇在 `usePageNumberDraft`）。
+  const { pageNumberDraft, patchPageNumber } = usePageNumberDraft(project, setProject, setError);
   /**
    * 離開這份專案（換專案或整個卸載）時，批次抽字不再送出後續頁面，且在途那一頁的結果
    * 不可以寫回來——`setProject` 收到的是**上一份**專案的內容，會直接蓋掉畫面上的新專案。
@@ -1521,55 +1492,6 @@ export function Editor() {
   // 面板與預覽一律讀樂觀值；只有它才會在滑桿還沒 debounce 出去時就跟著動。
   const pageNumber = pageNumberDraft ?? project.pageNumber;
   const pageNumberProject = pageNumberDraft ? { ...project, pageNumber: pageNumberDraft } : project;
-  const flushPageNumber = async () => {
-    if (pageNumberTimer.current !== undefined) {
-      clearTimeout(pageNumberTimer.current);
-      pageNumberTimer.current = undefined;
-    }
-    const patch = pageNumberPending.current;
-    pageNumberPending.current = {};
-    if (!Object.keys(patch).length) return;
-    const seq = (pageNumberSeq.current += 1);
-    setError(undefined);
-    try {
-      const updated = await api.updatePageNumber(project.id, patch);
-      // 更晚送出的一筆已經在途（或已回來）時，這筆是舊資料，寫進去就是 UI 跳回舊值。
-      if (seq !== pageNumberSeq.current) return;
-      setProject(updated);
-      // 還有排隊中的變更時樂觀值比伺服器新，留著等下一輪回應再收。
-      if (pageNumberTimer.current === undefined) setPageNumberDraft(undefined);
-    } catch (reason) {
-      if (seq !== pageNumberSeq.current) return;
-      // 失敗就退回伺服器上那份，不讓畫布停在一個沒被接受的狀態。
-      setPageNumberDraft(undefined);
-      setError(reason instanceof Error ? reason.message : "操作失敗");
-    }
-  };
-  /**
-   * `debounce` 給滑桿與色票這種一次操作連發數十個 change 的控制項；其餘控制項一次一個值，
-   * 立刻送出。兩者都先寫樂觀值，畫布因此永遠是即時的。
-   */
-  const patchPageNumber = (patch: PageNumberPatch, options: { debounce?: boolean } = {}) => {
-    setPageNumberDraft((current) => mergePageNumber(current ?? project.pageNumber, patch));
-    const pending = pageNumberPending.current;
-    // 巢狀欄位逐欄併：整個換掉的話，同一輪裡先改的 background.color 會被後改的 opacity 蓋掉。
-    const background = { ...pending.background, ...patch.background };
-    pageNumberPending.current = {
-      ...pending,
-      ...patch,
-      ...(Object.keys(background).length ? { background } : {}),
-    };
-    if (pageNumberTimer.current !== undefined) clearTimeout(pageNumberTimer.current);
-    pageNumberTimer.current = undefined;
-    if (!options.debounce) {
-      void flushPageNumber();
-      return;
-    }
-    pageNumberTimer.current = setTimeout(() => {
-      pageNumberTimer.current = undefined;
-      void flushPageNumber();
-    }, PAGE_NUMBER_DEBOUNCE_MS);
-  };
   const startPresentation = () => {
     const preferred = Math.max(
       0,
