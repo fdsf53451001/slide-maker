@@ -12,6 +12,7 @@ import {
 } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import { ModelRuntime } from "../src/model-runtime.js";
+import { isStyleDirectionPrompt, STYLE_DIRECTION_REPLY } from "./helpers/style-direction-stub.js";
 
 /**
  * outline-overflow.test.ts 的補充：那一份釘住了「單頁三輪都超標」「重試帶草稿」「整份只帶
@@ -50,6 +51,9 @@ describe("大綱超標收斂的補充情境", () => {
       id: "stub-text",
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
+        // 風格決議是大綱之後**另外一次**呼叫，不屬於這一組測試在驗的兩階段。給它一份
+        // 合法回覆並且不記進 prompts：那些斷言是靠「第幾次呼叫」與陣列長度成立的。
+        if (isStyleDirectionPrompt(request.prompt)) return { value: STYLE_DIRECTION_REPLY };
         prompts.push(request.prompt);
         return { value: reply(prompts.length, request.prompt) };
       },

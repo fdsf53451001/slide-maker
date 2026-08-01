@@ -9,6 +9,7 @@ import type { PresentationProject, SourceAsset } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import { imageSummaryNotice } from "../src/outline-sources.js";
 import { SqliteFtsRetriever } from "../src/retriever.js";
+import { isStyleDirectionPrompt, STYLE_DIRECTION_REPLY } from "./helpers/style-direction-stub.js";
 import { knownSourceContext } from "../src/source-context.js";
 import {
   IMAGE_DESCRIPTION_CHUNK_PREFIX,
@@ -114,7 +115,16 @@ describe("圖片描述接上檢索鏈", () => {
           );
         // 大綱那一次：記下 prompt，回一份最小合法大綱。
         const user = body.messages?.find((message) => message.role === "user");
-        outlinePrompts.push(flatten(user?.content));
+        const prompt = flatten(user?.content);
+        // 大綱之後還有一次「風格決議」（AI 自由設計那條）。它與這個檔案要驗的檢索鏈無關，
+        // 但仍是同一個假端點收到的請求：不濾掉的話 outlinePrompts 會多出第三筆。
+        if (isStyleDirectionPrompt(prompt))
+          return response.end(
+            JSON.stringify({
+              choices: [{ message: { content: JSON.stringify(STYLE_DIRECTION_REPLY) } }],
+            }),
+          );
+        outlinePrompts.push(prompt);
         response.end(
           JSON.stringify({
             choices: [

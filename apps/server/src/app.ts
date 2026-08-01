@@ -407,6 +407,9 @@ export async function createApp(
         ...(patch.referenceImages ? { referenceImages: patch.referenceImages } : {}),
         updatedAt: new Date().toISOString(),
       });
+      // 真正的參考圖分析接手之後，「AI 自由設計的風格決議」那筆結果就過期了：留著它，
+      // 前端會對著一份剛分析好的設計系統說「這份簡報沒有共用的視覺基準」。
+      if (patch.designSystem !== undefined) delete current.styleDirection;
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });

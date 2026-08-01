@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { z } from "zod";
 import {
+  logWarn,
   STYLE_REFERENCE_IMAGE_LIMIT,
   type StructuredTextResult,
   type StyleReferenceImage,
@@ -64,7 +65,19 @@ export function registerStyleAnalysisRoutes(app: Express, ctx: AppContext): void
     }
     void usageLedger.recordGlobal({ ...usageFields, ok: true, ...usageCallFields(outcome) });
     const result = styleAnalysisSchema.parse(outcome.value);
-    return { designSystem: renderDesignSystem(result), avoid: result.avoid };
+    const rendered = renderDesignSystem(result);
+    /*
+     * 明暗登記是這份設計系統裡唯一「缺了就等於整條規則不存在」的欄位（其餘欄位少一個
+     * 只是少一段），而非嚴格 gateway 丟掉自己不認識的欄位是常態——所以它的降級一定要
+     * 留下證據。只記代碼與模型 id：色值、頁面內容、prompt 一字不進 log。
+     */
+    if (rendered.tonalRegisterSource !== "model")
+      logWarn("style_analysis_tonal_register_degraded", {
+        source: rendered.tonalRegisterSource,
+        modelId: structuredText.id,
+        referenceCount: referenceIds.length,
+      });
+    return { designSystem: rendered.markdown, avoid: result.avoid };
   }
 
   app.post("/api/style-analysis", async (request, response) => {

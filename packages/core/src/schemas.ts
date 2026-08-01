@@ -45,6 +45,19 @@ export const STYLE_REFERENCE_IMAGE_LIMIT = 4;
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_DECK_IMPORT_PAGES = 150;
 
+/**
+ * 頁型：封面／段落頁／內頁。
+ *
+ * **住在 core 是因為三個地方要用同一組字串**：大綱決定每頁是哪一種並寫進
+ * `slide.pageType`、風格分析的「依頁型」規則以同一組 kind 命名、影像合約據此挑出該套
+ * 哪一段規則。三邊各寫一份 enum 的話，「大綱說 section、設計系統只寫了 cover 與 content」
+ * 這種對不上是**靜默**的——模型不會 throw，只會替那一頁自己編一套看起來合理的版面，
+ * 而段落頁的規則本來就允許換底色，於是就是使用者回報的「一長串一黑一白」。
+ */
+export const SLIDE_PAGE_TYPES = ["cover", "section", "content"] as const;
+export const slidePageTypeSchema = z.enum(SLIDE_PAGE_TYPES);
+export type SlidePageType = (typeof SLIDE_PAGE_TYPES)[number];
+
 export const sourceUsageSchema = z.enum([
   "content",
   "visual-reference",
@@ -189,6 +202,14 @@ export const slideOutlineSnapshotSchema = z.object({
   layoutHint: z.string().default(""),
   imagePrompt: z.string().default(""),
   sourceIds: z.array(z.string()).default([]),
+  /**
+   * 這一版是照哪一種頁型畫的。改頁型會換掉整張圖的版面（封面滿版 vs 內頁格線），所以它
+   * **要**進快照——與 `hidden` 相反，那個一個像素都沒動到圖。
+   * 維持 optional 而不是 `.default("content")`：舊快照與舊專案都沒有這個欄位，補 default
+   * 會讓「大綱沒表態」與「大綱說這是內頁」變成同一件事，於是舊專案的封面頁在下一次生成
+   * 時被合約當成內頁重畫。兩邊同為 `undefined` 時比對仍然相等，橘框不會平白亮起來。
+   */
+  pageType: slidePageTypeSchema.optional(),
 });
 
 /**
@@ -335,6 +356,14 @@ export const slideSpecFieldsSchema = z.object({
   layoutHint: z.string().default(""),
   dataBasis: z.array(z.string()).default([]),
   imagePrompt: z.string().default(""),
+  /**
+   * 這一頁是封面、段落頁還是內頁。**由大綱決定並寫下來，不再讓影像模型自己猜**：合約
+   * 過去要模型從 `purpose`／`content` 反推頁型，猜錯就套錯頁型規則，而段落頁的規則往往
+   * 允許換底色——那是背景翻轉的其中一個入口。
+   * `undefined` 代表大綱沒有表態（舊專案、或非嚴格 gateway 把這個欄位整個丟掉），合約
+   * 會退回「你自己判斷」＝加入這個欄位前的行為。
+   */
+  pageType: slidePageTypeSchema.optional(),
   styleOverride: stylePresetSchema.partial().optional(),
   /** 這一頁實際使用的全部來源（使用者指定的 ∪ 模型挑的）。 */
   sourceIds: z.array(z.string()).default([]),
@@ -461,6 +490,28 @@ export const generationJobSchema = z.object({
     .optional(),
 });
 
+/**
+ * 「AI 自由設計」的風格決議結果（見 `apps/server/src/style-direction.ts`）。
+ *
+ * 語意與 `generationJobSchema.textExtraction.styleRefinement` 是同一套，只是掛在專案上
+ * ——這一步沒有 job 可以掛，而使用者要知道的事情一模一樣：**這份簡報到底有沒有一份共用
+ * 的設計系統**。沒有的話每一頁會各自決定視覺語言，而那與「模型今天狀況比較差」在畫面上
+ * 長得一樣，沒有這個欄位就只能靠猜。
+ *
+ * `applied` 是「designSystem 有沒有真的寫進 styleSnapshot」；`applied: true` 仍可能帶
+ * `reason`，代表寫進去了但有具名缺口（例如模型沒講明整份走深色還是淺色，明暗仍可能翻）。
+ * 兩者的下一步不同，所以刻意不收斂成一個布林。`detail` 只帶 provider 的
+ * `availability.reason`——那是靜態設定字串（缺哪個環境變數、缺哪把 key），往往正好是下一步。
+ */
+export const styleDirectionOutcomeSchema = z.object({
+  applied: z.boolean(),
+  reason: z
+    .string()
+    .regex(/^[A-Z0-9_]+$/)
+    .optional(),
+  detail: z.string().max(500).optional(),
+});
+
 export const presentationProjectSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION),
   id: z.string().min(1),
@@ -473,6 +524,11 @@ export const presentationProjectSchema = z.object({
     height: z.number().int().positive().default(1080),
   }),
   styleSnapshot: stylePresetSchema,
+  /**
+   * 最近一次「風格決議」的結果。optional＝這個功能之前的專案沒有它，前端一律當成
+   * 「沒有跑過」而不是「跑失敗了」。
+   */
+  styleDirection: styleDirectionOutcomeSchema.optional(),
   /** 舊專案檔沒有這個欄位，靠 zod default 補齊（預設關閉，行為與加入前一致）。 */
   pageNumber: pageNumberSettingsSchema.default({}),
   /** 綁定的模型組合 id（模型庫）。未設時生成流程回退到庫的 default 組合（lazy 綁定）。 */
@@ -517,6 +573,7 @@ export type StylePreset = z.infer<typeof stylePresetSchema>;
 export type StyleReferenceImage = z.infer<typeof styleReferenceImageSchema>;
 export type SlideSpec = z.infer<typeof slideSpecSchema>;
 export type SlideOutlineSnapshot = z.infer<typeof slideOutlineSnapshotSchema>;
+export type StyleDirectionOutcome = z.infer<typeof styleDirectionOutcomeSchema>;
 export type SlideVersion = z.infer<typeof slideVersionSchema>;
 export type EditableTextBox = z.infer<typeof editableTextBoxSchema>;
 export type EditableTextLayer = z.infer<typeof editableTextLayerSchema>;

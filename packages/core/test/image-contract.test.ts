@@ -338,15 +338,28 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain("All STYLE references have equal influence");
     expect(prompt).not.toContain("DESIGN SYSTEM AUTHORITY");
     expect(prompt).not.toContain("PAGE TYPE:");
+    expect(prompt).not.toContain("COMPOSITION IS YOURS");
+    // 這三句是**舊行為本身**，不是順手保留的措辭：沒有設計系統時參考圖是唯一的視覺語言
+    // 來源，沒有東西可以接手構圖。拿掉「composition rhythm」等於讓那些專案連版面節奏都
+    // 失去依據，而它們並沒有得到任何補償。
+    expect(prompt).toContain(
+      "Style reference — take its palette, composition rhythm, typography treatment, spacing, and finish only.",
+    );
+    expect(prompt).toContain(
+      "Match its background language, composition rhythm, whitespace, alignment, component geometry, image treatment, contrast, accent-color distribution, and overall finish while adapting the layout to this slide's content.",
+    );
+    expect(prompt).toContain(
+      "Within visual decisions, style overrides slide.imagePrompt and generic model defaults.",
+    );
   });
 
-  it("splits structural and texture authority once a design system exists", () => {
+  it("splits invariants, page-type rules, and texture once a design system exists", () => {
     const input = request();
     input.style.designSystem = "## 色票\n- #F7F5F0 — 內頁畫布底色";
     const prompt = buildImageGenerationContract(input);
     expect(prompt).toContain("DESIGN SYSTEM AUTHORITY");
-    // 結構屬性歸文字：這正是四張參考圖互相矛盾、需要裁決的部分。
-    expect(prompt).toContain("Structural properties follow style.designSystem");
+    // invariant 歸文字：這正是四張參考圖互相矛盾、需要裁決的部分。
+    expect(prompt).toContain("INVARIANTS — these are identical on every slide of this deck");
     expect(prompt).toContain("Never average these against a reference image");
     // 質感歸圖：文字載不動的部分不能被文字的沉默抹掉。
     expect(prompt).toContain("Texture properties follow the STYLE references");
@@ -355,13 +368,70 @@ describe("shared image-generation contract", () => {
     expect(prompt).toContain('"designSystem": "## 色票');
   });
 
-  it("makes the model resolve page type itself, since no field carries it", () => {
+  it("makes an alternating deck illegal and names the illustration idiom", () => {
+    // 使用者實測回報的第二個症狀：「一長串一黑一白」。舊版把「哪個色成為背景」列為
+    // variant，等於明文授權逐頁翻背景，而合約這一端一個字都沒有在鎖它。
     const input = request();
-    input.style.designSystem = "## 頁型規則\n- 封面：主色滿版";
+    input.style.designSystem = "## 色票\n- #0B1F3A — 底色";
     const prompt = buildImageGenerationContract(input);
-    expect(prompt).toContain("decide from slide.purpose and slide.content");
+    expect(prompt).toContain("If this deck is dark, every slide is dark");
+    expect(prompt).toContain("no slide crosses from dark to light or back");
+    // 混語彙是同一個病的另一個維度，而且改動前沒有任何一個欄位在管它。
+    expect(prompt).toContain("illustration idiom");
+  });
+
+  it("authorizes composition instead of only demanding obedience", () => {
+    // 舊合約通篇在講服從（grid／margins／alignment 全劃進 designSystem 權威），從來沒有
+    // 一句授權「構圖是你的」——一致性寫滿、自由度零授權，卻因缺共用基準而反而不一致。
+    const input = request();
+    input.style.designSystem = "## 色票\n- #0B1F3A — 底色";
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("COMPOSITION IS YOURS");
+    expect(prompt).toContain("it should not look like a copy of the other slides");
+    expect(prompt).toContain("has failed this contract, not satisfied it");
+    // 破格逃生口：invariant 上單頁沒有票，自由軸上 imagePrompt 說了算。兩句必須都在——
+    // 只留一句的話不是鎖不住 invariant、就是使用者永遠沒辦法在某一頁破格。
+    expect(prompt).toContain("On the invariants above, a single slide has no vote");
+    expect(prompt).toContain(
+      "slide.imagePrompt is the author speaking about this specific slide, and it outranks",
+    );
+    // 同一份 prompt 裡不能既要求照抄參考圖的版面節奏，又把構圖交還給模型。
+    expect(prompt).not.toContain("composition rhythm");
+    expect(prompt).toContain(
+      "Style reference — take its palette, typography treatment, spacing, and finish only.",
+    );
+  });
+
+  it("treats a legacy flat design system as invariant throughout", () => {
+    // 舊專案存的 designSystem 是加入三軌之前排出來的純 markdown，沒有「每頁自由決定」
+    // 那個段落。合約若寫成「只有 invariants 段落才算數」，那些設計系統會整份退化成
+    // 可自由發揮——而且完全靜默（圖照樣生得出來，只是又回到一黑一白）。
+    const input = request();
+    input.style.designSystem = "## 設計思路\n以留白建立層級\n## 色票\n- #F7F5F0 — 內頁底色";
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("每頁自由決定：鼓勵各頁不同");
+    expect(prompt).toContain(
+      "A design system written without that section is invariant throughout",
+    );
+  });
+
+  it("follows slide.pageType when the outline stated it, and only guesses otherwise", () => {
+    const stated = request();
+    stated.style.designSystem = "## 頁型規則\n- 封面：主色滿版";
+    stated.slide.pageType = "cover";
+    const withPageType = buildImageGenerationContract(stated);
+    expect(withPageType).toContain("slide.pageType states whether this slide is a cover");
+    expect(withPageType).toContain("do not re-derive it from slide.purpose or slide.content");
+    expect(withPageType).toContain('"pageType": "cover"');
+
+    // 舊專案的頁面沒有這個欄位：指著一個不存在的欄位只會讓模型無所適從，所以退回舊措辭。
+    const legacy = request();
+    legacy.style.designSystem = "## 頁型規則\n- 封面：主色滿版";
+    const guessed = buildImageGenerationContract(legacy);
+    expect(guessed).toContain("decide from slide.purpose and slide.content");
+    expect(guessed).not.toContain('"pageType"');
     // 參考圖沒涵蓋的頁型要由系統推導，不能退回通用簡報長相。
-    expect(prompt).toContain("derive that page from the rest of the system");
+    expect(guessed).toContain("derive that page from the rest of the system");
   });
 
   it("keeps the design system out of edits, which must preserve the current look", () => {

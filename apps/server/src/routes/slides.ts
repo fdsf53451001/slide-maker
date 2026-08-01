@@ -31,6 +31,7 @@ export function registerSlidePatchRoute(app: Express, ctx: AppContext): void {
         pinnedSourceIds: true,
         styleOverride: true,
         hidden: true,
+        pageType: true,
       })
       .partial()
       .parse(request.body);
@@ -40,6 +41,8 @@ export function registerSlidePatchRoute(app: Express, ctx: AppContext): void {
       // pinnedSourceIds 不列入：它只影響下次重生成大綱的優先序，不改變已生成的圖，
       // 單獨改它不該讓這一頁被標成「與圖不同步」。
       // hidden 同理且更明確：隱藏只決定這一頁上不上場，一個像素都沒動到圖。
+      // pageType 相反，**要**列入：它決定影像合約套哪一段頁型規則，改它會換掉整張圖的
+      // 版面（封面滿版 vs 內頁格線），所以那一頁確實與畫面上的圖不同步了。
       const outlineFields = [
         "purpose",
         "content",
@@ -47,6 +50,7 @@ export function registerSlidePatchRoute(app: Express, ctx: AppContext): void {
         "layoutHint",
         "imagePrompt",
         "sourceIds",
+        "pageType",
       ] as const;
       const outlineChanged = outlineFields.some(
         (field) => field in patch && JSON.stringify(patch[field]) !== JSON.stringify(slide[field]),

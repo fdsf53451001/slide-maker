@@ -75,6 +75,10 @@ export const USAGE_OPERATIONS = [
   "outline-plan",
   "outline-draft",
   "outline-regenerate",
+  // 「AI 自由設計」的風格決議：整份簡報**一次**，跑在大綱之後、第一次生圖之前。與
+  // `style-analysis`（參考圖那條，沒有專案脈絡、走全域帳本）分開命名——兩者輸出形狀相同，
+  // 但一個吃圖、一個吃整份大綱，混成一格就答不出「這份專案為什麼多了一次文字呼叫」。
+  "style-direction",
   "ocr-style-refine",
   "image-description",
 ] as const;

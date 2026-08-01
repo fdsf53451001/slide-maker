@@ -13,6 +13,7 @@ import {
 } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import { ModelRuntime } from "../src/model-runtime.js";
+import { isStyleDirectionPrompt, STYLE_DIRECTION_REPLY } from "./helpers/style-direction-stub.js";
 
 /**
  * 兩階段大綱的補充情境。
@@ -86,6 +87,9 @@ describe("兩階段大綱的補充情境", () => {
       id: "stub-text",
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
+        // 風格決議是大綱之後**另外一次**呼叫，不屬於這一組測試在驗的兩階段。給它一份
+        // 合法回覆並且不記進 prompts：那些斷言是靠「第幾次呼叫」與陣列長度成立的。
+        if (isStyleDirectionPrompt(request.prompt)) return { value: STYLE_DIRECTION_REPLY };
         prompts.push(request.prompt);
         const result = reply(prompts.length, request.prompt);
         if (result instanceof Error) throw result;
@@ -458,6 +462,9 @@ describe("階段 2 失敗時已落地的網頁來源被回收", () => {
       id: "stub-text",
       availability: { status: "available" },
       runStructured: async (request: StructuredTextRequest) => {
+        // 風格決議是大綱之後**另外一次**呼叫，不屬於這一組測試在驗的兩階段。給它一份
+        // 合法回覆並且不記進 prompts：那些斷言是靠「第幾次呼叫」與陣列長度成立的。
+        if (isStyleDirectionPrompt(request.prompt)) return { value: STYLE_DIRECTION_REPLY };
         prompts.push(request.prompt);
         const result = reply(prompts.length);
         if (result instanceof Error) throw result;

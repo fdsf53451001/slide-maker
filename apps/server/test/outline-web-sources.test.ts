@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { outlineStructureInstruction, type PresentationProject } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
+import { isStyleDirectionPrompt, STYLE_DIRECTION_REPLY } from "./helpers/style-direction-stub.js";
 import { SqliteFtsRetriever } from "../src/retriever.js";
 
 const SEARCH_URL = "https://example.com/ev-report";
@@ -112,7 +113,17 @@ describe("大綱生成的來源資料流", () => {
         outputSchemas.push(body.response_format?.json_schema?.schema);
         const user = body.messages?.find((message) => message.role === "user");
         const parts = Array.isArray(user?.content) ? (user.content as { text?: string }[]) : [];
-        prompts.push(parts.map((part) => part.text ?? "").join(""));
+        const prompt = parts.map((part) => part.text ?? "").join("");
+        // 大綱之後還有一次「風格決議」（AI 自由設計那條）打到同一個假端點。這個檔案驗的是
+        // 來源資料流與頁數契約，所以給它一份合法回覆並且不記進 prompts——那些斷言是靠
+        // 「第幾次呼叫」與陣列長度成立的，而 warning 的計數也會被它的降級 log 汙染。
+        if (isStyleDirectionPrompt(prompt))
+          return res.end(
+            JSON.stringify({
+              choices: [{ message: { content: JSON.stringify(STYLE_DIRECTION_REPLY) } }],
+            }),
+          );
+        prompts.push(prompt);
         const attempt = prompts.length;
         const returnedCount =
           outlineMode === "returned-out-of-range" || outlineMode === "returned-out-of-range-missing"

@@ -103,11 +103,14 @@ interface CaseSpec {
   readonly references: "minimal" | "full";
   readonly designSystem: boolean;
   readonly mask: boolean;
+  /** 大綱有沒有指定頁型。省略＝舊專案，合約退回「你自己判斷」那條分支。 */
+  readonly pageType?: "cover" | "section" | "content";
 }
 
 function buildCase(spec: CaseSpec): ImageGenerationRequest {
   const request = baseRequest();
   if (spec.designSystem) request.style.designSystem = DESIGN_SYSTEM;
+  if (spec.pageType) request.slide.pageType = spec.pageType;
   const supplemental =
     spec.references === "full"
       ? [STYLE_REFERENCE, CONTENT_REFERENCE, DIRECT_ASSET_REFERENCE]
@@ -136,6 +139,9 @@ const CASES: ReadonlyArray<CaseSpec> = [
   { mode: "generate", references: "minimal", designSystem: true, mask: false },
   { mode: "generate", references: "full", designSystem: false, mask: false },
   { mode: "generate", references: "full", designSystem: true, mask: false },
+  // 頁型分支只在 generate ＋ designSystem 下存在，但它換掉的是整段 PAGE TYPE 指令，
+  // 所以要有自己的快照——否則「大綱指定了頁型」與「舊專案沒指定」的差異落在覆蓋範圍外。
+  { mode: "generate", references: "full", designSystem: true, mask: false, pageType: "cover" },
   { mode: "edit", references: "minimal", designSystem: false, mask: false },
   { mode: "edit", references: "minimal", designSystem: true, mask: false },
   { mode: "edit", references: "minimal", designSystem: false, mask: true },
@@ -152,6 +158,8 @@ function caseName(spec: CaseSpec): string {
     `${spec.references} refs`,
     spec.designSystem ? "designSystem" : "no designSystem",
     spec.mask ? "masked" : "no mask",
+    // 只有指定頁型的情境多一段，既有快照的名字（＝既有的覆蓋範圍）因此原封不動。
+    ...(spec.pageType ? [`pageType=${spec.pageType}`] : []),
   ].join(" | ");
 }
 

@@ -755,6 +755,8 @@ export function Editor() {
     return (
       <>
         {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
+        {/* 精靈裡也有「成功但有事情要講」的路徑（風格決議降級），沿用同一條非錯誤通知列。 */}
+        {importNoticeToast}
         <SetupFlow
           project={project}
           providers={providers}
@@ -771,6 +773,7 @@ export function Editor() {
             navigate("/");
           }}
           onError={(message) => setError(message || undefined)}
+          onNotice={setImportNotice}
         />
       </>
     );

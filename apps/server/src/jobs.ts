@@ -122,6 +122,10 @@ function outlineSnapshot(slide: SlideSpec): SlideOutlineSnapshot {
     layoutHint: slide.layoutHint,
     imagePrompt: slide.imagePrompt,
     sourceIds: [...slide.sourceIds],
+    // 頁型會換掉整張圖的版面（封面滿版 vs 內頁格線），所以它算「與圖不同步」的一部分——
+    // 與 `hidden` 相反，那個一個像素都沒動到圖。兩邊同為 undefined（舊快照配舊頁面）時
+    // 仍然相等，橘框不會平白亮起來。
+    pageType: slide.pageType,
   };
 }
 
@@ -156,6 +160,7 @@ function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean 
     slide.narrative === snapshot.narrative &&
     slide.layoutHint === snapshot.layoutHint &&
     slide.imagePrompt === snapshot.imagePrompt &&
+    slide.pageType === snapshot.pageType &&
     JSON.stringify(slide.sourceIds) === JSON.stringify(snapshot.sourceIds)
   );
 }

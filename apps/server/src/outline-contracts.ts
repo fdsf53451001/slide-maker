@@ -1,10 +1,24 @@
 import { z } from "zod";
+import { SLIDE_PAGE_TYPES, slidePageTypeSchema } from "@slide-maker/core";
 import {
   OUTLINE_SLIDE_IMAGE_REF_LIMIT,
   OUTLINE_SLIDE_SOURCE_REF_LIMIT,
   SLIDE_SOURCE_ID_LIMIT,
 } from "./outline-sources.js";
 import { idSchema } from "./project-write-helpers.js";
+
+/**
+ * 大綱回傳的頁型。**先正規化再 parse，認不得就當沒說**。
+ *
+ * 裸 `z.enum()` 在這裡有兩個問題：①非嚴格 gateway 回 `"Cover"`／`" section "` 這種良性變體
+ * 時會讓**整份大綱**失敗，而模型顯然知道自己在指哪一種；②zod 的 `invalid_enum_value` 會把
+ * 收到的值寫進 `ZodError.message`，而那個例外會被 `runOutlineStage` 的 catch 記進 log。
+ * 落到 `undefined` 的代價很小：那一頁的合約退回「你自己判斷」＝加入這個欄位前的行為。
+ */
+export const outlinePageTypeSchema = z.preprocess((value) => {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return (SLIDE_PAGE_TYPES as readonly string[]).includes(normalized) ? normalized : undefined;
+}, slidePageTypeSchema.optional());
 
 // 大綱生成的 content 超過硬上限時重生成的最大嘗試次數。
 export const OUTLINE_MAX_ATTEMPTS = 3;
@@ -67,6 +81,9 @@ export const outlinePlanSchema = z.object({
     .array(
       z.object({
         purpose: z.string().min(1),
+        // 頁型屬於規劃：它決定這一頁套哪一段版面規則，與「這一頁要講什麼」是同一個決定。
+        // 寫作階段只負責把正文寫出來，不該重新判斷一次。
+        pageType: outlinePageTypeSchema,
         // `.default([])` 而非必填：非嚴格 gateway 常整個省略空陣列，缺欄位就 throw 等於
         // 把「這一頁不需要指定來源」變成硬失敗。留空是合法答案。
         sourceRefs: z.array(z.string()).max(OUTLINE_SLIDE_SOURCE_REF_LIMIT).default([]),
@@ -88,9 +105,10 @@ export const outlinePlanJsonSchema: Record<string, unknown> = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["purpose", "sourceRefs", "imageRefs"],
+        required: ["purpose", "pageType", "sourceRefs", "imageRefs"],
         properties: {
           purpose: { type: "string" },
+          pageType: { type: "string", enum: [...SLIDE_PAGE_TYPES] },
           sourceRefs: {
             type: "array",
             maxItems: OUTLINE_SLIDE_SOURCE_REF_LIMIT,
@@ -302,16 +320,20 @@ export const aiRegeneratedSlideSchema = z.object({
   content: z.string().min(1),
   narrative: z.string(),
   layoutHint: z.string(),
+  // 認不得或缺席時是 `undefined`＝「這一頁的頁型不變」，由呼叫端保留現值。單頁重生的
+  // 語意是「保留這一頁在整份簡報裡的角色」，所以沉默必須是「不動」而不是「改成內頁」。
+  pageType: outlinePageTypeSchema,
   sourceIds: z.array(idSchema).max(SLIDE_SOURCE_ID_LIMIT),
 });
 export const aiRegeneratedSlideJsonSchema: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["content", "narrative", "layoutHint", "sourceIds"],
+  required: ["content", "narrative", "layoutHint", "pageType", "sourceIds"],
   properties: {
     content: { type: "string" },
     narrative: { type: "string" },
     layoutHint: { type: "string" },
+    pageType: { type: "string", enum: [...SLIDE_PAGE_TYPES] },
     sourceIds: { type: "array", maxItems: SLIDE_SOURCE_ID_LIMIT, items: { type: "string" } },
   },
 };

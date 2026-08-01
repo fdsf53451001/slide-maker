@@ -9,6 +9,7 @@ import {
   confirmStyleReplacement,
   styleOptions,
 } from "./projectHelpers.js";
+import { styleDirectionNotice } from "./styleDirection.js";
 import { useWebSearchToggle, WebSearchToggle } from "./webSearch.js";
 import { SlideSourceChips } from "./SlideSourceChips.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./BatchGenerateDialog.js";
@@ -22,6 +23,7 @@ export function SetupFlow({
   onProject,
   onExit,
   onError,
+  onNotice,
 }: {
   project: PresentationProject;
   providers: ProviderSummary[];
@@ -31,6 +33,8 @@ export function SetupFlow({
   onProject: (value: PresentationProject) => void;
   onExit: () => void;
   onError: (message: string) => void;
+  /** 非錯誤的通知列（成功但有事情要講）。`undefined` 代表清掉目前那一則。 */
+  onNotice: (message: string | undefined) => void;
 }) {
   const [brief, setBrief] = useState(() => structuredClone(project.brief));
   const [outline, setOutline] = useState(() => structuredClone(project.slides));
@@ -141,6 +145,15 @@ export function SetupFlow({
       // 文字模型由專案組合決定（server 端解析），前端不再傳 textEngine。
       const withOutline = await api.regenerateOutline(project.id, true);
       onProject(withOutline);
+      /*
+       * 「AI 自由設計」的風格決議跟著大綱一起回來（伺服器端的可選步驟，失敗不會讓大綱
+       * 失敗）。所以使用者手上會是一份看起來完全正常的大綱，而唯一的徵兆要等到十幾張圖
+       * 生完才看得見——每一頁各自決定視覺語言。走**非錯誤**通知列而不是紅色錯誤列：
+       * 大綱本身成功了；決議成功且完整時 `styleDirectionNotice` 回 undefined，這一行會
+       * 順手把上一輪的舊訊息清掉（通知列只有點擊才關得掉，不清就會指著一份其實有設計
+       * 系統的產出）。
+       */
+      onNotice(styleDirectionNotice(withOutline));
       // 明確以新大綱同步 outline：若是「返回修改需求」後再生成，workflowStage 仍是
       // "settings" 不變，倚賴 workflowStage 變化的同步 effect 不會觸發，會殘留舊 slide id
       // 導致確認生成時 updateSlide 打到不存在的頁面（NOT_FOUND）。

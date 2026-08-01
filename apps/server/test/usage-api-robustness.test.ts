@@ -16,6 +16,7 @@ import {
 } from "@slide-maker/core";
 import { createApp } from "../src/app.js";
 import { ModelRuntime } from "../src/model-runtime.js";
+import { isStyleDirectionPrompt, STYLE_DIRECTION_REPLY } from "./helpers/style-direction-stub.js";
 import type { UsageLedger, UsageSummary } from "../src/usage-ledger.js";
 
 /**
@@ -458,7 +459,14 @@ describe("用量帳本的端點耐用度", () => {
       const project = await createProject();
       const hard = outlineContentCharBudget("high").hard;
       let call = 0;
-      stubText(async () => {
+      stubText(async (request) => {
+        // 大綱之後還有一次「風格決議」（AI 自由設計那條）。它是**第三種** operation，
+        // 這個測試順手把它也釘住：三者共用同一個記帳接縫，但漏接誰都只會安靜地少報。
+        if (isStyleDirectionPrompt(request.prompt))
+          return {
+            value: STYLE_DIRECTION_REPLY,
+            usage: { inputTokens: 400, outputTokens: 20, reported: true },
+          };
         call += 1;
         // 第一次呼叫是階段 1（規劃）：只回每頁用途，不回 content。
         if (call === 1)
@@ -530,10 +538,17 @@ describe("用量帳本的端點耐用度", () => {
         reportedCalls: 3,
         inputTokens: 6_000,
       });
+      // 風格決議自成一格：它與參考圖分析形狀相同但輸入完全不同，混進 outline-* 任一格
+      // 就答不出「這份專案為什麼多了一次文字呼叫」。
+      expect(summary.byOperation["style-direction"]).toMatchObject({
+        calls: 1,
+        reportedCalls: 1,
+        inputTokens: 400,
+      });
       // 舊的單發 operation 一筆都不該再出現（`USAGE_OPERATIONS` 已移除它，留著就是死值）。
       expect(lines.some((line) => line.operation === "outline-generate")).toBe(false);
-      // 四次呼叫全進了 text 這一格：任一階段漏接都會讓這個總數少一截。
-      expect(summary.byCapability["text"]).toMatchObject({ calls: 4, inputTokens: 6_500 });
+      // 五次呼叫全進了 text 這一格：任一階段漏接都會讓這個總數少一截。
+      expect(summary.byCapability["text"]).toMatchObject({ calls: 5, inputTokens: 6_900 });
     }, 60_000);
   });
 

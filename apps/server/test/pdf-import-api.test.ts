@@ -240,11 +240,18 @@ describe("PDF deck import API", () => {
   describe("project style analysis transaction", () => {
     const analysis = {
       designRationale: "深藍底配單一強調色",
-      palette: [{ hex: "#0B1F3A", usage: "封面滿版底" }],
-      typography: "無襯線，標題 700",
-      layoutSystem: "12 欄網格",
-      components: "圓角 4px",
-      archetypes: [],
+      invariants: {
+        tonalRegister: "dark",
+        background: "#0B1F3A；允許 ±5% 明度的鄰近面板",
+        palette: [{ hex: "#0B1F3A", usage: "封面滿版底，約佔畫面 80%" }],
+        typography: "無襯線，標題 700",
+        spacing: "左右邊距 8%，基準間距 24px",
+        componentGeometry: "圓角 4px",
+        imageTreatment: "照片去飽和 20%",
+        illustrationIdiom: "扁平向量、2px 等寬輪廓",
+      },
+      pageTypeRules: [],
+      freeChoices: ["構圖骨架"],
       avoid: ["漸層"],
     };
     const stubTextProvider = (
@@ -311,7 +318,10 @@ describe("PDF deck import API", () => {
         disabled.mockRestore();
       }
       // 模型交出空殼（缺色票）同樣是可重試路徑，一樣不能留下孤兒。
-      const hollow = stubTextProvider(async () => ({ ...analysis, palette: [] }));
+      const hollow = stubTextProvider(async () => ({
+        ...analysis,
+        invariants: { ...analysis.invariants, palette: [] },
+      }));
       try {
         const before = await styleAssets();
         const response = await analyse(body.project);

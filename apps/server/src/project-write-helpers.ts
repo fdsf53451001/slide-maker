@@ -15,6 +15,9 @@ export function outlineSnapshot(slide: SlideSpec) {
     layoutHint: slide.layoutHint,
     imagePrompt: slide.imagePrompt,
     sourceIds: [...slide.sourceIds],
+    // 與 `jobs.ts` 的同名函式必須逐欄一致：一邊補了欄位而另一邊沒有，「編輯前的狀態」與
+    // 「生成當時的狀態」就會少比一欄，橘框從此對那一欄失明。
+    pageType: slide.pageType,
   };
 }
 

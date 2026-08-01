@@ -91,4 +91,29 @@ describe("project contract", () => {
     });
     expect(parseProject(generated).workflowStage).toBe("editing");
   });
+
+  it("舊專案沒有 pageType 與 styleDirection 也照樣讀得起來，而且不被補成預設值", () => {
+    /*
+     * 兩個欄位都刻意是 optional 而不是 `.default()`。
+     *
+     * `pageType` 補 `default("content")` 的話，「大綱沒有表態」與「大綱說這是內頁」會變成
+     * 同一件事——舊專案的封面頁於是在下一次生成時被合約當成內頁重畫，而且沒有任何徵兆。
+     * `styleDirection` 同理：缺席是「沒跑過」，補一個 `applied:false` 會讓每一份舊專案都
+     * 跳出「這份簡報沒有共用的設計系統」的警告。
+     */
+    const legacy = createProject({ topic: "Legacy page types" }) as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const slide of legacy.slides as Record<string, unknown>[]) delete slide.pageType;
+    delete legacy.styleDirection;
+    const parsed = parseProject(legacy);
+    expect(parsed.slides.every((slide) => slide.pageType === undefined)).toBe(true);
+    expect(parsed.styleDirection).toBeUndefined();
+    // 舊風格的 designSystem 是加入三軌之前排出來的純 markdown 字串。schema 一直是裸
+    // `z.string()`，這次改的只有「產生它的那一端」，所以舊字串必須原封不動地過。
+    const flat = "## 設計思路\n以留白建立層級\n## 色票\n- #F7F5F0 — 內頁底色";
+    (legacy.styleSnapshot as Record<string, unknown>).designSystem = flat;
+    expect(parseProject(legacy).styleSnapshot.designSystem).toBe(flat);
+  });
 });
