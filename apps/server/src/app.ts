@@ -24,7 +24,6 @@ import {
   type SourceAsset,
   type StructuredTextProvider,
   type StructuredTextRequest,
-  type StructuredTextResult,
   type StyleReferenceImage,
 } from "@slide-maker/core";
 import {
@@ -59,13 +58,6 @@ import {
 } from "./config.js";
 import { ProviderReadinessService } from "./readiness.js";
 import { FileStyleRepository } from "./styles.js";
-import {
-  renderDesignSystem,
-  STYLE_ANALYSIS_PROMPT,
-  StyleAnalysisError,
-  styleAnalysisJsonSchema,
-  styleAnalysisSchema,
-} from "./style-analysis.js";
 import {
   assertSourceCapacity,
   ingestSource,
@@ -134,7 +126,7 @@ import {
   withinSourceIdLimit,
 } from "./outline-contracts.js";
 import { asPersisted, idSchema, preserveCurrentOutlineSnapshot } from "./project-write-helpers.js";
-import { createUsageRecorder, failedCallFields, usageCallFields } from "./usage-recording.js";
+import { createUsageRecorder } from "./usage-recording.js";
 import { createProviderResolvers } from "./provider-resolution.js";
 import {
   createWebSourcePipeline,
@@ -150,14 +142,12 @@ import type { AppContext } from "./routes/context.js";
 import { registerModelLibraryRoutes } from "./routes/model-library.js";
 import { registerPdfDeckRoutes } from "./routes/pdf-deck.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerStyleAnalysisRoutes } from "./routes/style-analysis.js";
 import { registerStyleRoutes } from "./routes/styles.js";
 import { registerSystemRoutes } from "./routes/system.js";
 
-export const projectStyleAnalysisInputSchema = z.object({
-  slideIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
-  combinationId: idSchema.optional(),
-  name: z.string().trim().min(1).max(120).optional(),
-});
+// 測試（style-analysis-limit.test.ts）以這個路徑 import，故在此原樣轉出。
+export { projectStyleAnalysisInputSchema } from "./routes/style-analysis.js";
 /**
  * `GET /usage` 等待背景記帳收尾的上限。
  *
@@ -492,7 +482,7 @@ export async function createApp(
   registerStyleRoutes(app, ctx);
   registerPdfDeckRoutes(app, ctx);
 
-  // ── 風格分析 ──────────────────────────────────────────────────────────────
+  // ── 風格快照的共用 helper（風格分析、專案設定、版本三處共用） ──────────────
 
   /** 專案本地風格 fork 的 id：只有這個 id 的 snapshot 擁有自己的參考圖。 */
   const projectStyleId = (projectId: string) => `pdf-style-${projectId}`;
@@ -531,45 +521,6 @@ export async function createApp(
       await readFile(repository.resolveAsset(project.id, version.imagePath)),
     );
     return styles.saveReference(`${project.name} - Slide ${slideIndex + 1}`, mediaType, bytes);
-  }
-
-  /** 跑一次參考圖風格分析，輸出可直接寫進 StylePreset 的 designSystem。 */
-  async function analyzeStyleReferences(
-    referenceIds: readonly string[],
-    combinationId: string | undefined,
-  ): Promise<{ designSystem: string; avoid: string[] }> {
-    // 風格分析無專案脈絡：由呼叫端指定組合，未指定時退回模型庫預設組合。
-    const structuredText = runtime.resolveTextProvider(combinationId);
-    if (structuredText.availability.status !== "available")
-      throw new StyleAnalysisError("STYLE_ANALYSIS_DISABLED");
-    const imagePaths = [];
-    for (const id of referenceIds) {
-      const reference = await styles.referenceMetadata(id);
-      if (!reference) throw new Error("Style asset not found");
-      imagePaths.push(styles.referenceAssetPath(reference.assetPath));
-    }
-    // 風格分析沒有專案可以掛，走全域帳本（第一版只寫不顯示）。丟掉它會讓「模型庫的
-    // 文字模型到底被叫了幾次」永遠對不上。
-    const usageFields: Omit<UsageRecordInput, "ok" | "usage"> = {
-      capability: "text",
-      operation: "style-analysis",
-      ...usageModelFields(structuredText.id),
-    };
-    let outcome: StructuredTextResult;
-    try {
-      outcome = await structuredText.runStructured({
-        timeoutMs: runtime.system.modelTimeoutMs,
-        outputSchema: styleAnalysisJsonSchema,
-        imagePaths,
-        prompt: STYLE_ANALYSIS_PROMPT,
-      });
-    } catch (error) {
-      void usageLedger.recordGlobal({ ...usageFields, ok: false, ...failedCallFields(error) });
-      throw error;
-    }
-    void usageLedger.recordGlobal({ ...usageFields, ok: true, ...usageCallFields(outcome) });
-    const result = styleAnalysisSchema.parse(outcome.value);
-    return { designSystem: renderDesignSystem(result), avoid: result.avoid };
   }
 
   /**
@@ -619,56 +570,7 @@ export async function createApp(
     return project;
   }
 
-  app.post("/api/style-analysis", async (request, response) => {
-    const { referenceIds, combinationId } = z
-      .object({
-        referenceIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
-        combinationId: idSchema.optional(),
-      })
-      .parse(request.body);
-    response.json(await analyzeStyleReferences(referenceIds, combinationId));
-  });
-
-  /**
-   * PDF 匯入分析頁專用：建立分析用參考圖 → 跑分析 → 寫回 styleSnapshot，一筆交易。
-   *
-   * 由前端串三支端點的話，中間任何一步失敗（分析被停用、模型交出空殼、逾時——
-   * 全都是規格明文要求「明確顯示錯誤、可重試」的正常路徑）都會留下剛寫進
-   * `styles/assets` 的參考圖：沒有任何 snapshot 引用、風格庫列表看不到、也不在專案
-   * 目錄底下（刪專案帶不走）。按三次重試就是 24 個孤兒檔。這裡失敗就把這一輪自己
-   * 建的那批刪掉，重試幾次都不會累積。
-   */
-  app.post("/api/projects/:projectId/style-analysis", async (request, response) => {
-    const projectId = idSchema.parse(request.params.projectId);
-    const input = projectStyleAnalysisInputSchema.parse(request.body ?? {});
-    const project = await repository.loadProject(projectId);
-    if (!project) throw new Error("Project not found");
-    const created: StyleReferenceImage[] = [];
-    const analysed = await (async () => {
-      try {
-        for (const slideId of input.slideIds) {
-          const slide = project.slides.find((candidate) => candidate.id === slideId);
-          const versionId = slide?.currentVersionId;
-          if (!slide || !versionId) throw new Error("Version not found");
-          created.push(await saveVersionStyleReference(project, slide.id, versionId));
-        }
-        const analysis = await analyzeStyleReferences(
-          created.map((image) => image.id),
-          input.combinationId,
-        );
-        return await writeProjectStyleSnapshot(projectId, {
-          designSystem: analysis.designSystem,
-          avoid: analysis.avoid,
-          ...(input.name ? { name: input.name } : {}),
-          referenceImages: created,
-        });
-      } catch (error) {
-        await Promise.allSettled(created.map((image) => styles.deleteReference(image.id)));
-        throw error;
-      }
-    })();
-    response.json(analysed);
-  });
+  registerStyleAnalysisRoutes(app, ctx);
   registerProjectRoutes(app, ctx);
 
   app.post("/api/projects/:projectId/outline", async (request, response) => {
