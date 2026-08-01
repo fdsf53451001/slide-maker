@@ -26,7 +26,6 @@ import {
   type PresentationBrief,
   type PresentationProject,
   type SlideSpec,
-  type SourceAsset,
   type StylePreset,
   SOURCE_COUNT_LIMIT,
   STYLE_REFERENCE_IMAGE_LIMIT,
@@ -50,15 +49,7 @@ import { PdfDeckAnalysis } from "./PdfDeckAnalysis.js";
 import { ModelLibrary } from "./ModelLibrary.js";
 import { LibraryHeader } from "./LibraryHeader.js";
 import { useOneTimeNotice } from "./oneTimeNotice.js";
-import {
-  countSourceSelection,
-  sourceSelectionState,
-  toggleSourcePin,
-  SOURCE_SELECTION_ACTION,
-  SOURCE_SELECTION_ICON,
-  SOURCE_SELECTION_LABEL,
-  type SlideSourceSelection,
-} from "./sourceSelection.js";
+import { toggleSourcePin } from "./sourceSelection.js";
 import {
   measureCanvasRowLayout,
   shouldStackTextRail,
@@ -122,6 +113,8 @@ import {
 import { useIsomorphicLayoutEffect } from "./editor/useIsomorphicLayoutEffect.js";
 import { useDialogEscape } from "./editor/dialogEscape.js";
 import { useWebSearchToggle, WebSearchToggle } from "./editor/webSearch.js";
+import { SlideVisibilityIcon, TextToolIcon } from "./editor/icons.js";
+import { SlideSourceChips } from "./editor/SlideSourceChips.js";
 
 /*
  * 拆檔後的 re-export：`Editor.tsx` 對外的符號面必須與拆分前逐一相同——測試檔與
@@ -135,81 +128,6 @@ export {
 } from "./editor/slideVisibility.js";
 export { batchExtractPlan, type BatchExtractPlan } from "./editor/extractionPlan.js";
 export { strokeCssColor, textBoxBackground } from "./editor/textBoxModel.js";
-
-/**
- * 單頁來源的三態選取列。勾選代表「我指定」，AI 自己挑進來的另以虛線框與 ✦ 呈現。
- *
- * 狀態不只靠顏色：實心／虛線框線、✓／✦ 圖示，以及描述文字各自都說得清楚。
- * 狀態放在 aria-describedby 而不是 aria-label：可及名稱要穩定（它是使用者用來指稱這個
- * 控制項的詞），會變的狀態屬於描述。checkbox 在「AI 選用」時設 indeterminate
- * （對應 aria-checked="mixed"），讓螢幕閱讀器也讀得出「有在用，但不是我指定的」。
- *
- * groupId 用來把描述元素的 id 綁在所在頁面上——大綱步驟會為每一頁各畫一組同樣的晶片，
- * 只用 source.id 當 id 會在同一份文件裡重複。
- */
-function SlideSourceChips({
-  groupId,
-  sources,
-  selection,
-  disabled = false,
-  // 側邊欄只有 330px，晶片橫排會擠成一堆兩三個字的碎片；改成一列一個，
-  // 每顆佔滿欄寬，長檔名才有空間顯示。大綱確認頁的版面寬，維持橫排較省高度。
-  layout = "inline",
-  onToggle,
-}: {
-  groupId: string;
-  sources: readonly SourceAsset[];
-  selection: SlideSourceSelection;
-  disabled?: boolean;
-  layout?: "inline" | "stack";
-  onToggle: (sourceId: string) => void;
-}) {
-  const counts = countSourceSelection(
-    selection,
-    sources.map((source) => source.id),
-  );
-  return (
-    <div className="outline-sources">
-      <span className="outline-sources-label">
-        來源 · 我指定 {counts.pinned} · AI 選用 {counts.ai} / 共 {sources.length}
-      </span>
-      <div className={`outline-source-chips${layout === "stack" ? " chips-stacked" : ""}`}>
-        {sources.map((source) => {
-          const state = sourceSelectionState(selection, source.id);
-          const stateLabel = SOURCE_SELECTION_LABEL[state];
-          const action = SOURCE_SELECTION_ACTION[state];
-          const descriptionId = `source-chip-state-${groupId}-${source.id}`;
-          return (
-            <label
-              key={source.id}
-              className={`source-chip source-chip-${state}`}
-              title={`${source.name}（${stateLabel}）— ${action}`}
-            >
-              <input
-                type="checkbox"
-                disabled={disabled}
-                checked={state === "pinned"}
-                ref={(node) => {
-                  if (node) node.indeterminate = state === "ai";
-                }}
-                aria-label={source.name}
-                aria-describedby={descriptionId}
-                onChange={() => onToggle(source.id)}
-              />
-              <span className="source-chip-check" aria-hidden="true">
-                {SOURCE_SELECTION_ICON[state]}
-              </span>
-              <span className="source-chip-name">{source.name}</span>
-              <span className="visually-hidden" id={descriptionId}>
-                {stateLabel}，{action}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // 錯誤通知列已抽到 `./ErrorToast.tsx`（連同它那份「為什麼是 div 包 button 而不是
 // button[role=alert]」的說明）：模型庫與風格編輯器各自寫了一份形狀不同的 toast，而稽核抓到的
@@ -311,86 +229,6 @@ export function SystemSettingsDialog({
         </button>
       </div>
     </div>
-  );
-}
-
-/**
- * 文字工具列的圖示。
- *
- * 一律用 inline SVG，不用 `↺`／`🗑` 這類符號字元：符號在不同平台會落到不同的 fallback
- * 字型（甚至變成彩色 emoji），同一排圖示的粗細與視覺大小就會對不齊——這個專案已經踩過
- * 一次跨機器字型 fallback 的坑。`currentColor` 讓 disabled 態沿用按鈕自己的文字色。
- */
-function TextToolIcon({ shape }: { shape: "add" | "delete" | "undo" | "redo" }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      aria-hidden="true"
-      focusable="false"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.3}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {/*
-        新增／刪除是同一個「T」配右下角不同的角標，兩顆一看就是一組。
-        刻意畫 T 而不是畫方框：方框配 ＋／✕ 在 15px 下會被讀成播放／停止鍵（實測比對過），
-        T 則直接說明這顆按鈕動的是文字。
-      */}
-      {(shape === "add" || shape === "delete") && <path d="M3.2 4.6h7.6M7 4.6v7.6" />}
-      {shape === "add" && <path d="M12 9.4v3.8M10.1 11.3h3.8" />}
-      {shape === "delete" && <path d="M10.4 9.7l3.2 3.2M13.6 9.7l-3.2 3.2" />}
-      {shape === "undo" && (
-        <>
-          <path d="M6.1 3.6 3.3 6.2l2.8 2.6" />
-          <path d="M3.3 6.2h6a3.3 3.3 0 1 1 0 6.6H7.2" />
-        </>
-      )}
-      {/* 重做＝復原的水平鏡射（箭頭在右、弧線往左繞），兩顆才會是明確的一對。 */}
-      {shape === "redo" && (
-        <>
-          <path d="M9.9 3.6 12.7 6.2l-2.8 2.6" />
-          <path d="M12.7 6.2h-6a3.3 3.3 0 1 0 0 6.6H8.8" />
-        </>
-      )}
-    </svg>
-  );
-}
-
-/**
- * 縮圖上「隱藏／取消隱藏這一頁」那顆按鈕的圖示。
- *
- * 與 {@link TextToolIcon} 同一套理由用 inline SVG：`◎`／`⊘`／`👁` 這類符號字元在不同平台
- * 會落到不同的 fallback 字型（`👁` 甚至會變成彩色 emoji），同一排三顆圖示鈕的粗細與視覺
- * 大小就對不齊——這個專案已經踩過一次跨機器字型 fallback 的坑。
- *
- * 眼睛的開闔跟著**目前狀態**走（睜眼＝這一頁會上場、劃掉＝已隱藏），與 Keynote／Figma
- * 的圖層可見性慣例一致；按鈕名稱則講的是**按下去會發生什麼**（`aria-label` 那邊），兩者
- * 分工不重疊。
- */
-function SlideVisibilityIcon({ hidden }: { hidden: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      aria-hidden="true"
-      focusable="false"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.3}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M1.4 8S3.8 3.9 8 3.9 14.6 8 14.6 8 12.2 12.1 8 12.1 1.4 8 1.4 8Z" />
-      <circle cx="8" cy="8" r="2.1" />
-      {/* 劃掉的斜線只在隱藏時出現：眼睛的輪廓不變，兩態才會被讀成同一顆按鈕的兩個狀態，
-          而不是換了一顆別的按鈕。 */}
-      {hidden && <path d="M2.6 13.4 13.4 2.6" />}
-    </svg>
   );
 }
 
