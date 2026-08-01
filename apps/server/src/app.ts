@@ -149,6 +149,7 @@ import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
 import { traditionalizeBoxes } from "./traditionalize.js";
 import { UsageLedger, type UsageRecordInput } from "./usage-ledger.js";
 import {
+  adoptVersion,
   referencedVersionAssets,
   staleVersionAssets,
   versionAssetPaths,
@@ -4067,7 +4068,7 @@ export async function createApp(
           // 目標版本還在——它可能在 renderComposite 期間被刪掉。
           // 沿用原版本的 providerId／model／sources／outlineSnapshot／pinnedSourceIds 是刻意的：
           // 畫面內容就是那一版的產物，溯源該指向同一個地方（比照 PDF 匯入的兩個版本）。
-          targetSlide.versions.push({
+          adoptVersion(targetSlide, {
             ...structuredClone(target),
             id: newVersionId,
             imagePath: layer.compositePath,
@@ -4075,7 +4076,6 @@ export async function createApp(
             label: "文字編輯",
             textLayer: layer,
           });
-          targetSlide.currentVersionId = newVersionId;
           current.updatedAt = now;
           return asPersisted(current);
         });
@@ -4149,8 +4149,9 @@ export async function createApp(
           createdAt: new Date().toISOString(),
           label: `Restored from ${version.id}`,
         };
-        slide.versions.push(restored);
-        slide.currentVersionId = restored.id;
+        adoptVersion(slide, restored);
+        // 回灌大綱與指定清單留在這裡：`adoptVersion` 只掛版本、切當前版本，其餘一概不碰
+        // （`hidden` 是頁面層級的旗標，還原版本不得順手清掉它）。
         if (restored.outlineSnapshot) {
           Object.assign(slide, structuredClone(restored.outlineSnapshot), {
             outlineDirty: false,

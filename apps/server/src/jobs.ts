@@ -20,7 +20,7 @@ import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite, unerasedImagePath } from "./text-layers.js";
 import type { UsageLedger, UsageRecordInput } from "./usage-ledger.js";
-import { staleVersionAssets, versionAssetPaths } from "./version-assets.js";
+import { adoptVersion, staleVersionAssets, versionAssetPaths } from "./version-assets.js";
 
 /** JobRunner 記帳所需的兩件事：帳本本身，與「provider id → 模型識別欄位」的解析。 */
 export interface JobUsageRecording {
@@ -1114,8 +1114,10 @@ export class JobRunner {
             ...nextVersion,
             createdAt: previous.createdAt,
           };
-        } else currentSlide.versions.push(nextVersion);
-        currentSlide.currentVersionId = versionId;
+          // 取代路徑重用同一個 versionId，這行因此是「維持指向」而不是「切過去」；
+          // 新增路徑的同一件事由 `adoptVersion` 一起做掉。
+          currentSlide.currentVersionId = versionId;
+        } else adoptVersion(currentSlide, nextVersion);
         currentSlide.outlineDirty =
           job.operation !== "generate"
             ? currentSlide.outlineDirty || !sameOutline(currentSlide, generatedOutline)
