@@ -33,10 +33,21 @@ const CELL_END = "\u0002";
 const ROW_END = "\u0003";
 const TABLE_START = "\u0004";
 const TABLE_END = "\u0005";
+// 換行也走哨兵、不直接插一個裸的 "\n"：文字改成只從 <a:t>／<w:t> 採納之後，掃描器得
+// 分得出「<a:br/> 產生的換行」與「XML 排版用的換行」，而裸的 "\n" 兩者長得一模一樣。
+const LINE_BREAK = "\u0006";
 
 /** 儲存格內文：多段壓成一行，裸管線 escape 以免破壞 markdown 欄位。 */
 function cellText(value: string): string {
-  return value.replaceAll(PARAGRAPH, " ").replace(/\s+/g, " ").replaceAll("|", "\\|").trim();
+  return (
+    value
+      .replaceAll(PARAGRAPH, " ")
+      // 控制字元不在 \s 裡，少了這行 <a:br/> 會把上下兩行黏成一個詞。
+      .replaceAll(LINE_BREAK, " ")
+      .replace(/\s+/g, " ")
+      .replaceAll("|", "\\|")
+      .trim()
+  );
 }
 
 /**
@@ -50,6 +61,7 @@ function cellText(value: string): string {
 function flowText(value: string): string {
   return value
     .replaceAll(PARAGRAPH, "\n")
+    .replaceAll(LINE_BREAK, "\n")
     .replaceAll(CELL_END, "")
     .replaceAll(ROW_END, "")
     .replaceAll(TABLE_START, "")
@@ -78,24 +90,58 @@ function pipeTable(block: string): string {
   return [line(header!), `|${" --- |".repeat(width)}`, ...body.map(line)].join("\n");
 }
 
+function unescapeXml(value: string): string {
+  return (
+    value
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&apos;", "'")
+      // &amp; 必須最後換，否則 `&amp;lt;` 會先變成 `&lt;` 再被上面那幾條換成 `<`。
+      .replaceAll("&amp;", "&")
+  );
+}
+
+/**
+ * 文字執行段（`<a:t>`／`<w:t>`）與哨兵，依文件順序。
+ *
+ * `<a:tbl`、`<a:tblPr>`、`<a:tableStyleId>` 都以 `<a:t` 開頭，所以 `t` 之後必須緊接 `>`
+ * 或屬性的空白才算命中。
+ */
+const TEXT_RUN_OR_SENTINEL = /<(?:a|w):t(?:\s[^>]*)?>([\s\S]*?)<\/(?:a|w):t>|([\u0001-\u0006])/g;
+
+/**
+ * 從 OOXML 片段抽出人看得懂的文字。
+ *
+ * **只採納 `<a:t>`／`<w:t>` 的內容**，不是「把標籤刪掉、其餘留下」。後者會把元素的文字
+ * 內容一併留下，而 OOXML 有不少元素的內容是機器識別碼——`<a:tableStyleId>` 存的是
+ * `{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}` 這種 GUID，PowerPoint 建的表格一律有它，
+ * 於是每一份含表格的 pptx 都會在第一個儲存格前面黏上一串 GUID，一路汙染 extractedText、
+ * FTS chunk、大綱目錄摘要與來源詳情 UI。docx 側的同類是 `<w:instrText>`（欄位指令，
+ * 例如 `HYPERLINK "https://…"`），它的顯示結果本來就另存在 `<w:t>` 裡。
+ *
+ * 白名單而非黑名單：逐一列舉「要排除誰」永遠追不完下一個版本新增的元素，而「文字只會
+ * 出現在 t 元素裡」是 OOXML 的結構事實。
+ */
 function xmlText(xml: string): string {
   const marked = xml
     // 哨兵是內部標記；合法 XML 不含這些控制字元，仍先清掉以免組裝時誤判。
-    .replace(/[\u0001-\u0005]/g, "")
-    .replace(/<(?:a|w):br\s*\/?\s*>/g, "\n")
+    .replace(/[\u0001-\u0006]/g, "")
+    .replace(/<(?:a|w):br\s*\/?\s*>/g, LINE_BREAK)
     .replace(/<(?:a|w):tbl(?=[\s>])[^>]*>/g, TABLE_START)
     .replace(/<\/(?:a|w):tbl>/g, TABLE_END)
     .replace(/<\/(?:a|w):p>/g, PARAGRAPH)
     .replace(/<\/(?:a|w):tc>/g, CELL_END)
-    .replace(/<\/(?:a|w):tr>/g, ROW_END)
-    .replace(/<[^>]+>/g, "")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'");
+    .replace(/<\/(?:a|w):tr>/g, ROW_END);
+  let collected = "";
+  // matchAll 而不是 exec 迴圈：模組層的 /g regex 帶著可變的 lastIndex，中途 throw 就會
+  // 污染下一次呼叫。matchAll 內部自己複製一份，沒有這個狀態。
+  for (const match of marked.matchAll(TEXT_RUN_OR_SENTINEL))
+    // 逐段 unescape 而不是對整份字串做：先 unescape 的話，正文裡的 `&lt;a:t&gt;` 會變成
+    // 真的標籤而被掃描器當成文字段。
+    collected += match[1] === undefined ? (match[2] ?? "") : unescapeXml(match[1]);
   // 非貪婪配對：巢狀表格（罕見）會被切在內層的結束標記上，結果不理想但不會壞掉。
-  const assembled = marked.replace(
+  const assembled = collected.replace(
     new RegExp(`${TABLE_START}([\\s\\S]*?)${TABLE_END}`, "g"),
     (_match, block: string) => `\n\n${pipeTable(block)}\n\n`,
   );
@@ -103,6 +149,35 @@ function xmlText(xml: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/** 這張投影片的備忘稿檔名，沒有就回 undefined。 */
+function notesSlideName(files: Record<string, Uint8Array>, slideName: string): string | undefined {
+  // 檔名不能用「slideN → notesSlideN」硬湊：備忘稿只有加過的頁才有，編號因此不連續，
+  // 第 5 頁的備忘稿完全可能存成 notesSlide2.xml。關聯只在 rels 裡。
+  const rels = files[slideName.replace(/^ppt\/slides\//, "ppt/slides/_rels/") + ".rels"];
+  if (!rels) return undefined;
+  // 逐個 <Relationship> 掃、兩個屬性分開抓，**不可**寫成 `Type="…" Target="…"` 一條龍：
+  // XML 不保證屬性順序，寫死順序等於「換一個產生器就靜默抽不到備忘稿」，而且失敗形狀
+  // 是少了一段文字、不是報錯。
+  for (const [element] of strFromU8(rels).matchAll(/<Relationship\b[^>]*>/g)) {
+    if (!/Type="[^"]*\/notesSlide"/.test(element)) continue;
+    const target = /Target="([^"]+)"/.exec(element)?.[1];
+    if (!target) continue;
+    // Target 相對於 ppt/slides/（`../notesSlides/notesSlide1.xml`）；規範也允許以 `/`
+    // 開頭的套件絕對路徑，兩種都收。
+    const resolved = target.startsWith("/") ? target.slice(1) : target.replace(/^\.\.\//, "ppt/");
+    if (resolved in files) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * 備忘稿在抽出來的文字裡的標記。
+ *
+ * 一定要標：備忘稿是講者要說的話，跟印在投影片上的字語意不同，混在一起會讓大綱模型
+ * 把「不要念數字」這種給講者的指示當成投影片內容。
+ */
+const NOTES_LABEL = "［備忘稿］";
 
 function parseOffice(bytes: Uint8Array, kind: "docx" | "pptx"): string {
   let files: Record<string, Uint8Array>;
@@ -118,9 +193,17 @@ function parseOffice(bytes: Uint8Array, kind: "docx" | "pptx"): string {
           .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
           .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const parts = names
-    .map((name) => files[name])
-    .filter((value): value is Uint8Array => !!value)
-    .map((value) => xmlText(strFromU8(value)));
+    .filter((name) => !!files[name])
+    .map((name) => {
+      const body = xmlText(strFromU8(files[name]!));
+      if (kind !== "pptx") return body;
+      const notesName = notesSlideName(files, name);
+      const notes = notesName ? xmlText(strFromU8(files[notesName]!)) : "";
+      // 接在該頁後面而不是集中到檔尾：備忘稿與投影片內容要落在同一個 chunk 視窗裡，
+      // 分開的話 FTS 撈到備忘稿也對不回是哪一頁。
+      if (!notes) return body;
+      return body ? `${body}\n${NOTES_LABEL}${notes}` : `${NOTES_LABEL}${notes}`;
+    });
   if (!parts.some(Boolean)) throw new Error("SOURCE_TEXT_NOT_FOUND");
   return parts.join("\n\n");
 }

@@ -149,6 +149,144 @@ describe("OOXML 表格結構", () => {
   });
 });
 
+const A_CELL = (text: string) =>
+  `<a:tc><a:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></a:txBody></a:tc>`;
+const A_ROW = (cells: readonly string[]) => `<a:tr>${cells.map(A_CELL).join("")}</a:tr>`;
+
+async function ingestPptx(files: Record<string, string>) {
+  return ingestSource(
+    { name: "deck.pptx", mediaType: PPTX_TYPE, allowModelAccess: true },
+    zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)]))),
+    "assets/deck.pptx",
+  );
+}
+
+describe("只採納 <a:t>／<w:t>，元素的機器識別碼不得漏出", () => {
+  it("pptx 表格的 tableStyleId GUID 不會黏在第一個儲存格前面", async () => {
+    // PowerPoint 建的表格一律有 <a:tableStyleId>，內容是 GUID 而不是屬性，所以「剝掉標籤、
+    // 其餘留下」的作法會把它留在第一格前面。實測形狀：
+    //   | {5C22544A-7EE6-4342-B048-85BDC9FD1C3A}部門 | 營收 | 年增率 |
+    // 它會一路汙染 extractedText、FTS chunk、大綱目錄摘要與來源詳情 UI。
+    const slide =
+      `<?xml version="1.0"?><p:sld><p:cSld>` +
+      `<a:tbl><a:tblPr firstRow="1"><a:tableStyleId>{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}</a:tableStyleId></a:tblPr>` +
+      `${A_ROW(["部門", "營收"])}${A_ROW(["雲端", "128.4"])}</a:tbl></p:cSld></p:sld>`;
+    const source = await ingestPptx({ "ppt/slides/slide1.xml": slide });
+    // 逐行相等而非 not.toContain(GUID)：GUID 換一個值就漏掉的斷言等於沒釘住，
+    // 而第一格的內容必須「正好是」表頭本身。
+    expect(source.extractedText.split("\n").filter((line) => line.startsWith("|"))).toEqual([
+      "| 部門 | 營收 |",
+      "| --- | --- |",
+      "| 雲端 | 128.4 |",
+    ]);
+    expect(source.extractedText).not.toMatch(/[{}]/);
+  });
+
+  it("docx 的 <w:instrText> 欄位指令不會被當成正文", async () => {
+    // 同一類問題在 docx 側的形狀：欄位指令的內容是給 Word 執行的，顯示結果本來就
+    // 另外存在 <w:t> 裡，收下它等於把 `HYPERLINK "https://…"` 存成使用者寫的字。
+    const source = await ingestDocx(
+      `<w:p><w:r><w:instrText> HYPERLINK "https://example.com/secret" </w:instrText></w:r>` +
+        `<w:r><w:t>年報下載</w:t></w:r></w:p>`,
+    );
+    expect(source.extractedText).toBe("年報下載");
+  });
+
+  it("&amp; 最後才還原：&amp;quot; 應保持字面而不是變成引號", async () => {
+    // 還原順序若把 &amp; 排在 &quot; 之前，`&amp;quot;` 會先變成 `&quot;` 再被換成 `"`,
+    // 使用者寫的字面 escape 於是被解讀了兩次。
+    const source = await ingestDocx(
+      `<w:p><w:r><w:t>&amp;quot; 與 &amp;lt; 是字面</w:t></w:r></w:p>`,
+    );
+    expect(source.extractedText).toBe("&quot; 與 &lt; 是字面");
+  });
+
+  it("<a:br/> 仍然換行，且儲存格內不會把上下兩行黏成一個詞", async () => {
+    // 換行改走哨兵之後的回歸守衛：控制字元不在 \s 裡，cellText 少一條 replaceAll
+    // 就會得到「上行下行」。
+    const slide =
+      `<?xml version="1.0"?><p:sld><p:cSld>` +
+      `<a:tbl>${A_ROW(["欄"])}` +
+      `<a:tr><a:tc><a:txBody><a:p><a:r><a:t>上行</a:t></a:r><a:br/><a:r><a:t>下行</a:t></a:r></a:p></a:txBody></a:tc></a:tr>` +
+      `</a:tbl>` +
+      `<p:sp><p:txBody><a:p><a:r><a:t>段首</a:t></a:r><a:br/><a:r><a:t>段尾</a:t></a:r></a:p></p:txBody></p:sp>` +
+      `</p:cSld></p:sld>`;
+    const source = await ingestPptx({ "ppt/slides/slide1.xml": slide });
+    expect(source.extractedText).toContain("| 上行 下行 |");
+    expect(source.extractedText).toContain("段首\n段尾");
+  });
+});
+
+describe("pptx 備忘稿", () => {
+  const NOTES = (text: string) =>
+    `<?xml version="1.0"?><p:notes><p:cSld><p:sp><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp></p:cSld></p:notes>`;
+  const SLIDE = (text: string) =>
+    `<?xml version="1.0"?><p:sld><p:cSld><p:sp><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp></p:cSld></p:sld>`;
+  const RELS = (target: string) =>
+    `<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="${target}"/></Relationships>`;
+
+  it("備忘稿接在該頁之後並標記出處", async () => {
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": SLIDE("雲端成長 31%"),
+      "ppt/slides/_rels/slide1.xml.rels": RELS("../notesSlides/notesSlide1.xml"),
+      "ppt/notesSlides/notesSlide1.xml": NOTES("這頁要強調毛利改善，不要念數字"),
+    });
+    // 標記是必要的：備忘稿是講者要說的話，不標的話大綱模型會把「不要念數字」這種
+    // 給講者的指示當成投影片上印著的內容。
+    expect(source.extractedText).toBe("雲端成長 31%\n［備忘稿］這頁要強調毛利改善，不要念數字");
+  });
+
+  it("對應靠 rels 而不是檔名編號——第 2 頁的備忘稿可以叫 notesSlide1", async () => {
+    // 備忘稿只有加過的頁才有，編號因此不連續。用 slideN → notesSlideN 硬湊的話，
+    // 這個（很常見的）情況會把備忘稿掛到錯的頁上。
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": SLIDE("第一頁"),
+      "ppt/slides/slide2.xml": SLIDE("第二頁"),
+      "ppt/slides/_rels/slide2.xml.rels": RELS("../notesSlides/notesSlide1.xml"),
+      "ppt/notesSlides/notesSlide1.xml": NOTES("只有第二頁有備忘稿"),
+    });
+    const [first, second] = source.extractedText.split("\n\n");
+    expect(first).toBe("第一頁");
+    expect(second).toBe("第二頁\n［備忘稿］只有第二頁有備忘稿");
+  });
+
+  it("Target 寫在 Type 前面也抓得到——XML 不保證屬性順序", async () => {
+    // 寫死 `Type="…" Target="…"` 的話，換一個產生器就靜默抽不到備忘稿，
+    // 而失敗形狀是「少了一段文字」不是報錯，不會有人發現。
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": SLIDE("內容"),
+      "ppt/slides/_rels/slide1.xml.rels": `<?xml version="1.0"?><Relationships><Relationship Target="../notesSlides/notesSlide1.xml" Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"/></Relationships>`,
+      "ppt/notesSlides/notesSlide1.xml": NOTES("順序反過來也要讀到"),
+    });
+    expect(source.extractedText).toBe("內容\n［備忘稿］順序反過來也要讀到");
+  });
+
+  it("沒有備忘稿時輸出不變", async () => {
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": SLIDE("只有內容"),
+      "ppt/slides/_rels/slide1.xml.rels": `<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`,
+    });
+    expect(source.extractedText).toBe("只有內容");
+  });
+
+  it("rels 指到不存在的檔案時略過，不整份失敗", async () => {
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": SLIDE("內容還在"),
+      "ppt/slides/_rels/slide1.xml.rels": RELS("../notesSlides/notesSlide9.xml"),
+    });
+    expect(source.extractedText).toBe("內容還在");
+  });
+
+  it("整頁只有備忘稿（空白頁加註）時仍收得到", async () => {
+    const source = await ingestPptx({
+      "ppt/slides/slide1.xml": `<?xml version="1.0"?><p:sld><p:cSld/></p:sld>`,
+      "ppt/slides/_rels/slide1.xml.rels": RELS("../notesSlides/notesSlide1.xml"),
+      "ppt/notesSlides/notesSlide1.xml": NOTES("這頁是過場，口頭帶過"),
+    });
+    expect(source.extractedText).toBe("［備忘稿］這頁是過場，口頭帶過");
+  });
+});
+
 describe("PDF 文字抽取", () => {
   async function pdfWithTable() {
     const document = await PDFDocument.create();
