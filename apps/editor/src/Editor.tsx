@@ -40,12 +40,10 @@ import { ErrorToast } from "./ErrorToast.js";
 import { nextVisibleIndex, visibleSlideIds } from "./editor/slideVisibility.js";
 import {
   briefPatchWithoutWebSearch,
-  confirmStyleReplacement,
   currentImage,
   duration,
   isPdfImportProject,
   isPdfImportVersion,
-  styleOptions,
   PHASE_LABELS,
 } from "./editor/projectHelpers.js";
 import { useIsomorphicLayoutEffect } from "./editor/useIsomorphicLayoutEffect.js";
@@ -67,6 +65,7 @@ import { EditorHeader } from "./editor/EditorHeader.js";
 import { SlideRail } from "./editor/SlideRail.js";
 import { StylePickerDialog } from "./editor/StylePickerDialog.js";
 import { InspectorTabs } from "./editor/InspectorTabs.js";
+import { ProjectBriefFields } from "./editor/ProjectBriefFields.js";
 import { TextBoxProperties } from "./editor/TextBoxProperties.js";
 import { SystemSettingsDialog } from "./editor/SystemSettingsDialog.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./editor/BatchGenerateDialog.js";
@@ -1691,84 +1690,14 @@ export function Editor() {
         )}
         {panel === "project" && briefDraft && (
           <div className="panel-content fields">
-            <div className="inspector-heading">
-              <span>PROJECT BRIEF</span>
-            </div>
-            <label>
-              主題
-              <input
-                value={briefDraft.topic}
-                onChange={(event) => setBriefDraft({ ...briefDraft, topic: event.target.value })}
-              />
-            </label>
-            <label>
-              目標觀眾
-              <input
-                value={briefDraft.audience}
-                onChange={(event) => setBriefDraft({ ...briefDraft, audience: event.target.value })}
-              />
-            </label>
-            <label>
-              目的
-              <input
-                value={briefDraft.purpose}
-                onChange={(event) => setBriefDraft({ ...briefDraft, purpose: event.target.value })}
-              />
-            </label>
-            <label>
-              語言
-              <input
-                value={briefDraft.language}
-                onChange={(event) => setBriefDraft({ ...briefDraft, language: event.target.value })}
-              />
-            </label>
-            <label>
-              頁數
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={briefDraft.desiredSlideCount}
-                onChange={(event) =>
-                  setBriefDraft({ ...briefDraft, desiredSlideCount: Number(event.target.value) })
-                }
-              />
-            </label>
-            <label>
-              語氣
-              <input
-                value={briefDraft.tone}
-                onChange={(event) => setBriefDraft({ ...briefDraft, tone: event.target.value })}
-              />
-            </label>
-            <label>
-              內容模式
-              <select
-                value={briefDraft.contentMode}
-                onChange={(event) =>
-                  setBriefDraft({
-                    ...briefDraft,
-                    contentMode: event.target.value as PresentationBrief["contentMode"],
-                  })
-                }
-              >
-                <option value="creative">Creative</option>
-                <option value="grounded">Grounded</option>
-              </select>
-            </label>
-            <label>
-              風格
-              <select
-                value={project.styleSnapshot.id}
-                onChange={(event) => {
-                  if (!confirmStyleReplacement(styles, project.styleSnapshot, event.target.value))
-                    return;
-                  void run(() => api.applyStyle(project.id, event.target.value));
-                }}
-              >
-                {styleOptions(styles, project.styleSnapshot)}
-              </select>
-            </label>
+            <ProjectBriefFields
+              briefDraft={briefDraft}
+              onBriefDraft={setBriefDraft}
+              styles={styles}
+              styleSnapshot={project.styleSnapshot}
+              projectId={project.id}
+              run={run}
+            />
             <PageNumberFields pageNumber={pageNumber} onPatch={patchPageNumber} />
             {/*
               這兩顆原本零回饋：不 disabled、文案不變、也沒有進度。「依 Brief 重建大綱」會跑
