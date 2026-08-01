@@ -148,6 +148,11 @@ import { boxesFromOcr, renderComposite, textMask, unerasedImagePath } from "./te
 import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
 import { traditionalizeBoxes } from "./traditionalize.js";
 import { UsageLedger, type UsageRecordInput } from "./usage-ledger.js";
+import {
+  referencedVersionAssets,
+  staleVersionAssets,
+  versionAssetPaths,
+} from "./version-assets.js";
 
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 export const projectStyleAnalysisInputSchema = z.object({
@@ -3963,14 +3968,10 @@ export async function createApp(
             target.textLayer = nextLayer;
             target.imagePath = nextLayer.compositePath;
             current.updatedAt = now;
-            const remainsReferenced = current.slides.some((slide) =>
-              slide.versions.some(
-                (version) =>
-                  version.imagePath === staleCompositePath ||
-                  version.textLayer?.backgroundPath === staleCompositePath ||
-                  version.textLayer?.compositePath === staleCompositePath,
-              ),
-            );
+            // 引用集合在**替換之後**才算：舊 composite 這時已經不在 target 身上，還算得到
+            // 就代表真的有別人在用（例如它同時是別的版本的 imagePath）。順序反過來的話它
+            // 會被自己引用著，永遠刪不掉。
+            const remainsReferenced = referencedVersionAssets(current).has(staleCompositePath);
             return {
               project: structuredClone(current),
               staleCompositePath: remainsReferenced ? undefined : staleCompositePath,
@@ -4228,29 +4229,14 @@ export async function createApp(
           )
         )
           throw new Error("VERSION_REFERENCED_BY_TEXT_LAYER");
-        const staleCandidates = new Set([
-          version.imagePath,
-          ...(version.textLayer
-            ? [version.textLayer.backgroundPath, version.textLayer.compositePath]
-            : []),
-        ]);
+        const staleCandidates = versionAssetPaths(version);
         slide.versions.splice(index, 1);
         current.updatedAt = new Date().toISOString();
         // restore 是 structuredClone 舊版本，多個版本共用同一個 imagePath 是常態：資產是否
-        // 該刪，只能在移除之後重算全專案的引用才算得準。
-        const referencedAssets = new Set(
-          current.slides.flatMap((candidate) =>
-            candidate.versions.flatMap((item) => [
-              item.imagePath,
-              ...(item.textLayer
-                ? [item.textLayer.backgroundPath, item.textLayer.compositePath]
-                : []),
-            ]),
-          ),
-        );
+        // 該刪，只能在移除之後重算全專案的引用才算得準（`staleVersionAssets` 的前提）。
         return {
           project: asPersisted(current),
-          staleAssets: [...staleCandidates].filter((assetPath) => !referencedAssets.has(assetPath)),
+          staleAssets: staleVersionAssets(current, staleCandidates),
         };
       });
       // 刪除是這批資產最後一次被算到：引用集合不會再重算，刪不掉就是永久孤兒。

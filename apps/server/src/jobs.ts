@@ -20,6 +20,7 @@ import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite, unerasedImagePath } from "./text-layers.js";
 import type { UsageLedger, UsageRecordInput } from "./usage-ledger.js";
+import { staleVersionAssets, versionAssetPaths } from "./version-assets.js";
 
 /** JobRunner 記帳所需的兩件事：帳本本身，與「provider id → 模型識別欄位」的解析。 */
 export interface JobUsageRecording {
@@ -1109,11 +1110,7 @@ export class JobRunner {
         const staleCandidates = new Set<string>();
         if (replaceIndex >= 0) {
           const previous = currentSlide.versions[replaceIndex]!;
-          staleCandidates.add(previous.imagePath);
-          if (previous.textLayer) {
-            staleCandidates.add(previous.textLayer.backgroundPath);
-            staleCandidates.add(previous.textLayer.compositePath);
-          }
+          for (const assetPath of versionAssetPaths(previous)) staleCandidates.add(assetPath);
           currentSlide.versions[replaceIndex] = {
             ...nextVersion,
             createdAt: previous.createdAt,
@@ -1133,17 +1130,9 @@ export class JobRunner {
         currentJob.finishedAt = currentJob.updatedAt;
         current.updatedAt = currentJob.updatedAt;
         queueMicrotask(() => this.logPhase(structuredClone(currentJob)));
-        const referencedAssets = new Set(
-          current.slides.flatMap((candidate) =>
-            candidate.versions.flatMap((version) => [
-              version.imagePath,
-              ...(version.textLayer
-                ? [version.textLayer.backgroundPath, version.textLayer.compositePath]
-                : []),
-            ]),
-          ),
-        );
-        return [...staleCandidates].filter((assetPath) => !referencedAssets.has(assetPath));
+        // 取代路徑的三張候選裡，仍被別的版本引用的要留下（背景圖常常是別的版本的
+        // imagePath）——只能在上面的取代寫回去**之後**才算得準。
+        return staleVersionAssets(current, staleCandidates);
       });
       const completed = staleAssets !== undefined;
       resultPersisted = completed;
