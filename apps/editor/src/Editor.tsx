@@ -66,6 +66,7 @@ import { VersionStrip } from "./editor/VersionStrip.js";
 import { EditorHeader } from "./editor/EditorHeader.js";
 import { SlideRail } from "./editor/SlideRail.js";
 import { StylePickerDialog } from "./editor/StylePickerDialog.js";
+import { InspectorTabs } from "./editor/InspectorTabs.js";
 import { TextBoxProperties } from "./editor/TextBoxProperties.js";
 import { SystemSettingsDialog } from "./editor/SystemSettingsDialog.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./editor/BatchGenerateDialog.js";
@@ -1352,59 +1353,13 @@ export function Editor() {
         />
       </main>
       <aside className="inspector" id="inspector">
-        {/*
-          選中狀態原本只有 CSS class 撐著：閱讀器聽到四顆一模一樣的按鈕，唯一得知現狀的
-          辦法是按下去——而按下去就換掉了整個面板。`aria-current="page"` 是最小修法；
-          完整的 `role="tablist"` 要連帶實作方向鍵巡覽（Home／End、`aria-controls`、
-          roving tabindex），成本高得多，這次不做。
-        */}
-        <div className="inspector-tabs">
-          <button
-            className={panel === "slide" ? "active" : ""}
-            {...(panel === "slide" ? { "aria-current": "page" as const } : {})}
-            onClick={() => setPanel("slide")}
-          >
-            頁面
-          </button>
-          <button
-            className={panel === "project" ? "active" : ""}
-            {...(panel === "project" ? { "aria-current": "page" as const } : {})}
-            onClick={() => setPanel("project")}
-          >
-            專案
-          </button>
-          {/* 來源筆數原本掛在 header 的導覽列上，導覽列收掉後改由這個分頁承接（accessible name 仍是「來源 N」）。 */}
-          <button
-            className={panel === "sources" ? "active" : ""}
-            {...(panel === "sources" ? { "aria-current": "page" as const } : {})}
-            onClick={() => setPanel("sources")}
-          >
-            來源 <b>{project.sources.length}</b>
-          </button>
-          <button
-            className={panel === "export" ? "active" : ""}
-            {...(panel === "export" ? { "aria-current": "page" as const } : {})}
-            onClick={() => setPanel("export")}
-          >
-            匯出
-          </button>
-          {/*
-           * 收合鈕留在分頁列裡，收起來之後它是側邊欄唯一還看得見的東西（其餘由 CSS 藏掉），
-           * 所以還原鈕與收合鈕是同一顆——不必另外找地方擺一個只有收合時才存在的按鈕。
-           */}
-          <button
-            type="button"
-            className="inspector-collapse"
-            // 少了 aria-controls，讀螢幕的人只聽得到「已展開／已收合」，卻不知道是什麼展開了。
-            aria-controls="inspector"
-            aria-expanded={!inspectorCollapsed}
-            aria-label={inspectorCollapsed ? "展開側邊欄" : "收起側邊欄"}
-            title={inspectorCollapsed ? "展開側邊欄" : "收起側邊欄，放大編輯區"}
-            onClick={() => setInspectorCollapsed((collapsed) => !collapsed)}
-          >
-            {inspectorCollapsed ? "‹" : "›"}
-          </button>
-        </div>
+        <InspectorTabs
+          panel={panel}
+          onPanel={setPanel}
+          collapsed={inspectorCollapsed}
+          onCollapsedToggle={() => setInspectorCollapsed((value) => !value)}
+          sourceCount={project.sources.length}
+        />
         {panel === "slide" && (
           <>
             <div className="inspector-heading">
