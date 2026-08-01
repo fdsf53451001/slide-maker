@@ -8,8 +8,6 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
-  pageNumberFormatSchema,
-  pageNumberPositionSchema,
   type PresentationBrief,
   type PresentationProject,
   type SlideSpec,
@@ -65,7 +63,7 @@ import { SlideVisibilityIcon, TextToolIcon } from "./editor/icons.js";
 import { SlideSourceChips } from "./editor/SlideSourceChips.js";
 import { TextLayerCanvas } from "./editor/TextLayerCanvas.js";
 import { PageNumberOverlay } from "./editor/PageNumberOverlay.js";
-import { ClampedNumberField } from "./editor/ClampedNumberField.js";
+import { PageNumberFields } from "./editor/PageNumberFields.js";
 import { TextBoxProperties } from "./editor/TextBoxProperties.js";
 import { SystemSettingsDialog } from "./editor/SystemSettingsDialog.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./editor/BatchGenerateDialog.js";
@@ -2097,140 +2095,7 @@ export function Editor() {
                 {styleOptions(styles, project.styleSnapshot)}
               </select>
             </label>
-            <div className="inspector-heading page-number-heading">
-              <span>PAGE NUMBER</span>
-            </div>
-            {/* 頁碼是專案級設定，改了立即套用，不併進「儲存 Brief」——它與大綱無關，
-                而且畫布上的預覽要馬上跟著動才看得出調整效果。
-                滑桿與色票走 debounce（見 patchPageNumber），其餘控制項一次一個值即時送出。 */}
-            <label className="check-row page-number-toggle">
-              <input
-                type="checkbox"
-                checked={pageNumber.enabled}
-                onChange={(event) => patchPageNumber({ enabled: event.target.checked })}
-              />
-              顯示頁碼
-            </label>
-            {pageNumber.enabled && (
-              <div className="page-number-fields">
-                <label>
-                  位置
-                  <select
-                    value={pageNumber.position}
-                    onChange={(event) =>
-                      patchPageNumber({
-                        position: pageNumberPositionSchema.parse(event.target.value),
-                      })
-                    }
-                  >
-                    <option value="bottom-left">左下</option>
-                    <option value="bottom-center">置中</option>
-                    <option value="bottom-right">右下</option>
-                  </select>
-                </label>
-                <label>
-                  格式
-                  <select
-                    value={pageNumber.format}
-                    onChange={(event) =>
-                      patchPageNumber({ format: pageNumberFormatSchema.parse(event.target.value) })
-                    }
-                  >
-                    <option value="number">3</option>
-                    <option value="number-total">3 / 12</option>
-                    <option value="zh-page">第 3 頁</option>
-                  </select>
-                </label>
-                <ClampedNumberField
-                  label="起始頁碼"
-                  value={pageNumber.startAt}
-                  min={1}
-                  max={999}
-                  onCommit={(startAt) => patchPageNumber({ startAt })}
-                />
-                <label className="check-row page-number-toggle">
-                  <input
-                    type="checkbox"
-                    checked={pageNumber.skipFirstSlide}
-                    onChange={(event) => patchPageNumber({ skipFirstSlide: event.target.checked })}
-                  />
-                  封面不編號
-                </label>
-                <ClampedNumberField
-                  label="字級"
-                  value={pageNumber.fontSize}
-                  min={12}
-                  max={120}
-                  onCommit={(fontSize) => patchPageNumber({ fontSize })}
-                />
-                <label>
-                  顏色
-                  <input
-                    type="color"
-                    value={pageNumber.color}
-                    onChange={(event) =>
-                      patchPageNumber({ color: event.target.value }, { debounce: true })
-                    }
-                  />
-                </label>
-                <label>
-                  透明度
-                  <input
-                    type="range"
-                    min={0.05}
-                    max={1}
-                    step={0.05}
-                    value={pageNumber.opacity}
-                    onChange={(event) =>
-                      patchPageNumber({ opacity: Number(event.target.value) }, { debounce: true })
-                    }
-                  />
-                </label>
-                <label className="check-row page-number-toggle">
-                  <input
-                    type="checkbox"
-                    checked={pageNumber.background.enabled}
-                    onChange={(event) =>
-                      patchPageNumber({ background: { enabled: event.target.checked } })
-                    }
-                  />
-                  加上背景色塊
-                </label>
-                {pageNumber.background.enabled && (
-                  <>
-                    <label>
-                      色塊顏色
-                      <input
-                        type="color"
-                        value={pageNumber.background.color}
-                        onChange={(event) =>
-                          patchPageNumber(
-                            { background: { color: event.target.value } },
-                            { debounce: true },
-                          )
-                        }
-                      />
-                    </label>
-                    <label>
-                      色塊透明度
-                      <input
-                        type="range"
-                        min={0.05}
-                        max={1}
-                        step={0.05}
-                        value={pageNumber.background.opacity}
-                        onChange={(event) =>
-                          patchPageNumber(
-                            { background: { opacity: Number(event.target.value) } },
-                            { debounce: true },
-                          )
-                        }
-                      />
-                    </label>
-                  </>
-                )}
-              </div>
-            )}
+            <PageNumberFields pageNumber={pageNumber} onPatch={patchPageNumber} />
             {/*
               這兩顆原本零回饋：不 disabled、文案不變、也沒有進度。「依 Brief 重建大綱」會跑
               一次網路搜尋加兩階段大綱生成（實測數十秒到數分鐘），使用者的必然反應是再按一次
