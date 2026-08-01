@@ -169,6 +169,7 @@ import {
   createStartupRepairs,
 } from "./image-description-scheduler.js";
 import { trustedHostMiddleware } from "./trusted-hosts.js";
+import type { AppContext } from "./routes/context.js";
 
 export const projectStyleAnalysisInputSchema = z.object({
   slideIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
@@ -489,6 +490,45 @@ export async function createApp(
         "此組合的影像模型不支援多張參考圖。請把風格的參考圖減到 1 張，或改用支援多張參考圖的影像模型。",
       );
   };
+
+  /**
+   * route 模組要用的那一份 createApp 內部世界（見 `routes/context.ts` 的三條規則）。
+   *
+   * 這一批只建立型別與物件，route 本體還在下面；下一批把 route 搬成
+   * `registerXxx(app, ctx)` 時，呼叫順序仍以本檔現在的註冊順序為準。
+   * 三支風格快照 helper 是 `function` 宣告（會 hoist），在這裡取用是安全的。
+   */
+  const ctx: AppContext = {
+    repository,
+    styles,
+    retriever,
+    runtime,
+    jobs,
+    readiness,
+    ocr,
+    ocrQueue,
+    usageLedger,
+    htmlRenderer,
+    applyLibrary,
+    resolveStructuredText,
+    resolveImageProviderId,
+    refreshStyleForGeneration,
+    usageModelFields,
+    recordStructuredUsage,
+    searchFor,
+    gatherWebSources,
+    materializeWebSources,
+    imageDescriptionProvider,
+    scheduleImageDescription,
+    ownedStyleReferences,
+    saveVersionStyleReference,
+    writeProjectStyleSnapshot,
+  };
+  // 下一批才會出現 `registerXxx(app, ctx)` 的呼叫。物件刻意在這一批就建起來，型別對不上
+  // 的地方（活引用被解構成快照、少了某個 helper）現在就會紅，而不是等搬 route 那一刻
+  // 一次爆出來。
+  void ctx;
+
   await jobs.recoverInterruptedJobs();
   app.locals.jobRunner = jobs;
   app.locals.providerReadiness = readiness;
