@@ -1118,7 +1118,7 @@ export async function createApp(
         try {
           described = await describeImage({
             provider,
-            imagePath: repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
+            imagePath: repository.resolveAsset(projectId, source.assetPath),
             language: current.brief.language,
             timeoutMs: runtime.system.modelTimeoutMs,
             signal,
@@ -1994,14 +1994,15 @@ export async function createApp(
     const slideIndex = project.slides.findIndex((slide) => slide.id === slideId);
     const version = project.slides[slideIndex]?.versions.find((item) => item.id === versionId);
     if (!version) throw new Error("Version not found");
-    const relative = version.imagePath.replace(/^assets\//, "");
-    const mediaType = relative.endsWith(".png")
+    const mediaType = version.imagePath.endsWith(".png")
       ? ("image/png" as const)
-      : relative.match(/\.jpe?g$/)
+      : version.imagePath.match(/\.jpe?g$/)
         ? ("image/jpeg" as const)
         : undefined;
     if (!mediaType) throw new Error("STYLE_REFERENCE_CONTENT_INVALID");
-    const bytes = new Uint8Array(await readFile(repository.assetPath(project.id, relative)));
+    const bytes = new Uint8Array(
+      await readFile(repository.resolveAsset(project.id, version.imagePath)),
+    );
     return styles.saveReference(`${project.name} - Slide ${slideIndex + 1}`, mediaType, bytes);
   }
 
@@ -3633,7 +3634,7 @@ export async function createApp(
     const originalBytes = await readFile(
       // 不可直接讀 `imagePath`：手動層的那張是「背景＋手打的字」的合成圖，餵給 OCR 會把
       // 使用者自己打的字再抽一次（重複），抹字底圖也會把它烘死在背景裡。
-      repository.assetPath(projectId, unerasedImagePath(originalVersion).replace(/^assets\//, "")),
+      repository.resolveAsset(projectId, unerasedImagePath(originalVersion)),
     );
     const normalized = await sharp(originalBytes)
       .resize(project.canvas.width, project.canvas.height, { fit: "fill" })
@@ -3644,7 +3645,7 @@ export async function createApp(
       `ocr-input/${slideId}-${randomUUID()}.png`,
       new Uint8Array(normalized),
     );
-    const normalizedInputPath = repository.assetPath(projectId, inputPath.replace(/^assets\//, ""));
+    const normalizedInputPath = repository.resolveAsset(projectId, inputPath);
     /*
      * 這張正規化圖是純粹的**中間產物**：只有下面的 `ocr.recognize()` 與樣式精修的
      * `imagePaths` 會讀它，之後沒有任何持久化紀錄引用（版本存的是 base version 的圖，

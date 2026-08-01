@@ -41,6 +41,20 @@ export class FileProjectRepository implements StorageAdapter {
     return path;
   }
 
+  /**
+   * 專案檔裡存的路徑（`saveAsset` 回傳的那種，帶 `assets/` 前綴）→ 磁碟上的絕對路徑。
+   *
+   * 存在的理由是 `saveAsset` 與 `assetPath` 的不對稱：前者回傳帶前綴的儲存形式，後者收的
+   * 是不帶前綴的相對路徑。呼叫端於是到處自己寫 `.replace(/^assets\//, "")`——同一條規則散
+   * 落十幾份，改動時漏掉一份不會有任何測試變紅，只會在執行期指到 `assets/assets/…`。
+   *
+   * 只剝**開頭的** `assets/`，與 `deleteAsset` 同一條正規表示式：路徑裡別處出現的
+   * `assets/` 一律保留，也不做 `join`／`normalize`（越界檢查仍由 `assetPath` 負責）。
+   */
+  resolveAsset(projectId: string, storedPath: string): string {
+    return this.assetPath(projectId, storedPath.replace(/^assets\//, ""));
+  }
+
   async listProjects(): Promise<PresentationProject[]> {
     await this.initialize();
     const entries = await readdir(join(this.root, "projects"), { withFileTypes: true });
@@ -126,7 +140,7 @@ export class FileProjectRepository implements StorageAdapter {
   }
 
   async deleteAsset(projectId: string, relativePath: string): Promise<void> {
-    await rm(this.assetPath(projectId, relativePath.replace(/^assets\//, "")), { force: true });
+    await rm(this.resolveAsset(projectId, relativePath), { force: true });
   }
 
   /**
@@ -137,9 +151,6 @@ export class FileProjectRepository implements StorageAdapter {
    * 看得到它，孤兒就沒有真的被清掉。路徑一樣過 `assetPath` 的越界檢查。
    */
   async deleteAssetDirectory(projectId: string, relativePath: string): Promise<void> {
-    await rm(this.assetPath(projectId, relativePath.replace(/^assets\//, "")), {
-      force: true,
-      recursive: true,
-    });
+    await rm(this.resolveAsset(projectId, relativePath), { force: true, recursive: true });
   }
 }

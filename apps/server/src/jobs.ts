@@ -829,7 +829,7 @@ export class JobRunner {
         // 怎麼描述這張圖），維持原樣。
         .filter((source) => sourceAttachesReferenceImage(source.usage))
         .map((source) => ({
-          path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
+          path: this.repository.resolveAsset(projectId, source.assetPath),
           mediaType: source.mediaType,
           role: (source.usage === "style-reference"
             ? "style"
@@ -845,12 +845,11 @@ export class JobRunner {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
         if (!baseVersion || !job.editInstruction) throw new Error("EDIT_BASE_VERSION_MISSING");
         const basePath = editBaseImagePath(baseVersion, job.operation);
-        const baseRelative = basePath.replace(/^assets\//, "");
-        const baseMediaType = /\.jpe?g$/i.test(baseRelative) ? "image/jpeg" : "image/png";
+        const baseMediaType = /\.jpe?g$/i.test(basePath) ? "image/jpeg" : "image/png";
         // 底圖與遮罩是編輯任務的內建輸入，必須標成 base／mask：標成 content 會讓合約
         // 的「參考圖不得把文字帶進輸出」等生成專用禁令誤傷這張要保留的原圖。
         references.unshift({
-          path: this.repository.assetPath(projectId, baseRelative),
+          path: this.repository.resolveAsset(projectId, basePath),
           mediaType: baseMediaType,
           role: "base",
           name: "Current slide image",
@@ -859,7 +858,7 @@ export class JobRunner {
         let maskImageIndex: number | undefined;
         if (job.maskPath) {
           references.splice(1, 0, {
-            path: this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, "")),
+            path: this.repository.resolveAsset(projectId, job.maskPath),
             mediaType: "image/png",
             role: "mask",
             name: "Edit mask",
@@ -1006,8 +1005,8 @@ export class JobRunner {
         // 這裡是遮罩外原樣保留的來源，兩者分歧就等於「改的是 A、貼回 B」。
         const basePath = editBaseImagePath(baseVersion, job.operation);
         const [baseBytes, maskBytes] = await Promise.all([
-          readFile(this.repository.assetPath(projectId, basePath.replace(/^assets\//, ""))),
-          readFile(this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, ""))),
+          readFile(this.repository.resolveAsset(projectId, basePath)),
+          readFile(this.repository.resolveAsset(projectId, job.maskPath)),
         ]);
         safe = {
           bytes: await compositeMaskedEdit(

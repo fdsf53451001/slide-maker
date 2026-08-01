@@ -182,9 +182,7 @@ export async function renderComposite(
   project: PresentationProject,
   layer: EditableTextLayer,
 ): Promise<string> {
-  const background = await readFile(
-    repository.assetPath(project.id, layer.backgroundPath.replace(/^assets\//, "")),
-  );
+  const background = await readFile(repository.resolveAsset(project.id, layer.backgroundPath));
   const base = await sharp(background)
     .resize(project.canvas.width, project.canvas.height, { fit: "fill" })
     .png()
