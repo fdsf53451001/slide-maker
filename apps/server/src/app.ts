@@ -38,8 +38,6 @@ import {
   type StructuredTextRequest,
   type StructuredTextResult,
   type StyleReferenceImage,
-  type ProviderUsage,
-  type WebSearchOutcome,
 } from "@slide-maker/core";
 import {
   informationDensityInstruction,
@@ -98,17 +96,7 @@ import {
   searchSources,
   sourceCapacityError,
 } from "./sources.js";
-import {
-  IMAGE_DESCRIPTION_FAILURE_KEY,
-  ImageDescriptionQueue,
-  classifyImageDescriptionFailure,
-  describeImage,
-  imageDescriptionFields,
-  parseImageDescription,
-  shouldDescribeImageSource,
-  type DescribeImageResult,
-  type ImageDescriptionFailure,
-} from "./image-description.js";
+import { ImageDescriptionQueue, shouldDescribeImageSource } from "./image-description.js";
 import {
   exportFilename,
   exportPresentation,
@@ -139,7 +127,7 @@ import {
 } from "./outline-sources.js";
 import { assertPublicHttpUrl, isReadableWebUrl } from "@slide-maker/core/url-safety";
 import { captureWebPage, isHashRouteUrl, type WebSearchResult } from "./web-capture.js";
-import { createHtmlRenderer, type HtmlRenderer } from "./web-render.js";
+import { createHtmlRenderer } from "./web-render.js";
 import { PaddleOcrAdapter, type OcrAdapter } from "./ocr.js";
 import { boxesFromOcr, renderComposite, textMask, unerasedImagePath } from "./text-layers.js";
 import { applyStyleRefinement, refineOcrBoxes } from "./ocr-refine.js";
@@ -169,6 +157,18 @@ import {
   withinSourceIdLimit,
 } from "./outline-contracts.js";
 import { asPersisted, idSchema, preserveCurrentOutlineSnapshot } from "./project-write-helpers.js";
+import { createUsageRecorder, failedCallFields, usageCallFields } from "./usage-recording.js";
+import { createProviderResolvers } from "./provider-resolution.js";
+import {
+  createWebSourcePipeline,
+  webSearchOutputSchema,
+  webSearchResultSchema,
+} from "./web-source-pipeline.js";
+import {
+  createImageDescriptionScheduler,
+  createStartupRepairs,
+} from "./image-description-scheduler.js";
+import { trustedHostMiddleware } from "./trusted-hosts.js";
 
 export const projectStyleAnalysisInputSchema = z.object({
   slideIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
@@ -213,12 +213,6 @@ const TEXT_EXTRACTION_STYLE_MODEL_MESSAGE: Record<string, string> = {
  * 使用者知道要分批再試。
  */
 const URL_SOURCES_BUDGET_MS = 240_000;
-const webSearchResultSchema = z.object({
-  url: z.string().url(),
-  title: z.string().trim().min(1).max(500),
-  summary: z.string().trim().min(1).max(4_000),
-});
-const webSearchOutputSchema = z.object({ results: z.array(webSearchResultSchema).max(20) });
 const ocrStyleRefinementSchema = z.object({
   boxes: z
     .array(
@@ -342,47 +336,7 @@ export async function createApp(
     parseOptionalString(process.env.SLIDE_MAKER_SEARCH_INDEX_PATH) ??
       join(dataRoot, "index", "sources.sqlite"),
   );
-  // 上一輪程序在圖片描述途中被砍時，來源會永遠停在 parsing：背景描述沒有持久化，重啟後
-  // 沒有人接手，前端就一直顯示「分析中」。放回 indexed——那正是「沒有描述」這個既有狀態。
-  // 刻意不動 updatedAt：這是修復而非編輯，動了會打亂專案列表的排序。
-  const clearStalledParsing = async (
-    project: PresentationProject,
-  ): Promise<PresentationProject> => {
-    if (!project.sources.some((source) => source.status === "parsing")) return project;
-    logWarn("image_description_parsing_reset", { projectId: project.id });
-    // 走 updateProject 而不是拿列表快照直接 saveProject：後者的讀在鎖外，等於用一份可能
-    // 過期的整份專案盲寫回去。
-    return repository
-      .updateProject(project.id, (draft) => {
-        for (const source of draft.sources)
-          if (source.status === "parsing") source.status = "indexed";
-        return structuredClone(draft);
-      })
-      .catch((error: unknown) => {
-        logWarn("image_description_parsing_reset_failed", { projectId: project.id }, error);
-        return project;
-      });
-  };
-  /**
-   * 清掉上一輪行程留下的 `ocr-input/` 殘骸。
-   *
-   * 正常出口由抽字端點的 try/finally 負責，但那擋不住行程被砍——而「OCR 途中被 OOM 砍掉」
-   * 正是 OCR 併發閘門要防的情境，它必然留下殘檔。Cloud Run 是 max_instance=1 且
-   * scale-to-zero，實例重啟頻繁，開機掃除因此特別有效。
-   *
-   * **只能在啟動時掃，不可在請求時掃。** 請求時掃會刪到別人的檔案：樣式精修跑在閘門
-   * **之外**，所以兩個請求可以同時處在「OCR 已完成、正在精修」的階段，各自的 ocr-input
-   * 都還活著。啟動時沒有任何請求在途，才是安全的時機。
-   *
-   * 失敗一律只記 log：清不掉舊的暫存檔絕不能讓伺服器起不來。
-   */
-  const sweepOcrInputs = async (projectId: string): Promise<void> => {
-    try {
-      await repository.deleteAssetDirectory(projectId, "ocr-input");
-    } catch (error) {
-      logWarn("ocr_input_sweep_failed", { projectId }, error);
-    }
-  };
+  const { clearStalledParsing, sweepOcrInputs } = createStartupRepairs(repository);
   // 掛在既有的啟動走訪裡，不另外多一趟 cold start 的 listProjects()。
   for (const project of await repository.listProjects()) {
     const repaired = await clearStalledParsing(project);
@@ -457,84 +411,7 @@ export async function createApp(
    * 或弄壞生成是完全不成比例的。測試以 `app.locals.usageLedger.idle()` 等它收尾。
    */
   const usageLedger = new UsageLedger(repository);
-  /**
-   * 模型 entry → 帳本要記的識別欄位。
-   *
-   * provider 的 `id` 就是模型庫的 entry id（見 `ModelRuntime`），所以查得回 `providerKind`
-   * 與真正的模型名。查不到（entry 剛被刪、或 mock provider）就只留 entry id——**不可**因此
-   * 整筆不記，那會讓被刪掉的模型所燒掉的配額憑空消失。
-   */
-  const usageModelFields = (
-    entryId: string | undefined,
-  ): { modelEntryId?: string; model?: string; providerKind?: string } => {
-    if (!entryId) return {};
-    const entry = runtime.library.models.find((model) => model.id === entryId);
-    return {
-      modelEntryId: entryId,
-      ...(entry?.model ? { model: entry.model } : {}),
-      ...(entry?.providerKind ? { providerKind: entry.providerKind } : {}),
-    };
-  };
-
-  /**
-   * 一次 provider 呼叫的用量欄位（成功路徑）。
-   *
-   * `requests` 與 `usage` 分開帶：gateway 不回報用量時 usage 是空的，但「provider 自己
-   * 內部重試了幾次」仍然問得出來——那是 UI 上唯一能解釋成本的東西。
-   */
-  const usageCallFields = (outcome: {
-    usage?: ProviderUsage;
-    requests?: number;
-  }): Pick<UsageRecordInput, "usage" | "requests"> => ({
-    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
-    ...(outcome.requests === undefined ? {} : { requests: outcome.requests }),
-  });
-
-  /**
-   * 失敗的呼叫身上的用量欄位。
-   *
-   * `SafeProviderError` 會帶著「往返成功之後才失敗」那些路徑的用量（搜尋回了一整包
-   * grounding 卻沒有可驗證的候選、重試三輪都不是合法 JSON、影像解不出圖）。少了這一步，
-   * 那些**最貴又零產出**的呼叫在帳本上會與「這個 gateway 不回報用量」長得一模一樣。
-   * 錯誤物件上除了這兩個欄位以外的東西一律不碰——message 與 stack 可能夾帶正文。
-   */
-  const failedCallFields = (error: unknown): Pick<UsageRecordInput, "usage" | "requests"> =>
-    error instanceof SafeProviderError ? usageCallFields(error) : {};
-
-  /**
-   * 跑一次結構化文字呼叫並記帳，回傳模型的輸出值。
-   *
-   * 成功與失敗都記——失敗一樣燒配額，只記成功的會系統性低估，而失敗（逾時、gateway 4xx、
-   * 模型回了但格式不對）恰恰是重試迴圈跑滿三輪的那些最貴的情況。記帳一律 `void`：帳本永不
-   * reject，也不得插進呼叫端的時序。
-   *
-   * **記帳排在 schema parse 之前**（呼叫端拿到的是未驗證的 `value`）：`ok` 的語意是
-   * 「provider 往返成功、配額已經燒掉」，而 parse 失敗時 token 一樣花光了。八條記帳路徑
-   * 對這件事必須一致。
-   */
-  const recordStructuredUsage = async (
-    projectId: string,
-    fields: Omit<UsageRecordInput, "ok" | "usage">,
-    run: () => Promise<StructuredTextResult>,
-  ): Promise<unknown> => {
-    let outcome: StructuredTextResult;
-    try {
-      outcome = await run();
-    } catch (error) {
-      void usageLedger.recordProject(projectId, {
-        ...fields,
-        ok: false,
-        ...failedCallFields(error),
-      });
-      throw error;
-    }
-    void usageLedger.recordProject(projectId, {
-      ...fields,
-      ok: true,
-      ...usageCallFields(outcome),
-    });
-    return outcome.value;
-  };
+  const { usageModelFields, recordStructuredUsage } = createUsageRecorder(runtime, usageLedger);
 
   const jobs = new JobRunner(repository, runtime.imageProviders, styles, {
     ledger: usageLedger,
@@ -557,9 +434,10 @@ export async function createApp(
     return saved;
   };
 
-  // 依專案綁定的組合解析文字／搜尋 provider（無 project 時退回預設組合）。
-  const resolveStructuredText = (project?: PresentationProject): StructuredTextProvider =>
-    runtime.resolveTextProvider(project?.combinationId);
+  const { resolveImageProviderId, resolveStructuredText } = createProviderResolvers(
+    repository,
+    runtime,
+  );
 
   // 圖片來源的背景描述佇列。上傳端點只負責排隊，絕不等它。
   const imageDescriptions = new ImageDescriptionQueue();
@@ -571,383 +449,23 @@ export async function createApp(
    */
   const ocrQueue = new OcrQueue();
 
-  /**
-   * 現在有沒有可用的文字模型可以跑圖片描述。
-   *
-   * 這件事必須在回應 201 之前就知道：沒有可用模型時連 `parsing` 都不該標，否則前端會閃
-   * 一下「分析中」再默默變回去。解析失敗（組合沒設文字模型、模型庫沒有預設組合）屬可選
-   * 步驟的正常降級，安靜略過。`SLIDE_MAKER_IMAGE_DESCRIPTION=off` 時整條路直接不存在。
-   *
-   * 這裡的降級**刻意不比照抽字那條擋下**（那條見 `TEXT_EXTRACTION_STYLE_MODEL_MESSAGE`）：
-   * 沒有描述的圖片來源仍然完全可用（上傳成功、看得到、放得進頁面），差別只在 FTS 撈不到
-   * 它，而讓上傳因為模型組合沒設好就整批失敗是更糟的交換。但「安靜略過」不等於「不留
-   * 證據」：解析失敗照樣記一行代碼，否則「為什麼我的圖都沒有被讀」在伺服器端查無此事。
-   */
-  const imageDescriptionProvider = (
-    project: PresentationProject,
-  ): StructuredTextProvider | undefined => {
-    if (imageDescriptionMode === "off") return undefined;
-    try {
-      const provider = resolveStructuredText(project);
-      return provider.availability.status === "available" ? provider : undefined;
-    } catch (error) {
-      // 只記 id 與代碼：來源檔名、圖片內容、prompt 一律不進 log。
-      logWarn("image_description_model_unresolved", {
-        projectId: project.id,
-        code: error instanceof ModelLibraryError ? error.code : "UNKNOWN",
-      });
-      return undefined;
-    }
-  };
-
-  /**
-   * 把卡在 parsing 的來源放回 indexed，並記下失敗原因。
-   *
-   * 狀態不收尾的話前端會一直轉圈；而只收尾不記原因的話，「跑過但失敗」與「從來沒跑過」
-   * 在 UI 上長得一模一樣——最常見的失敗（選到的文字模型不會讀圖）就會變成每上傳一張圖
-   * 都白打一次請求，使用者卻永遠看不到線索。
-   */
-  const releaseParsingStatus = async (
-    projectId: string,
-    sourceId: string,
-    failure?: ImageDescriptionFailure,
-  ): Promise<void> => {
-    try {
-      await repository.updateProject(projectId, (draft) => {
-        const target = draft.sources.find((item) => item.id === sourceId);
-        if (!target) return;
-        if (target.status === "parsing") target.status = "indexed";
-        if (failure) target.metadata[IMAGE_DESCRIPTION_FAILURE_KEY] = failure;
-      });
-    } catch (error) {
-      logWarn("image_description_release_failed", { projectId, sourceId }, error);
-    }
-  };
-
-  /**
-   * 背景產生圖片來源的可檢索描述，並寫回 extractedText／chunks／索引。
-   *
-   * 全程可降級：任何一步失敗都只留一筆 log，來源回到「沒有描述」的既有狀態，上傳本身
-   * 早已回過 201，不受影響。provider 在工作真正開跑時才解析，排隊期間使用者換了模型組合
-   * 也算數。
-   */
-  const scheduleImageDescription = (projectId: string, sourceId: string): void => {
-    void imageDescriptions.enqueue(async (signal) => {
-      try {
-        if (signal.aborted) throw new Error("IMAGE_DESCRIPTION_ABORTED");
-        const current = await repository.loadProject(projectId);
-        const source = current?.sources.find((item) => item.id === sourceId);
-        // 排隊期間來源（或整個專案）被刪掉：沒有東西要收尾，也沒有失敗可言。
-        if (!current || !source) return;
-        // **授權要在送出的那一刻重新確認，不是排隊的那一刻。**一次拖五張圖時後面幾張會
-        // 排隊十幾秒，使用者這段時間完全可能取消某張的「AI 使用」或改掉用途；沿用排隊當時
-        // 的判斷等於把圖片照樣送出去。這是這個功能唯一的硬條件，只能以最新狀態為準。
-        if (!shouldDescribeImageSource(source)) {
-          await releaseParsingStatus(projectId, sourceId);
-          return;
-        }
-        const provider = imageDescriptionProvider(current);
-        if (!provider) throw new Error("IMAGE_DESCRIPTION_PROVIDER_UNAVAILABLE");
-        // 描述是背景工作、前端完全看不見它的成本；漏記這一筆等於讓「上傳十張圖」燒掉的
-        // 配額憑空消失。失敗也記（見 catch）。
-        const usageFields: Omit<UsageRecordInput, "ok" | "usage"> = {
-          capability: "text",
-          operation: "image-description",
-          sourceId,
-          ...usageModelFields(provider.id),
-        };
-        let described: DescribeImageResult;
-        try {
-          described = await describeImage({
-            provider,
-            imagePath: repository.resolveAsset(projectId, source.assetPath),
-            language: current.brief.language,
-            timeoutMs: runtime.system.modelTimeoutMs,
-            signal,
-          });
-        } catch (error) {
-          void usageLedger.recordProject(projectId, {
-            ...usageFields,
-            ok: false,
-            ...failedCallFields(error),
-          });
-          throw error;
-        }
-        // 記帳排在 parse 之前，與另外四條文字路徑一致：模型回了東西＝配額已經燒掉，
-        // 格式對不對是下一個問題（見 `UsageRecordInput.ok` 與 `DescribeImageResult`）。
-        void usageLedger.recordProject(projectId, {
-          ...usageFields,
-          ok: true,
-          ...usageCallFields(described),
-        });
-        const description = parseImageDescription(described.value);
-        const fields = imageDescriptionFields(sourceId, description);
-        if (!fields) throw new Error("IMAGE_DESCRIPTION_EMPTY");
-        const entry = runtime.library.models.find((model) => model.id === provider.id);
-        const updated = await repository.updateProject(projectId, (draft) => {
-          const target = draft.sources.find((item) => item.id === sourceId);
-          if (!target) return undefined;
-          // in-flight 的那一段擋不住「已經送出去了」，但至少不讓它落地：使用者在請求途中
-          // 收回授權時，描述不得寫進專案，也就不會進到大綱 prompt。
-          if (!target.allowModelAccess) {
-            if (target.status === "parsing") target.status = "indexed";
-            return undefined;
-          }
-          target.extractedText = fields.extractedText;
-          target.chunks = fields.chunks;
-          target.status = "indexed";
-          // 模型衍生物必須可查證：留下是誰產生的這份描述。
-          target.metadata = {
-            ...target.metadata,
-            // 結構化摘要（標題＋一句話）給大綱目錄用。舊資料沒有這個欄位，目錄那端的
-            // fallback（剝掉聲明後取正文）因此必須永遠留著。
-            ...(fields.summary ? { summary: fields.summary } : {}),
-            imageDescriptionProvider: provider.id,
-            imageDescriptionModel: entry?.model || entry?.name || "unknown",
-            imageDescribedAt: new Date().toISOString(),
-          };
-          delete target.metadata[IMAGE_DESCRIPTION_FAILURE_KEY];
-          target.updatedAt = new Date().toISOString();
-          // 刻意不動 draft.updatedAt：那是「使用者改了這個專案」的時間戳，專案列表照它排序。
-          // 背景寫入去碰它的話，使用者離開專案十幾秒後它會自己跳到列表最前面。
-          return structuredClone(draft);
-        });
-        if (!updated) return;
-        retriever.index(updated.id, updated.sources);
-        logInfo("image_description_indexed", {
-          projectId,
-          sourceId,
-          chunkCount: fields.chunks.length,
-        });
-      } catch (error) {
-        const failure = classifyImageDescriptionFailure(error);
-        logWarn("image_description_failed", { projectId, sourceId, failure }, error);
-        await releaseParsingStatus(projectId, sourceId, failure);
-      }
-    });
-  };
-  const searchFor =
-    (project: PresentationProject) =>
-    async (
-      query: string,
-      limit: number,
-      target: PresentationProject,
-    ): Promise<WebSearchResult[]> => {
-      // 測試替身沒有經過任何模型，記帳會製造出不存在的呼叫；這條路刻意不記。
-      if (dependencies.webSearch) return dependencies.webSearch(query, limit, target);
-      const provider = runtime.resolveSearchProvider(project.combinationId);
-      const usageFields: Omit<UsageRecordInput, "ok" | "usage"> = {
-        capability: "search",
-        operation: "search",
-        ...usageModelFields(provider.id),
-      };
-      let outcome: WebSearchOutcome;
-      try {
-        outcome = await provider.search(query, limit, target.brief.language);
-      } catch (error) {
-        // 搜尋的上游有重試迴圈，每一輪都是一次真的請求；失敗不記就會低估整整幾輪。
-        // `*_WEB_SEARCH_EMPTY` 更是這條路上最貴的失敗：整段帶 grounding 的長回應燒完卻
-        // 零產出，usage 就在錯誤物件身上（見 `failedCallFields`）。
-        void usageLedger.recordProject(project.id, {
-          ...usageFields,
-          ok: false,
-          ...failedCallFields(error),
-        });
-        throw error;
-      }
-      void usageLedger.recordProject(project.id, {
-        ...usageFields,
-        ok: true,
-        ...usageCallFields(outcome),
-      });
-      return outcome.results;
-    };
-  // lazy 綁定：專案未選組合時，於首次生成寫入預設組合 id。
-  const ensureProjectCombination = async (projectId: string): Promise<PresentationProject> => {
-    const project = await repository.loadProject(projectId);
-    if (!project) throw new Error("Project not found");
-    if (project.combinationId) return project;
-    const defaultId = runtime.defaultCombinationId;
-    if (!defaultId)
-      throw new ModelLibraryError("NO_DEFAULT_COMBINATION", "模型庫尚未設定預設組合。");
-    return repository.updateProject(projectId, (current) => {
-      current.combinationId = defaultId;
-      current.updatedAt = new Date().toISOString();
-      return structuredClone(current);
-    });
-  };
-  // 生成時解析影像 provider id：客戶端顯式指定則沿用（相容既有選單／測試），
-  // 否則由專案組合決定（並於首次生成 lazy 綁定預設組合）。
-  const resolveImageProviderId = async (
-    projectId: string,
-    explicitProviderId: string | undefined,
-  ): Promise<string> => {
-    if (explicitProviderId) return explicitProviderId;
-    const project = await ensureProjectCombination(projectId);
-    return runtime.resolveImageEntryId(project.combinationId);
-  };
-  const capturePage = dependencies.captureWebPage ?? captureWebPage;
-  /**
-   * 把一批網頁結果落地成專案來源（同 URL 更新既有筆、否則新增），只收抓得到正文的。
-   *
-   * 搜尋擷取與「貼上網址」兩條入口共用這一份，差別只在 `options`：
-   * - `renderer`：交給 `captureWebPage` 的第三方 render fallback。**搜尋路徑不傳**——
-   *   那些網址是模型給的，使用者沒有逐筆同意把它們送去第三方。
-   * - `requireBody`：驗收標準改成「剝掉標題後仍有正文」。貼上網址沒有搜尋摘要可退，
-   *   存一份空來源等於騙人。
-   * - `refresh`：略過「已存在且是 full 就不重抓」的捷徑。使用者手動貼上網址，意思就是
-   *   「現在去抓這一頁」，回一份舊快取等於沒做事。
-   * - `deadline`：整批的時間預算（epoch ms）。逾時後剩下的網址不再擷取，逐筆回報
-   *   `WEB_SOURCE_BATCH_TIMEOUT`。
-   *
-   * **逐筆循序**是刻意的：Jina 無金鑰模式約 20 RPM，10 筆併發送出去撞限流的機率遠高於
-   * 循序，而限流的結果是整批都白跑。循序的代價是最壞延遲會疊加，那個風險改由 `deadline`
-   * 承擔（超時的那幾筆回一個看得懂的原因，而不是讓整個 HTTP 請求被閘道砍掉）。
-   */
-  const materializeWebSources = async (
-    projectId: string,
-    existingSources: readonly SourceAsset[],
-    foundSources: readonly WebSearchResult[],
-    options: {
-      renderer?: HtmlRenderer | undefined;
-      requireBody?: boolean;
-      refresh?: boolean;
-      deadline?: number;
-    } = {},
-  ) => {
-    const sourceByUrl = new Map(
-      existingSources
-        .filter((source) => source.metadata.url)
-        .map((source) => [source.metadata.url!, structuredClone(source)]),
-    );
-    const addedSources: SourceAsset[] = [];
-    const refreshedSources: SourceAsset[] = [];
-    const verifiedResults: WebSearchResult[] = [];
-    /** 抓不到正文而被丟掉的網址與原因（呼叫端要逐筆回報失敗時才用得到）。 */
-    const unverifiedUrls: { url: string; reason: string }[] = [];
-    for (const found of foundSources.slice(0, 20)) {
-      if (options.deadline !== undefined && Date.now() >= options.deadline) {
-        unverifiedUrls.push({ url: found.url, reason: "WEB_SOURCE_BATCH_TIMEOUT" });
-        continue;
-      }
-      const known = sourceByUrl.get(found.url);
-      if (!options.refresh && known?.metadata.contentStatus === "full") {
-        verifiedResults.push({
-          url: known.metadata.url ?? found.url,
-          title: known.metadata.title ?? found.title,
-          summary: known.metadata.summary ?? found.summary,
-        });
-        continue;
-      }
-      const capturedAt = new Date().toISOString();
-      const captured = await capturePage(found, capturedAt, undefined, {
-        renderer: options.renderer,
-        requireBody: options.requireBody,
-      });
-      if (captured.metadata.contentStatus !== "full") {
-        const reason = captured.metadata.failureReason || "WEB_SOURCE_CONTENT_UNVERIFIED";
-        // 至少留一筆伺服器端記錄：render 失敗（限流尤其）完全靜默的話，營運端看不出
-        // 「使用者一直加不進來」是配額問題還是網站問題。
-        if (reason.startsWith("WEB_RENDER_")) console.warn("web render failed", { reason });
-        unverifiedUrls.push({ url: found.url, reason });
-        continue;
-      }
-      const verified = {
-        ...found,
-        url: captured.metadata.url ?? found.url,
-      };
-      // 去重要用**擷取後**的網址：存下來的 `metadata.url` 是重導向／canonical 化之後的那個，
-      // 拿擷取前的輸入去查會讓每一次 http→https、結尾斜線、去追蹤參數的重導向都走成「新增」，
-      // 於是每試一次就多一個孤兒資產目錄，而交易裡的 url 去重又會把它丟掉（＝永遠加不進去）。
-      const existing = sourceByUrl.get(verified.url) ?? known;
-      const bytes = new TextEncoder().encode(captured.text);
-      if (existing) {
-        const refreshed = await ingestSource(
-          {
-            name: existing.name,
-            mediaType: "text/markdown",
-            usage: existing.usage,
-            allowModelAccess: existing.allowModelAccess,
-          },
-          bytes,
-          existing.assetPath,
-          capturedAt,
-        );
-        refreshed.id = existing.id;
-        refreshed.createdAt = existing.createdAt;
-        refreshed.metadata = captured.metadata;
-        refreshed.assetPath = await repository.saveAsset(
-          projectId,
-          existing.assetPath.replace(/^assets\//, ""),
-          bytes,
-        );
-        sourceByUrl.set(found.url, refreshed);
-        sourceByUrl.set(verified.url, refreshed);
-        // 同一批裡重抓到「剛剛才新增的那一筆」時，要就地換掉那個物件而不是另外排一個
-        // refresh：交易是照 id 對位的，而這個 id 還不在專案裡，排進 refreshedSources 只會
-        // 被丟掉——結果是專案裡留著第一次的文字，磁碟上卻是第二次的內容。
-        const addedIndex = addedSources.findIndex((source) => source.id === refreshed.id);
-        if (addedIndex >= 0) addedSources[addedIndex] = refreshed;
-        else {
-          const refreshedIndex = refreshedSources.findIndex((source) => source.id === refreshed.id);
-          if (refreshedIndex >= 0) refreshedSources[refreshedIndex] = refreshed;
-          else refreshedSources.push(refreshed);
-        }
-      } else {
-        const source = await ingestSource(
-          {
-            // 搜尋路徑的 metadata.title 就是 found.title（檔名不變）；手貼網址沒有標題，
-            // 由 captureWebPage 從網頁本身推導後放進 metadata。
-            name: `${safeFilename(captured.metadata.title || found.title)}.md`,
-            mediaType: "text/markdown",
-            usage: "content",
-            allowModelAccess: true,
-          },
-          bytes,
-          "assets/pending",
-          capturedAt,
-        );
-        source.metadata = captured.metadata;
-        source.assetPath = await repository.saveAsset(
-          projectId,
-          `sources/${source.id}/${safeFilename(source.name)}`,
-          bytes,
-        );
-        sourceByUrl.set(found.url, source);
-        sourceByUrl.set(verified.url, source);
-        addedSources.push(source);
-      }
-      verifiedResults.push(verified);
-    }
-    return { sourceByUrl, addedSources, refreshedSources, verifiedResults, unverifiedUrls };
-  };
-  // 依 brief.webSearchMode 決定是否用 WebSearchProvider 抓取來源；搜尋後端不可用時優雅降級為無來源。
-  // 搜尋不可默默降級成無來源，否則後續文字模型會用記憶補資料，造成看似完成但內容失真。
-  const gatherWebSources = async (
-    project: PresentationProject,
-    query: string,
-    searchFn: (
-      query: string,
-      limit: number,
-      project: PresentationProject,
-    ) => Promise<WebSearchResult[]>,
-    limit = 8,
-    attempts = 5,
-  ): Promise<WebSearchResult[]> => {
-    if (project.brief.webSearchMode === "disabled") return [];
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      try {
-        const results = await searchFn(query, limit, project);
-        if (results.length > 0) return results;
-      } catch {
-        // Retry below; provider details remain redacted from the client.
-      }
-    }
-    throw new SafeProviderError(
-      "WEB_SEARCH_FAILED",
-      "網路搜尋沒有取得候選來源，已停止生成以避免使用未查證資料。",
-    );
-  };
+  const { imageDescriptionProvider, scheduleImageDescription } = createImageDescriptionScheduler({
+    repository,
+    retriever,
+    runtime,
+    usageLedger,
+    usageModelFields,
+    imageDescriptions,
+    imageDescriptionMode,
+    resolveStructuredText,
+  });
+  const { gatherWebSources, materializeWebSources, searchFor } = createWebSourcePipeline(
+    repository,
+    runtime,
+    usageLedger,
+    usageModelFields,
+    dependencies,
+  );
   const refreshStyleForGeneration = async (projectId: string, providerId: string) => {
     const provider = runtime.imageProvider(providerId);
     const project = await repository.loadProject(projectId);
@@ -1003,39 +521,7 @@ export async function createApp(
     ...LOCAL_HOSTNAMES,
     ...parseTrustedHosts(process.env.SLIDE_MAKER_TRUSTED_HOSTS),
   ]);
-  app.use((request, response, next) => {
-    const hostname = request.hostname.toLowerCase();
-    if (!allowedHosts.has(hostname)) {
-      logWarn("trusted_host_rejected", {
-        host: request.hostname,
-        origin: request.headers.origin,
-        reason: "LOCAL_HOST_REQUIRED",
-      });
-      return response.status(403).json({ error: "LOCAL_HOST_REQUIRED" });
-    }
-    const origin = request.headers.origin;
-    if (origin) {
-      try {
-        const originHost = new URL(origin).hostname.toLowerCase();
-        if (!allowedHosts.has(originHost)) {
-          logWarn("trusted_host_rejected", {
-            host: request.hostname,
-            origin: request.headers.origin,
-            reason: "LOCAL_ORIGIN_REQUIRED",
-          });
-          return response.status(403).json({ error: "LOCAL_ORIGIN_REQUIRED" });
-        }
-      } catch {
-        logWarn("trusted_host_rejected", {
-          host: request.hostname,
-          origin: request.headers.origin,
-          reason: "INVALID_ORIGIN",
-        });
-        return response.status(403).json({ error: "INVALID_ORIGIN" });
-      }
-    }
-    return next();
-  });
+  app.use(trustedHostMiddleware(allowedHosts));
 
   app.get("/api/health", (_request, response) => response.json({ ok: true, schemaVersion: 1 }));
   app.get("/api/providers", (_request, response) =>
