@@ -776,7 +776,7 @@ describe("兩階段大綱的來源歸屬", () => {
     expect(errorLine).not.toContain("UNTRUSTED_INPUT");
     expect(errorLine).not.toContain("HTTP 400 from gateway");
     // 呼叫堆疊留著（那幾行沒有資料，只有檔名與行號），診斷價值才沒有一起消失。
-    expect(String(JSON.stringify(failures[0]!.errorFrames))).toContain("app.ts");
+    expect(String(JSON.stringify(failures[0]!.errorFrames))).toContain("routes/outline.ts");
   });
 
   it("例外訊息是多行、且某行以 at 開頭時，那一行不得被當成呼叫堆疊記下來", async (context) => {
@@ -799,7 +799,7 @@ describe("兩階段大綱的來源歸屬", () => {
     expect(serialized).not.toContain("王小明");
     expect(serialized).not.toContain("the customer");
     // 真正的 frame 仍然留著，否則這條修正等於把診斷價值一起砍掉。
-    expect(String(JSON.stringify(failures[0]!.errorFrames))).toContain("app.ts");
+    expect(String(JSON.stringify(failures[0]!.errorFrames))).toContain("routes/outline.ts");
   });
 
   it("階段 2 的回覆不合 schema 時，log 留下壞掉的欄位路徑而不是收到的值", async (context) => {
