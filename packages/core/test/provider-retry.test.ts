@@ -55,6 +55,25 @@ describe("runStructuredWithRetry", () => {
   });
 
   /**
+   * 首輪就成功時 `requests` 必須是 1：上面那條的成功輪恰好落在 attempt === maxAttempts
+   * 的重合點，換成 `requests: maxAttempts` 也照樣綠——最常見的「一次就中」路徑要靠這條
+   * 才分得出 1 與 3，帳本上那是三倍的差距。
+   */
+  it("首輪成功時 requests 是 1", async () => {
+    const rounds = fakeRounds(['{"ok":true}']);
+    const result = await runStructuredWithRetry({
+      request: rounds.request,
+      parseUsage,
+      parseValue,
+      transientCodes: TRANSIENT,
+    });
+
+    expect(rounds.calls()).toBe(1);
+    expect(result.requests).toBe(1);
+    expect(result.usage).toEqual({ inputTokens: 100, reported: true });
+  });
+
+  /**
    * 非暫時性錯誤當輪就丟，`requests` 帶的是**當輪數**而不是總輪數——連不上時就是 1。
    * 這條與下一條合起來才分得開「打了一次」與「跑滿三輪」。
    */
