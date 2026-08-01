@@ -80,24 +80,48 @@ const paletteEntrySchema = z.object({
  * json_schema，缺一欄時寧可少排一段，也不要整份分析 parse 失敗。少寫核心欄位的情況由
  * renderDesignSystem 顯性報錯，不靜默產出空殼。
  */
+/**
+ * 散文欄位的長度上限。
+ *
+ * 這些字串會被排成 `styleSnapshot.designSystem` 並**內嵌在 `project.json` 裡**，而
+ * `updateProject` 的峰值記憶體約是那個檔案的三倍（Cloud Run 的實例只有 2Gi，見
+ * `MAX_SOURCE_TEXT_CHARS` 那條）。以前這條路要使用者主動按「AI 分析風格」才會跑，現在
+ * **每一份「AI 自由設計」的簡報都會自動寫一次**，暴露面完全不同了——沒有上限的話，一個
+ * 話多的（或壞掉的）模型就能把設計系統灌成幾百 KB，而它每一次生圖都會被整份送進 prompt。
+ * 額度取得很寬鬆：正常的一欄是兩三句話，2000 字元夠寫滿還有餘。
+ */
+const PROSE_FIELD_MAX = 2_000;
+
+/**
+ * 散文欄位：**先截到上限再驗證**，不用 `.max()`。
+ *
+ * 與 `withinRefLimits()`／`withinSourceIdLimit()` 同一條理由（那兩處的註解寫得更長）：
+ * `.max()` 在這裡 throw 的話，一個話多的模型會讓**整份分析**失敗，使用者拿到的是一個看不
+ * 懂的錯誤而且重試通常還是同一個結果；截掉則只是那一欄的尾巴沒了，其餘七軌照常落地。
+ */
+const proseField = z.preprocess(
+  (value) => (typeof value === "string" ? value.slice(0, PROSE_FIELD_MAX) : value),
+  z.string().default(""),
+);
+
 export const styleAnalysisSchema = z.object({
-  designRationale: z.string().default(""),
+  designRationale: proseField,
   /** 逐頁必須相同的那一軌。整個物件給 default，讓「gateway 把它整包丟掉」也不致命。 */
   invariants: z
     .object({
       tonalRegister: tonalRegisterSchema,
-      background: z.string().default(""),
+      background: proseField,
       palette: z.array(paletteEntrySchema).max(12).default([]),
-      typography: z.string().default(""),
-      spacing: z.string().default(""),
-      componentGeometry: z.string().default(""),
-      imageTreatment: z.string().default(""),
+      typography: proseField,
+      spacing: proseField,
+      componentGeometry: proseField,
+      imageTreatment: proseField,
       /**
        * 插圖語彙：扁平向量／照片／手繪線稿／等角 3D、線寬、填色方式、抽象程度、
        * 輪廓有無、材質顆粒。舊版整段沒有這個維度——混語彙與一黑一白是同一個病的
        * 兩個面向，只是前者更難用一句話描述，所以更容易被模型省略掉。
        */
-      illustrationIdiom: z.string().default(""),
+      illustrationIdiom: proseField,
     })
     .default({}),
   /** 依頁型的那一軌。語意與舊版的 `archetypes` 相同，只是改用 core 的頁型字彙。 */
@@ -175,12 +199,12 @@ export const STYLE_ANALYSIS_PROMPT = [
   "Sort what you see into three tracks, and be explicit about which track each observation belongs to. This separation is the whole point of the analysis: a deck that reuses one layout on every page is as broken as a deck whose pages share nothing.",
   "invariants: what must be identical on every single page. Background, palette, type, spacing, component geometry, image treatment, and illustration idiom all live here.",
   "pageTypeRules: how a cover, a section divider, and a content page each apply those invariants.",
-  "freeChoices: the axes each page should decide for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the margins. List what the references show genuinely varying from page to page. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, or an area budget in it — those are invariants, and naming the same quantity in both tracks is the same as leaving it unruled.",
+  "freeChoices: the axes each page should decide for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, how the copy and the supporting visual are arranged relative to each other, and how tightly the content is spaced inside the margins. List what the references show genuinely varying from page to page. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, an area budget, or a share of the canvas given to copy in it — those are fixed elsewhere (the last one by the deck's information-density setting), and naming the same quantity in two places is the same as leaving it unruled.",
   "invariants.tonalRegister: answer with exactly 'dark' or 'light' — is this deck read as dark-on-light or light-on-dark overall? This locks only the register, not an exact colour: a section divider may sit deeper and a cover may be full-bleed imagery, but no page may cross to the other side. Decide even when one reference page looks like the exception; a rule that permits both is the same as no rule.",
   "invariants.background: the base background colour as a hex value, plus the neighbouring variants that are allowed around it (a deeper panel, a tint, a photographic wash). State the range in words; do not turn it into a licence to invert.",
-  "invariants.palette: give every colour as a hex value with its role, the concrete places it is used, and roughly how much of a page it is allowed to cover. That area budget is itself an invariant — an accent used on 3% of the canvas and the same accent used on 30% are two different design systems. Estimate the hex from the pixels; never substitute a colour name for a value.",
+  "invariants.palette: give every colour as a hex value with its role, the concrete places it is used, and roughly how much of a normal content page it is allowed to cover. That area budget is itself an invariant — an accent used on 3% of the canvas and the same accent used on 30% are two different design systems. Estimate the hex from the pixels; never substitute a colour name for a value.",
   "invariants.typography: the type families and the concrete size-and-weight ladder — actual pixel sizes and weights you can measure on the page, not adjectives.",
-  "invariants.spacing: the outer page margins and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field.",
+  "invariants.spacing: the outer page margins a normal content page uses and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field. State any deliberate departure for a cover or a section divider (a full-bleed cover, wider divider margins) in pageTypeRules instead — a value written here must hold on every content page without exception.",
   "invariants.componentGeometry: corner radius, rule and border weight, shadow character, and edge treatment.",
   "invariants.imageTreatment: how photography is cropped, graded, and filtered.",
   "invariants.illustrationIdiom: what visual language non-photographic artwork speaks — flat vector, photographic collage, hand-drawn line, isometric 3D, or something else — with its line weight, fill approach, level of abstraction, whether shapes carry outlines, and any texture or grain. Pages that mix idioms read as pages from different decks, so name one and describe it precisely.",
@@ -221,6 +245,16 @@ export interface RenderedDesignSystem {
   /** 明暗登記；`missing` 時整份簡報沒有這道鎖，呼叫端要把這件事講給使用者聽。 */
   tonalRegister?: TonalRegister;
   tonalRegisterSource: "model" | "background" | "missing";
+  /**
+   * 模型列了幾條「每頁自由決定」。
+   *
+   * **0 是一個必須被看見的結果，不是空值**：`freeChoices` 是 `.default([])`，而排版端會
+   * 略過空段落，於是產出的設計系統沒有那個標題——影像合約讀到沒有標題就整份當 invariant
+   * （那是舊格式相容所必需的），**自由那一軌整個消失**。畫面上它與「模型寫得保守」長得
+   * 一模一樣，這也正是 CLAUDE.md「可選步驟一定要有命中計數」講的形狀：沒有 throw 不等於
+   * 它做了事。計數由這裡回傳，不讓呼叫端自己再數一次。
+   */
+  freeChoiceCount: number;
 }
 
 /**
@@ -288,5 +322,6 @@ export function renderDesignSystem(analysis: StyleAnalysis): RenderedDesignSyste
     markdown: sections.join("\n\n"),
     ...(derived ? { tonalRegister: derived } : {}),
     tonalRegisterSource,
+    freeChoiceCount: analysis.freeChoices.length,
   };
 }

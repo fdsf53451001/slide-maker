@@ -103,9 +103,12 @@ export function styleOptions(styles: StylePreset[], snapshot: StylePreset) {
 }
 
 /**
- * 換風格前的確認。專案專屬的分析結果（PDF 匯入分析出來的 designSystem）被庫裡的
- * 風格蓋掉之後沒有復原路徑，所以只有這種情況會問；一般專案照舊直接套用。
- * 回傳 false 代表不要執行。
+ * 換風格前的確認。專案專屬的 designSystem 被庫裡的風格蓋掉之後沒有復原路徑，所以只有這
+ * 種情況會問；一般專案照舊直接套用。回傳 false 代表不要執行。
+ *
+ * 產生「專案專屬設計系統」的路現在有**兩條**（都 fork 成同一個專案本地 id）：PDF 匯入的
+ * 參考圖分析，以及「AI 自由設計」在大綱之後跑的風格決議。訊息因此不能再只講 PDF——那會
+ * 讓另一條路上的使用者看到一句與自己無關的話，然後照按確定，把整份簡報的視覺基準換掉。
  */
 export function confirmStyleReplacement(
   styles: StylePreset[],
@@ -115,7 +118,9 @@ export function confirmStyleReplacement(
   if (nextStyleId === snapshot.id) return false;
   const projectLocal = !styles.some((style) => style.id === snapshot.id);
   if (!projectLocal || !snapshot.designSystem) return true;
-  return confirm("這份簡報用的是從 PDF 分析出來的專屬風格，套用其他風格會覆蓋分析結果，確定繼續？");
+  return confirm(
+    "這份簡報用的是它自己的專屬設計系統（AI 分析或風格決議產生的），套用其他風格會把它覆蓋掉且無法復原，確定繼續？",
+  );
 }
 
 /**

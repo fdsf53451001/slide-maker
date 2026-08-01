@@ -31,6 +31,13 @@ export function registerProjectSettingsRoutes(app: Express, ctx: AppContext): vo
       const keep = new Set(style.referenceImages.map((image) => image.id));
       superseded.push(...ownedStyleReferences(current).filter((id) => !keep.has(id)));
       current.styleSnapshot = structuredClone(style);
+      // 換掉整個風格＝「AI 自由設計」那次風格決議的結果連同它的降級說明都已經過期。
+      // 留著的話：前端會對著一份剛套用的風格說「這份簡報沒有共用的設計系統」，而且
+      // `shouldResolveStyleDirection()` 讀到殘留的 `applied:true` 會判定「上次是我們自己
+      // 寫的、可以重寫」，下一次重建大綱就把使用者剛選的風格覆蓋掉。
+      // 這條不變式有兩個 writer（另一個是 `app.ts` 的 `writeProjectStyleSnapshot()`），
+      // 只守一個等於沒守。
+      delete current.styleDirection;
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });

@@ -37,6 +37,8 @@ describe("AI 自由設計的風格決議", () => {
    */
   const stubText = (options: {
     onDirection: (request: StructuredTextRequest) => unknown;
+    /** 在模型「回覆之前」跑一次，讓測試確定性地插進另一條寫入路徑（見 superseded 那條）。 */
+    beforeDirection?: () => Promise<unknown>;
     resolveOverride?: (call: number) => StructuredTextProvider | undefined;
     availability?: StructuredTextProvider["availability"];
   }) => {
@@ -46,6 +48,7 @@ describe("AI 自由設計的風格決議", () => {
       availability: options.availability ?? { status: "available" as const },
       runStructured: async (request: StructuredTextRequest) => {
         if (isStyleDirectionPrompt(request.prompt)) {
+          if (options.beforeDirection) await options.beforeDirection();
           const result = options.onDirection(request);
           if (result instanceof Error) throw result;
           return { value: result };
@@ -173,6 +176,13 @@ describe("AI 自由設計的風格決議", () => {
     );
     expect(prompt).toContain("Sort your decisions into three tracks");
     expect(prompt).toContain("no page may cross to the other side");
+    // 同一個量只能出現在一軌。文案佔比已經由資訊密度設定給了數字，所以它不在自由軸上，
+    // 而且禁令清單要點名它——否則模型會把它寫進 designSystem 的自由段，繞過密度設定。
+    expect(prompt).not.toContain("the ratio of copy to visual");
+    expect(prompt).toContain("or a share of the canvas given to copy in it");
+    // 面積額度與邊距只對一般內頁成立（同一份 prompt 明說封面可以滿版）。
+    expect(prompt).toContain("how much of a normal content page it is allowed to cover");
+    expect(prompt).toContain("the outer page margins a normal content page uses");
     // 這是風格指南不是摘要：不得複述簡報的事實內容或組織／產品名稱。
     expect(prompt).toContain("Do not restate the deck's factual content");
     expect(prompt).toContain("UNTRUSTED_INPUT");
@@ -282,6 +292,194 @@ describe("AI 自由設計的風格決議", () => {
     stubText({ onDirection: () => STYLE_DIRECTION_REPLY });
     const { body: outlined } = await generateOutline(project.id);
     expect(outlined.styleSnapshot.designSystem).not.toBe("");
+    const generate = await fetch(`${baseUrl}/api/projects/${project.id}/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "mock-image", acceptUnknownReadiness: true }),
+    });
+    expect(generate.status).toBeLessThan(400);
+    const after = (await (
+      await fetch(`${baseUrl}/api/projects/${project.id}`)
+    ).json()) as PresentationProject;
+    expect(after.styleSnapshot.designSystem).toBe(outlined.styleSnapshot.designSystem);
+  }, 60_000);
+
+  it("自由那一軌整段掉了要留下證據，不能與「模型寫得保守」混在一起", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * `freeChoices` 是 `.default([])`，排版端又略過空段落 → 產出的設計系統沒有那個標題 →
+     * 合約整份讀成 invariant（那是舊格式相容所必需的），**構圖自由那一軌整個消失**。
+     * 這是「模型沒有 throw 不等於它做了事」的另一個入口，而且與一黑一白剛好是相反方向的
+     * 失敗（每頁都同一個版型），同樣靜默。
+     */
+    const project = await createProject();
+    const logs = captureWarnings();
+    stubText({ onDirection: () => ({ ...STYLE_DIRECTION_REPLY, freeChoices: [] }) });
+    const { body } = await generateOutline(project.id);
+    // 仍然採用：其餘七軌有價值，丟掉它們沒有道理。
+    expect(body.styleDirection?.applied).toBe(true);
+    expect(body.styleSnapshot.designSystem).not.toContain("每頁自由決定");
+    const empty = logs().filter((entry) => entry.event === "style_direction_free_choices_empty");
+    expect(empty).toHaveLength(1);
+    expect(empty[0]).toMatchObject({ projectId: project.id, modelId: "stub-text" });
+  }, 60_000);
+
+  it("被別條路搶先寫入時記一行，並且不留下過期的結果", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * 模型跑那十幾秒裡使用者剛套用了一個帶參考圖的風格（或跑完一次真正的參考圖分析）。
+     * 這一次的呼叫等於白花了，而原因只有伺服器看得到；同時那份結果連同它的降級說明都已
+     * 經過期，留著會讓前端對著一份其實有設計系統的專案說「沒有共用的設計系統」。
+     */
+    const project = await createProject();
+    const logs = captureWarnings();
+    stubText({
+      // 在模型回覆**之前**完成另一條路的寫入，讓「交易裡的重檢」必定看到它。用 await 而
+      // 不是真的競速：race 出來的測試會間歇性地驗到另一半，等於沒有釘住任何一邊。
+      beforeDirection: () =>
+        fetch(`${baseUrl}/api/projects/${project.id}/style-snapshot`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ designSystem: "## 色票\n- #123456 — 另一條路寫的" }),
+        }),
+      onDirection: () => STYLE_DIRECTION_REPLY,
+    });
+    const { body } = await generateOutline(project.id);
+    // 別人的設計系統原封不動，我們的結果連同降級說明一起消失。
+    expect(body.styleSnapshot.designSystem).toContain("另一條路寫的");
+    expect(body.styleDirection).toBeUndefined();
+    const superseded = logs().filter((entry) => entry.event === "style_direction_superseded");
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]).toMatchObject({ projectId: project.id, applied: true });
+  }, 60_000);
+
+  it("漏網的例外只讓風格決議消失，大綱照樣落地", async (context) => {
+    if (bindUnavailable) return context.skip();
+    // `resolveStyleDirection()` 承諾永遠不 throw，而那個承諾離「被某次重構弄假」只有一步。
+    // 呼叫端的 `.catch()` 把它變成結構保證，這條測試釘的就是那道網子。
+    const project = await createProject();
+    const logs = captureWarnings();
+    stubText({
+      onDirection: () => STYLE_DIRECTION_REPLY,
+      // `resolve()` 丟一個**不是** ModelLibraryError 的例外：`resolveStyleDirection` 會照
+      // 原樣往上拋（它只認得設定錯誤），於是只剩呼叫端那道網子接得住。
+      resolveOverride: (call) => {
+        if (call < 2) return undefined;
+        throw new TypeError("registry exploded");
+      },
+    });
+    const { status, body } = await generateOutline(project.id);
+    expect(status).toBe(200);
+    expect(body.slides[0]!.content).toBe(SLIDE_BODY);
+    expect(body.styleDirection).toBeUndefined();
+    const unexpected = logs().filter((entry) => entry.event === "style_direction_unexpected");
+    expect(unexpected).toHaveLength(1);
+    expect(unexpected[0]).toMatchObject({ projectId: project.id, errorName: "TypeError" });
+    expect(JSON.stringify(unexpected)).not.toContain(SLIDE_BODY);
+  }, 60_000);
+
+  it("風格被換掉時，過期的決議結果要跟著消失（兩個 writer 都要）", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * 這條不變式有兩個 writer：`PATCH /style-snapshot`（參考圖分析那條）與 `POST /style`
+     * （套用風格庫的風格）。只守一個等於沒守，而後果有兩層：①前端會對著一份剛換好的風格
+     * 說「這份簡報沒有共用的設計系統」；②殘留的 `applied: true` 會讓
+     * `shouldResolveStyleDirection()` 判定「上次是我們自己寫的、可以重寫」，下一次重建大綱
+     * 就把使用者剛選的風格覆蓋掉。
+     */
+    for (const writer of ["snapshot", "library-style"] as const) {
+      const project = await createProject();
+      stubText({ onDirection: () => STYLE_DIRECTION_REPLY });
+      const { body: outlined } = await generateOutline(project.id);
+      expect(outlined.styleDirection?.applied, writer).toBe(true);
+      for (const undo of restore.splice(0)) undo();
+
+      const response =
+        writer === "snapshot"
+          ? await fetch(`${baseUrl}/api/projects/${project.id}/style-snapshot`, {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ designSystem: "## 色票\n- #F7F5F0 — 內頁畫布底色" }),
+            })
+          : await fetch(`${baseUrl}/api/projects/${project.id}/style`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ styleId: "ai-free-design" }),
+            });
+      expect(response.status, writer).toBeLessThan(400);
+      const replaced = (await response.json()) as PresentationProject;
+      expect(replaced.styleDirection, writer).toBeUndefined();
+    }
+  }, 60_000);
+
+  it("上一份設計系統是我們自己寫的時候，重建大綱會重新決議", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * `shouldResolveStyleDirection()` 若只看 designSystem 空不空，就分不出「使用者／分析
+     * 寫的」與「上次我們自己寫的」——而使用者改完 brief 重建大綱，多半正是因為主題換了。
+     * 沿用照舊主題決議出來的視覺系統已經夠糟，`styleDirectionNotice()` 對舊的
+     * `applied:true` 又回 `undefined`（完全靜默），兩件事加起來就是「怎麼重建都沒反應」。
+     */
+    const project = await createProject();
+    let calls = 0;
+    stubText({
+      onDirection: () => {
+        calls += 1;
+        return { ...STYLE_DIRECTION_REPLY, designRationale: `第 ${calls} 次決議` };
+      },
+    });
+    const first = await generateOutline(project.id);
+    expect(first.body.styleSnapshot.designSystem).toContain("第 1 次決議");
+    const second = await generateOutline(project.id);
+    expect(calls).toBe(2);
+    expect(second.body.styleSnapshot.designSystem).toContain("第 2 次決議");
+    expect(second.body.styleDirection).toEqual({ applied: true });
+  }, 60_000);
+
+  it("決議寫進去的 snapshot 會 fork 成專案本地 id，風格庫換版也蓋不掉", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * 這是整條路上最容易靜默失效的地方。`refreshStyleForGeneration()` 每次生成前都拿
+     * `styles.get(styleSnapshot.id)` 比對版本，不同就 `structuredClone(latest)` 整包蓋掉。
+     * 只寫 designSystem 欄位而不 fork 的話，擋著的只是「兩邊版本號剛好相同」這個巧合——
+     * 使用者到風格庫改一次 avoid 就 version+1，下一次生成這份設計系統就消失，而
+     * `styleDirection` 還寫著 `applied: true`，前端一個字都不會說；那時 `POST /outline`
+     * 已被 `OUTLINE_HAS_GENERATED_VERSIONS` 擋住，沒有復原路徑。
+     *
+     * 必須用**非系統風格**（複製出來的那種）才測得到：系統風格改不動
+     * （`SYSTEM_STYLE_READ_ONLY`），版本永遠停在 1，兩邊也就永遠相同。
+     */
+    const copied = await fetch(`${baseUrl}/api/styles/ai-free-design/duplicate`, {
+      method: "POST",
+    });
+    expect(copied.status).toBeLessThan(400);
+    const style = (await copied.json()) as { id: string; version: number; designSystem: string };
+    // 複製出來的風格正好是決議會開火的形狀：無參考圖、無設計系統。
+    expect(style.designSystem).toBe("");
+
+    const project = await createProject();
+    const applied = await fetch(`${baseUrl}/api/projects/${project.id}/style`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ styleId: style.id }),
+    });
+    expect(applied.status).toBeLessThan(400);
+
+    stubText({ onDirection: () => STYLE_DIRECTION_REPLY });
+    const { body: outlined } = await generateOutline(project.id);
+    expect(outlined.styleSnapshot.designSystem).not.toBe("");
+    expect(outlined.styleSnapshot.id).toBe(`pdf-style-${project.id}`);
+    expect(outlined.styleSnapshot.system).toBe(false);
+
+    // 使用者到風格庫改一下這個風格 → version 往前走。
+    const bumped = await fetch(`${baseUrl}/api/styles/${style.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ avoid: ["漸層", "陰影"] }),
+    });
+    expect(bumped.status).toBeLessThan(400);
+    expect(((await bumped.json()) as { version: number }).version).toBeGreaterThan(style.version);
+
     const generate = await fetch(`${baseUrl}/api/projects/${project.id}/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },

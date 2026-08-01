@@ -165,8 +165,14 @@ describe("style analysis output", () => {
     // ——invariant 與 freeChoices 都提一次同一個量，等於那個量根本沒有被規定。
     expect(STYLE_ANALYSIS_PROMPT).toContain("That area budget is itself an invariant");
     expect(STYLE_ANALYSIS_PROMPT).toContain(
-      "never put a colour value, a type size, a spacing unit, or an area budget in it",
+      "never put a colour value, a type size, a spacing unit, an area budget, or a share of the canvas given to copy in it",
     );
+    // 文案佔比是同一類的第二個量，而資訊密度指令已經給了它具體數字（50-65% 那種）。留在
+    // 自由軸上，密度設定會被繞過兩層：自由軸一層，寫進 designSystem 的自由段又一層。
+    expect(STYLE_ANALYSIS_PROMPT).not.toContain("the ratio of copy to visual");
+    // 面積額度與邊距只對一般內頁成立：同一份 prompt 明說封面可以滿版，不限定就是自相矛盾。
+    expect(STYLE_ANALYSIS_PROMPT).toContain("how much of a normal content page it is allowed");
+    expect(STYLE_ANALYSIS_PROMPT).toContain("the outer page margins a normal content page uses");
     // 插圖語彙：新增的維度，混語彙讓每頁看起來像不同份簡報。
     expect(STYLE_ANALYSIS_PROMPT).toContain("illustrationIdiom");
     // 沒看到的頁型不准編造——與 slide 端的事實接地是同一類問題。

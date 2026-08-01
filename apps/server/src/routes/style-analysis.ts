@@ -77,6 +77,13 @@ export function registerStyleAnalysisRoutes(app: Express, ctx: AppContext): void
         modelId: structuredText.id,
         referenceCount: referenceIds.length,
       });
+    // 自由那一軌整段掉了＝合約會把這份設計系統整份讀成 invariant，構圖自由就此消失。
+    // 它與「模型寫得保守」在畫面上長得一樣，只有這一行分得出來。
+    if (rendered.freeChoiceCount === 0)
+      logWarn("style_analysis_free_choices_empty", {
+        modelId: structuredText.id,
+        referenceCount: referenceIds.length,
+      });
     return { designSystem: rendered.markdown, avoid: result.avoid };
   }
 

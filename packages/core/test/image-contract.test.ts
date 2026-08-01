@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildImageGenerationContract,
+  DESIGN_SYSTEM_SECTIONS,
   imageGenerationInput,
   informationDensityInstruction,
   outlineBrevityInstruction,
@@ -402,17 +403,100 @@ describe("shared image-generation contract", () => {
     );
   });
 
-  it("treats a legacy flat design system as invariant throughout", () => {
-    // 舊專案存的 designSystem 是加入三軌之前排出來的純 markdown，沒有「每頁自由決定」
-    // 那個段落。合約若寫成「只有 invariants 段落才算數」，那些設計系統會整份退化成
-    // 可自由發揮——而且完全靜默（圖照樣生得出來，只是又回到一黑一白）。
+  it("never states one quantity on both tracks", () => {
+    /*
+     * 「一條給選項的規則等於沒有規則」在這份合約裡的具體形狀：同一個量既被寫成 invariant、
+     * 又被列進自由軸。已知有三個會踩到——①強調色面積（invariant 的 palette vs 自由軸的
+     * accent）②文案佔比（**第一行**的資訊密度指令已經給了 50-65% 這種數字）③間距（invariant
+     * 的基準單位 vs 自由軸的留白鬆緊）。三個都要收斂成「額度／單位固定，落點與倍數自由」。
+     */
     const input = request();
-    input.style.designSystem = "## 設計思路\n以留白建立層級\n## 色票\n- #F7F5F0 — 內頁底色";
+    input.style.designSystem = "## 色票\n- #0B1F3A — 底色";
     const prompt = buildImageGenerationContract(input);
-    expect(prompt).toContain("每頁自由決定：鼓勵各頁不同");
+    expect(prompt).toContain("Allocate about 50-65% of the canvas to readable copy");
+    expect(prompt).not.toContain("the ratio of copy to visual");
     expect(prompt).toContain(
-      "A design system written without that section is invariant throughout",
+      "how the copy and the supporting visual are arranged relative to each other",
     );
+    expect(prompt).toContain(
+      "how much of the canvas goes to copy is fixed by the information-density requirement",
+    );
+    expect(prompt).toContain("Three quantities are not yours");
+  });
+
+  it("scopes the area budget and margins to content pages, since covers may go full-bleed", () => {
+    // 合約自己在下一句就說「a cover may be full-bleed imagery」，骨架選項裡也列著
+    // `full-bleed`。不限定的話，這兩條 invariant 三行之後就被同一份 prompt 授權打破。
+    const input = request();
+    input.style.designSystem = "## 色票\n- #0B1F3A — 底色";
+    const prompt = buildImageGenerationContract(input);
+    expect(prompt).toContain("roughly how much of a normal content page each colour is allowed");
+    expect(prompt).toContain("the outer page margins a normal content page uses");
+    expect(prompt).toContain(
+      "The colour area budget and the page margins above describe a normal content page.",
+    );
+    // 但那個差異必須由頁型規則承載，不是單頁自行決定。
+    expect(prompt).toContain("it is never a licence for a content page to do the same");
+  });
+
+  it("keeps pageType out of the JSON wherever no rule reads it", () => {
+    /*
+     * `PAGE TYPE` 那條規則是 generate-only 且掛在 designSystem 底下，所以只有那一格會讀
+     * `slide.pageType`。少任何一個條件都會讓「沒有 designSystem 時整份合約逐字元相同」只對
+     * **規則行**成立——序列化出去的 JSON 仍多一個鍵，而那份 JSON 就是 prompt 的另一半。
+     */
+    const withSystem = request();
+    withSystem.slide.pageType = "cover";
+    withSystem.style.designSystem = "## 色票\n- #0B1F3A — 底色";
+    expect(buildImageGenerationContract(withSystem)).toContain('"pageType": "cover"');
+
+    const noSystem = request();
+    noSystem.slide.pageType = "cover";
+    expect(buildImageGenerationContract(noSystem)).not.toContain("pageType");
+
+    for (const edit of [
+      { instruction: "Make the accent warmer", baseImageIndex: 0 },
+      { instruction: "Remove masked text", baseImageIndex: 0, purpose: "text-removal" as const },
+    ]) {
+      const editing = request();
+      editing.slide.pageType = "cover";
+      editing.style.designSystem = "## 色票\n- #0B1F3A — 底色";
+      editing.edit = edit;
+      expect(buildImageGenerationContract(editing), edit.purpose ?? "edit").not.toContain(
+        "pageType",
+      );
+    }
+  });
+
+  it("treats a legacy flat design system as invariant, and arbitrates its tonal register", () => {
+    /*
+     * 舊專案存的 designSystem 是加入三軌之前排出來的純 markdown，沒有「每頁自由決定」那個
+     * 段落。合約若寫成「只有 invariants 段落才算數」，那些設計系統會整份退化成可自由發揮
+     * ——而且完全靜默（圖照樣生得出來，只是又回到一黑一白）。
+     *
+     * 而且**沒有回填路徑**：`shouldResolveStyleDirection()` 只要 designSystem 非空就整條
+     * 跳過，使用者不主動重新分析就永遠停在舊格式。這種資料常在色票裡同時寫著一個深色封面
+     * 底與一個淺色內頁底（下面的 fixture 就是實測到的那個形狀），於是「If this deck is
+     * dark, every slide is dark」在它們身上沒有受詞。所以要多送一條**可決定的**裁決規則
+     * ——不可寫成「自己推一個」，單次無狀態呼叫下每一頁會推出不同答案。
+     */
+    const legacy = request();
+    legacy.style.designSystem =
+      "## 設計思路\n以留白建立層級\n## 色票\n- #005C6E — 封面頁深藍綠色背景底色\n- #F7F5F0 — 內頁底色";
+    const flat = buildImageGenerationContract(legacy);
+    expect(flat).toContain("每頁自由決定：鼓勵各頁不同");
+    expect(flat).toContain("A design system written without that section is invariant throughout");
+    expect(flat).toContain("written in an older format that does not state the tonal register");
+    expect(flat).toContain("the deck's register is the one its normal content pages use");
+    expect(flat).toContain("Do not pick a register per slide");
+
+    // 三軌格式自己就寫明了登記，這條裁決規則對它是多餘的雜訊。**這一半才是鑑別力所在**：
+    // 舊版只斷言了對任何非空 designSystem 都會送的句子，換成三軌系統照樣通過＝沒驗到東西。
+    const sectioned = request();
+    sectioned.style.designSystem = `## ${DESIGN_SYSTEM_SECTIONS.invariants}\n- 明暗登記：深色（dark）`;
+    const modern = buildImageGenerationContract(sectioned);
+    expect(modern).not.toContain("written in an older format");
+    expect(modern).not.toContain("Do not pick a register per slide");
   });
 
   it("follows slide.pageType when the outline stated it, and only guesses otherwise", () => {

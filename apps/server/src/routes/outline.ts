@@ -7,6 +7,7 @@ import {
   outlineStructureInstruction,
   SafeProviderError,
   slideSpecSchema,
+  stylePresetSchema,
   type SlideSpec,
   type SourceAsset,
   type StructuredTextRequest,
@@ -53,7 +54,12 @@ import {
   SLIDE_SOURCE_ID_LIMIT,
   type OutlineCatalogEntry,
 } from "../outline-sources.js";
-import { asPersisted, idSchema, preserveCurrentOutlineSnapshot } from "../project-write-helpers.js";
+import {
+  asPersisted,
+  idSchema,
+  preserveCurrentOutlineSnapshot,
+  projectStyleId,
+} from "../project-write-helpers.js";
 import { assertSourceCapacity, sourceCapacityError } from "../sources.js";
 import {
   resolveStyleDirection,
@@ -748,7 +754,11 @@ export function registerDeckOutlineRoute(app: Express, ctx: AppContext): void {
         throw error;
       }
       /*
-       * 階段 3：風格決議（只給「AI 自由設計」那條路）。
+       * 階段 3：風格決議。
+       *
+       * 條件由 `shouldResolveStyleDirection()` 定，而它問的是「這個專案有沒有共用的視覺
+       * 基準」而**不是**「風格是不是 ai-free-design」：從風格庫複製出來的空白風格
+       * （`system:false`、無參考圖、無設計系統）同樣沒有基準，也同樣受惠。這是刻意的。
        *
        * 位置刻意在 try/catch **之外**：這一步永遠不 throw（見 `resolveStyleDirection`），
        * 而萬一它哪天真的丟了什麼，也絕不該讓一份已經生好的大綱連同抓回來的網頁來源一起
@@ -775,13 +785,14 @@ export function registerDeckOutlineRoute(app: Express, ctx: AppContext): void {
               },
               () => provider.runStructured(structuredRequest),
             ),
+        })
           // 整段設計靠「這一步永遠不 throw」撐著，而那個承諾離「被某次重構弄假」只有一步。
-          // 這道網子把它變成結構保證：任何漏網的例外都只讓風格決議消失，不會連帶把一份已經
-          // 花掉一次搜尋與兩次模型呼叫的大綱一起丟掉。
-        }).catch((error: unknown) => {
-          logWarn("style_direction_unexpected", { projectId, ...modelErrorFields(error) });
-          return undefined;
-        });
+          // 這道網子把它變成結構保證：任何漏網的例外都只讓風格決議消失，不會連帶把一份
+          // 已經花掉一次搜尋與兩次模型呼叫的大綱一起丟掉。
+          .catch((error: unknown) => {
+            logWarn("style_direction_unexpected", { projectId, ...modelErrorFields(error) });
+            return undefined;
+          });
     }
     const project = await repository
       .updateProject(projectId, (current) => {
@@ -802,7 +813,26 @@ export function registerDeckOutlineRoute(app: Express, ctx: AppContext): void {
           if (shouldResolveStyleDirection(current)) {
             current.styleDirection = styleDirection.outcome;
             if (styleDirection.designSystem)
-              current.styleSnapshot.designSystem = styleDirection.designSystem;
+              /*
+               * **一定要連 id／version 一起 fork**，不能只寫 designSystem 欄位。
+               *
+               * 這份設計系統只屬於這個專案，而 `refreshStyleForGeneration()` 在每次生成前
+               * 都會拿 `styles.get(styleSnapshot.id)` 比對版本，不同就整包蓋掉。留著庫裡的
+               * id（`ai-free-design`、或使用者從庫裡複製出來的那一份）只是「兩邊版本號剛好
+               * 相同」在擋著：到風格庫改一次 `avoid` 就 version+1，下一次生成時這份設計系統
+               * 靜默消失，而 `styleDirection` 還寫著 `applied:true`，前端一個字都不會說。
+               * 那時 `POST /outline` 已被 `OUTLINE_HAS_GENERATED_VERSIONS` 擋住，沒有復原路徑。
+               * 語意與參考圖分析的 `writeProjectStyleSnapshot()` 完全相同，只是那條路在
+               * app.ts。
+               */
+              current.styleSnapshot = stylePresetSchema.parse({
+                ...current.styleSnapshot,
+                id: projectStyleId(current.id),
+                version: 1,
+                system: false,
+                designSystem: styleDirection.designSystem,
+                updatedAt: new Date().toISOString(),
+              });
           } else {
             delete current.styleDirection;
             // 這一次的模型呼叫等於白花了，而原因（另一條路搶先寫入）只有伺服器看得到。

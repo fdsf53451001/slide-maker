@@ -54,16 +54,29 @@ export interface StyleDirectionResult {
 /**
  * 這個專案該不該跑風格決議？
  *
- * 條件是「沒有參考圖**且** designSystem 是空的」＝這就是 AI 自由設計那條路。已經跑過參考圖
- * 分析、或使用者自己寫過設計系統的專案一律不碰——覆蓋掉一份使用者花配額分析出來的設計系統
- * 是不可逆的破壞，而且他不會知道發生了什麼。
+ * 有參考圖就一律不跑：那份設計系統是使用者花配額從圖上分析出來的，覆蓋它是不可逆的破壞，
+ * 而且他不會知道發生了什麼。**這個判斷不看風格 id**——條件是「沒有參考圖」而不是「風格叫
+ * ai-free-design」，所以使用者從庫裡複製一份空白風格（`system:false`、無參考圖、無設計
+ * 系統）也照樣受惠，那是刻意的。
+ *
+ * 剩下兩種情況要分開：
+ *  - `designSystem` 是空的 → 跑。這是第一次。
+ *  - `designSystem` 非空，但 `styleDirection.applied === true` → **也跑**。那份設計系統
+ *    就是上一輪我們自己寫的，而「重建大綱」通常正好是因為主題或頁面換了——沿用照舊主題
+ *    決議出來的視覺系統，而且 `styleDirectionNotice()` 對舊的 `applied:true` 回
+ *    `undefined`（完全靜默），是最糟的組合。使用者自己改過設計系統的話，那條路
+ *    （`writeProjectStyleSnapshot()`）會把 `styleDirection` 刪掉，這裡就回 false 了。
  *
  * 交易內外都要呼叫同一份：外面那次決定要不要花模型配額，交易裡那次是落地前的最後確認
- * （模型跑那十幾秒裡使用者可能剛套用了一個帶參考圖的風格）。
+ * （模型跑那十幾秒裡使用者可能剛套用了一個帶參考圖的風格）。因此**每一個整包換掉
+ * `styleSnapshot` 的 writer 都必須一併 `delete styleDirection`**，否則殘留的
+ * `applied:true` 會讓這裡誤判成「上次是我們寫的、可以重寫」，把使用者剛選的風格蓋掉。
  */
 export function shouldResolveStyleDirection(project: PresentationProject): boolean {
   const style = project.styleSnapshot;
-  return style.referenceImages.length === 0 && style.designSystem.trim().length === 0;
+  if (style.referenceImages.length) return false;
+  if (project.styleDirection?.applied === true) return true;
+  return style.designSystem.trim().length === 0;
 }
 
 /** 每頁餵給決議模型的正文長度。夠讓它判斷這份簡報的性格，不必是完整內容。 */
@@ -75,12 +88,12 @@ export const STYLE_DIRECTION_PROMPT = [
   "Sort your decisions into three tracks, and be explicit about which track each one belongs to. A deck that reuses one layout on every page is as broken as a deck whose pages share nothing.",
   "invariants: what must be identical on every single page. Background, palette, type, spacing, component geometry, image treatment, and illustration idiom all live here.",
   "pageTypeRules: how a cover, a section divider, and a content page each apply those invariants. Emit an entry for every page type this deck actually contains.",
-  "freeChoices: the axes each page decides for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the margins. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, or an area budget in it — those are invariants, and naming the same quantity in both tracks is the same as leaving it unruled.",
+  "freeChoices: the axes each page decides for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, how the copy and the supporting visual are arranged relative to each other, and how tightly the content is spaced inside the margins. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, an area budget, or a share of the canvas given to copy in it — those are fixed elsewhere (the last one by the deck's information-density setting), and naming the same quantity in two places is the same as leaving it unruled.",
   "invariants.tonalRegister: answer with exactly 'dark' or 'light'. This locks only the register, not an exact colour: a section divider may sit deeper and a cover may be full-bleed imagery, but no page may cross to the other side.",
   "invariants.background: the base background colour as a hex value, plus the neighbouring variants allowed around it. State the range in words; do not turn it into a licence to invert.",
-  "invariants.palette: every colour as a hex value with its role, where it is used, and roughly how much of a page it is allowed to cover. That area budget is itself an invariant — an accent on 3% of the canvas and the same accent on 30% are two different design systems. Never substitute a colour name for a value.",
+  "invariants.palette: every colour as a hex value with its role, where it is used, and roughly how much of a normal content page it is allowed to cover. That area budget is itself an invariant — an accent on 3% of the canvas and the same accent on 30% are two different design systems. Never substitute a colour name for a value.",
   "invariants.typography: the type families and a concrete size-and-weight ladder in pixels for a 1920x1080 canvas.",
-  "invariants.spacing: the outer page margins and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field.",
+  "invariants.spacing: the outer page margins a normal content page uses and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field. State any deliberate departure for a cover or a section divider (a full-bleed cover, wider divider margins) in pageTypeRules instead — a value written here must hold on every content page without exception.",
   "invariants.componentGeometry: corner radius, rule and border weight, shadow character, edge treatment.",
   "invariants.imageTreatment: how photography is cropped, graded, and filtered.",
   "invariants.illustrationIdiom: one visual language for non-photographic artwork — flat vector, photographic collage, hand-drawn line, isometric 3D, or something else — with its line weight, fill approach, level of abstraction, whether shapes carry outlines, and any texture or grain. Pages that mix idioms read as pages from different decks, so name one and describe it precisely.",
@@ -192,6 +205,14 @@ export async function resolveStyleDirection(input: {
         projectId,
         source: rendered.tonalRegisterSource,
         modelId: provider.id,
+      });
+    // 自由那一軌整段掉了＝合約會把這份設計系統整份讀成 invariant，於是每頁又變成同一個
+    // 版型。這與「一黑一白」剛好是相反方向的失敗，但同樣靜默。
+    if (rendered.freeChoiceCount === 0)
+      logWarn("style_direction_free_choices_empty", {
+        projectId,
+        modelId: provider.id,
+        slideCount: project.slides.length,
       });
     return {
       designSystem: rendered.markdown,

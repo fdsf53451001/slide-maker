@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildImageGenerationContract,
+  DESIGN_SYSTEM_SECTIONS,
   contractMode,
   imageContractLines,
   imageGenerationInput,
@@ -62,7 +63,21 @@ function baseRequest(): ImageGenerationRequest {
   };
 }
 
-const DESIGN_SYSTEM = "## 色票\n- #F7F5F0 — 內頁畫布底色\n## 版型\n- 標題 96px、12 欄格線";
+/** 三軌格式（AI 分析／風格決議現在產出的形狀）。 */
+const DESIGN_SYSTEM = [
+  `## ${DESIGN_SYSTEM_SECTIONS.invariants}`,
+  "- 明暗登記：淺色（light）",
+  "- 色票（含面積比重）：",
+  "  - #F7F5F0 — 內頁畫布底色，約佔畫面 70%",
+  `## ${DESIGN_SYSTEM_SECTIONS.freeChoices}`,
+  "- 構圖骨架",
+].join("\n");
+/**
+ * 加入三軌之前排出來的扁平 markdown。既有專案存的就是這個，而且**沒有回填路徑**
+ * （`shouldResolveStyleDirection()` 只要 designSystem 非空就整條跳過），所以它不是歷史
+ * 遺跡而是現役形狀——合約對它多送一條「明暗登記以內頁為準」的裁決規則。
+ */
+const LEGACY_DESIGN_SYSTEM = "## 色票\n- #F7F5F0 — 內頁畫布底色\n## 版型\n- 標題 96px、12 欄格線";
 
 type Reference = ImageGenerationRequest["references"][number];
 
@@ -108,11 +123,14 @@ interface CaseSpec {
   readonly mask: boolean;
   /** 大綱有沒有指定頁型。省略＝舊專案，合約退回「你自己判斷」那條分支。 */
   readonly pageType?: "cover" | "section" | "content";
+  /** designSystem 用舊的扁平格式（沒有三軌段落標題）。 */
+  readonly legacyDesignSystem?: boolean;
 }
 
 function buildCase(spec: CaseSpec): ImageGenerationRequest {
   const request = baseRequest();
-  if (spec.designSystem) request.style.designSystem = DESIGN_SYSTEM;
+  if (spec.designSystem)
+    request.style.designSystem = spec.legacyDesignSystem ? LEGACY_DESIGN_SYSTEM : DESIGN_SYSTEM;
   if (spec.pageType) request.slide.pageType = spec.pageType;
   const supplemental =
     spec.references === "none"
@@ -151,6 +169,15 @@ const CASES: ReadonlyArray<CaseSpec> = [
   // 其餘每個 generate 情境都附了 STYLE 參考圖。少了這一格，那條路上的合約（它必須改口，
   // 不能再指著不存在的附圖）整段落在覆蓋範圍外。
   { mode: "generate", references: "none", designSystem: true, mask: false },
+  // 舊格式的設計系統：合約多送一條「明暗登記以內頁為準」的裁決規則。它是現役形狀而不是
+  // 歷史遺跡（既有專案沒有回填路徑），所以要有自己的快照。
+  {
+    mode: "generate",
+    references: "minimal",
+    designSystem: true,
+    mask: false,
+    legacyDesignSystem: true,
+  },
   { mode: "edit", references: "minimal", designSystem: false, mask: false },
   { mode: "edit", references: "minimal", designSystem: true, mask: false },
   { mode: "edit", references: "minimal", designSystem: false, mask: true },
@@ -169,6 +196,7 @@ function caseName(spec: CaseSpec): string {
     spec.mask ? "masked" : "no mask",
     // 只有指定頁型的情境多一段，既有快照的名字（＝既有的覆蓋範圍）因此原封不動。
     ...(spec.pageType ? [`pageType=${spec.pageType}`] : []),
+    ...(spec.legacyDesignSystem ? ["legacy format"] : []),
   ].join(" | ");
 }
 

@@ -202,9 +202,18 @@ export function imageGenerationInput(request: ImageGenerationRequest): Record<st
       layoutHint: normalizeInlineMarkup(request.slide.layoutHint),
       dataBasis: request.slide.dataBasis.map(normalizePlainTextMarkup),
       imagePrompt: normalizeInlineMarkup(request.slide.imagePrompt),
-      // 大綱沒有表態時整個欄位不出現，prompt 與加入這個欄位之前逐字元相同（同
-      // `pinnedSourceIds` 的慣例）。頁型是列舉、不是使用者文案，不需要 markdown 正規化。
-      ...(request.slide.pageType ? { pageType: request.slide.pageType } : {}),
+      /*
+       * 三個條件都成立才附上，因為只有那一格會讀它：`PAGE TYPE` 那條規則是
+       * generate-only 且掛在 designSystem 底下。
+       *
+       * 少任何一個條件都會讓「沒有 designSystem 時整份合約逐字元相同」只對**規則行**成立
+       * ——序列化出去的 JSON 仍多一個 `"pageType"` 鍵，而那份 JSON 就是 prompt 的另一半。
+       * 編輯／抹字任務同理：它們的合約明說 slide 欄位只是背景脈絡，多一個沒有規則解釋的
+       * 鍵只是雜訊（916fa47 的教訓是生成專用的東西不該漏進編輯任務）。
+       */
+      ...(request.slide.pageType && generating && hasDesignSystem(request)
+        ? { pageType: request.slide.pageType }
+        : {}),
     },
     style: {
       name: request.style.name,
@@ -289,6 +298,19 @@ function hasDesignSystem(request: ImageGenerationRequest): boolean {
  */
 function hasStyleReference(request: ImageGenerationRequest): boolean {
   return request.references.some((reference) => reference.role === "style");
+}
+
+/**
+ * 這份 designSystem 是不是三軌格式（帶得動「不可協商」那個段落標題）。
+ *
+ * 舊格式是加入三軌之前排出來的扁平 markdown，而且**沒有回填路徑**：
+ * `shouldResolveStyleDirection()` 只要 designSystem 非空就整條跳過，使用者不主動重新分析
+ * 一次就永遠停在舊格式。那些設計系統常在色票裡同時寫著「封面深藍綠底」與淺色內頁底——
+ * 於是合約那句「If this deck is dark, every slide is dark」在它們身上**沒有受詞**，模型
+ * 只能自己挑一邊，而單次無狀態呼叫下每頁挑的可能不一樣，那正好又是一黑一白。
+ */
+function hasSectionedDesignSystem(request: ImageGenerationRequest): boolean {
+  return request.style.designSystem.includes(DESIGN_SYSTEM_SECTIONS.invariants);
 }
 
 /**
@@ -390,8 +412,21 @@ function designSystemLines(request: ImageGenerationRequest): ReadonlyArray<strin
         // 下一句把「系統沒寫到的部分」交給那些不存在的圖，實際結果就是落回模型預設——
         // 在單次無狀態呼叫下那正是逐頁發散，也就是這整段要治的病。
         "style.designSystem is the authoritative written description of this deck's visual system, and for this deck it is the only one: no style reference images are attached, so nothing else may be consulted for its visual language.",
-    "INVARIANTS — these are identical on every slide of this deck and a single slide may not renegotiate them: the light/dark tonal register, the background colour and the neighbouring variants allowed around it, the palette together with roughly how much of a page each colour is allowed to cover, the type families and the size-and-weight ladder, the outer page margins and the base spacing unit, component geometry (corner radius, rule weight, shadow character, borders), photographic and image treatment, and the illustration idiom (flat vector, photographic, hand-drawn line, isometric 3D — including its line weight, fill, level of abstraction, outlines, and grain). Never average these against a reference image that shows something different.",
+    "INVARIANTS — these are identical on every slide of this deck and a single slide may not renegotiate them: the light/dark tonal register, the background colour and the neighbouring variants allowed around it, the palette together with roughly how much of a normal content page each colour is allowed to cover, the type families and the size-and-weight ladder, the outer page margins a normal content page uses and the base spacing unit, component geometry (corner radius, rule weight, shadow character, borders), photographic and image treatment, and the illustration idiom (flat vector, photographic, hand-drawn line, isometric 3D — including its line weight, fill, level of abstraction, outlines, and grain). Never average these against a reference image that shows something different.",
+    // 面積額度與邊距寫的是「一般內頁」，因為下一句與 COMPOSITION IS YOURS 都明講封面可以
+    // 滿版——沒有這個限定，同一份 prompt 先把它們釘死、三行後又授權打破，而「一條給選項的
+    // 規則等於沒有規則」。封面與段落頁的差異一律由頁型規則承載，不是由單頁自行決定。
+    "The colour area budget and the page margins above describe a normal content page. Where the page-type rules give a cover or a section divider a full-bleed treatment or different margins, that is this system speaking and it is binding too; it is never a licence for a content page to do the same.",
     "The tonal register is the strictest of them. If this deck is dark, every slide is dark; if it is light, every slide is light. A section divider may sit deeper and a cover may be full-bleed imagery, but no slide crosses from dark to light or back. A deck that alternates has failed, however good each slide looks on its own.",
+    ...(hasSectionedDesignSystem(request)
+      ? []
+      : // 舊格式的設計系統沒有明說登記，卻常常同時描述一個深色封面底與一個淺色內頁底。
+        // 這時**必須給一條可決定的裁決規則**，不能寫成「自己推一個」——單次無狀態呼叫下
+        // 每一頁會推出不同答案，那正是要治的病。以內頁為準是唯一有單一答案的判準（每份
+        // 簡報都有內頁，封面只有一頁）。
+        [
+          "This design system is written in an older format that does not state the tonal register outright, and it may name different backgrounds for different page types. Where it does, the deck's register is the one its normal content pages use; a cover or a section divider may sit deeper or lighter within that register, but it does not define it. Do not pick a register per slide.",
+        ]),
     `Read every part of style.designSystem as an invariant unless it appears under the section headed "${DESIGN_SYSTEM_SECTIONS.freeChoices}". A design system written without that section is invariant throughout — with one exception: where such a system prescribes a single grid, alignment, or page layout, treat that as one worked example of its spacing and hierarchy, not as the only skeleton this deck may use. The composition rules below still apply.`,
     fromReferences
       ? "Texture properties follow the STYLE references: surface and material quality, image treatment and grading, shadow softness, edge and print finish, and anything the written system leaves unspecified."
@@ -399,7 +434,7 @@ function designSystemLines(request: ImageGenerationRequest): ReadonlyArray<strin
     // 自由軸講的一律是「這一頁的**位置與比重分配**」，不是任何一個數值：色彩的面積額度、
     // 外邊距與間距單位都留在 invariant。兩邊各說一次同一個量（例如強調色佔多少面積）就是
     // 「一條給選項的規則等於沒有規則」，而那正是這次改動要消滅的東西。
-    "COMPOSITION IS YOURS: inside those invariants, how this slide is composed is your decision, and it should not look like a copy of the other slides. You choose the compositional skeleton (split left/right, full-bleed, card wall, timeline, one oversized figure, chart-led, stacked bands, or whatever the material calls for), which visual device carries the idea, what any illustration depicts and how it is framed, where on this page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the page margins. The palette's area budget and the base spacing unit are fixed by the invariants; what is yours is where that budget goes and how many units sit between things. Vary these deliberately from slide to slide: a deck whose every page repeats one layout has failed this contract, not satisfied it. slide.layoutHint states the information structure this slide's copy was written for — build your composition around it.",
+    "COMPOSITION IS YOURS: inside those invariants, how this slide is composed is your decision, and it should not look like a copy of the other slides. You choose the compositional skeleton (split left/right, full-bleed, card wall, timeline, one oversized figure, chart-led, stacked bands, or whatever the material calls for), which visual device carries the idea, what any illustration depicts and how it is framed, where on this page the accent colour lands and which element it picks out, how the copy and the supporting visual are arranged relative to each other, and how tightly the content is spaced inside the page margins. Three quantities are not yours: the palette's area budget and the base spacing unit are fixed by the invariants, and how much of the canvas goes to copy is fixed by the information-density requirement at the top of this contract. What is yours is where that budget lands, how many units sit between things, and which of the two elements leads the page. Vary these deliberately from slide to slide: a deck whose every page repeats one layout has failed this contract, not satisfied it. slide.layoutHint states the information structure this slide's copy was written for — build your composition around it.",
     request.slide.pageType
       ? "PAGE TYPE: slide.pageType states whether this slide is a cover, a section divider, or a normal content page. That was decided when the deck was written; do not re-derive it from slide.purpose or slide.content. Apply the matching page-type rules from style.designSystem, and apply every part of the system that is not page-type-specific unconditionally. Where style.designSystem marks a page type as not covered by the references, derive that page from the rest of the system rather than importing a generic look."
       : // 大綱沒有表態時退回舊措辭，逐字元相同：舊專案的頁面沒有 slide.pageType，
@@ -439,7 +474,7 @@ const CONTRACT_RULES: ReadonlyArray<ContractRule> = [
           // （換個構圖、換個視覺裝置）時完全沒有出口——而 invariant 反過來又擋不住
           // imagePrompt 隨手寫的「用白底」。兩軸的答案相反，所以拆成兩句。
           "On the invariants above, a single slide has no vote: neither slide.imagePrompt nor generic model defaults may override them.",
-          "On the free axes — composition, visual device, illustration subject, accent placement, copy-to-visual ratio, spacing within the margins — slide.imagePrompt is the author speaking about this specific slide, and it outranks both the other style fields and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",
+          "On the free axes — composition, visual device, illustration subject, accent placement, copy-and-visual arrangement, spacing within the margins — slide.imagePrompt is the author speaking about this specific slide, and it outranks both the other style fields and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",
         ]
       : [
           "Within visual decisions, style overrides slide.imagePrompt and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",

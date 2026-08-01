@@ -133,6 +133,60 @@ describe("頁型從大綱貫穿到生成", () => {
     expect(outlined.slides.map((slide) => slide.pageType)).toEqual(["cover", undefined, undefined]);
   });
 
+  it("還原到沒有頁型的舊版本時，頁型要跟著回到「沒有表態」", async (context) => {
+    if (bindUnavailable) return context.skip();
+    /*
+     * `Object.assign` 只複製**存在的鍵**，所以沒有頁型的快照（這個欄位加入之前的每一版，
+     * 以及計畫沒表態的那幾頁）會讓頁面上現在那個值原封不動留下來，同時被標成
+     * `outlineDirty: false`——畫面上那張圖其實是在沒有頁型的合約下畫的，橘框卻說一切同步。
+     * 這個 mutation 過得了型別檢查、也不會讓任何別的測試變紅，所以要有自己的一條。
+     */
+    const project = await createProject(1);
+    stubText([undefined]);
+    const outlined = await generateOutline(project.id);
+    const slide = outlined.slides[0]!;
+    expect(slide.pageType).toBeUndefined();
+
+    const generated = await fetch(
+      `${baseUrl}/api/projects/${project.id}/slides/${slide.id}/generate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "mock-image", acceptUnknownReadiness: true }),
+      },
+    );
+    expect(generated.status).toBeLessThan(400);
+    // 等 job 落地成一個版本（mock provider 很快，但仍是非同步的）。
+    let withVersion = outlined;
+    for (let attempt = 0; attempt < 200 && !withVersion.slides[0]!.currentVersionId; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      withVersion = (await (
+        await fetch(`${baseUrl}/api/projects/${project.id}`)
+      ).json()) as PresentationProject;
+    }
+    const versionId = withVersion.slides[0]!.currentVersionId;
+    if (!versionId) return context.skip();
+    expect(withVersion.slides[0]!.versions[0]!.outlineSnapshot?.pageType).toBeUndefined();
+
+    for (const action of ["activate", "restore"] as const) {
+      const retyped = await fetch(`${baseUrl}/api/projects/${project.id}/slides/${slide.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pageType: "cover" }),
+      });
+      expect(((await retyped.json()) as PresentationProject).slides[0]!.pageType).toBe("cover");
+      const response = await fetch(
+        `${baseUrl}/api/projects/${project.id}/slides/${slide.id}/versions/${versionId}/${action}`,
+        { method: "POST" },
+      );
+      expect(response.status, action).toBeLessThan(400);
+      const after = ((await response.json()) as PresentationProject).slides[0]!;
+      // 快照沒有頁型 → 頁面也不該留著頁型，而且 outlineDirty 要與它講同一件事。
+      expect(after.pageType, action).toBeUndefined();
+      expect(after.outlineDirty, action).toBe(false);
+    }
+  }, 60_000);
+
   it("改頁型會亮 outlineDirty，改隱藏不會", async (context) => {
     if (bindUnavailable) return context.skip();
     const project = await createProject(1);

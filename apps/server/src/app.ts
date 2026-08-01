@@ -12,6 +12,7 @@ import { FileProjectRepository } from "./repository.js";
 import { ModelLibraryRepository } from "./model-library-repository.js";
 import { buildSeedLibrary, withLocalInpaintEntry } from "./model-library-seed.js";
 import { ModelLibraryError, ModelRuntime } from "./model-runtime.js";
+import { projectStyleId } from "./project-write-helpers.js";
 import { runtimePaths } from "./runtime-paths.js";
 import {
   LOCAL_HOSTNAMES,
@@ -329,9 +330,6 @@ export async function createApp(
   registerPdfDeckRoutes(app, ctx);
 
   // ── 風格快照的共用 helper（風格分析、專案設定、版本三處共用） ──────────────
-
-  /** 專案本地風格 fork 的 id：只有這個 id 的 snapshot 擁有自己的參考圖。 */
-  const projectStyleId = (projectId: string) => `pdf-style-${projectId}`;
 
   /**
    * 這個專案自己擁有、換掉之後可以安全刪除的參考圖 id。
