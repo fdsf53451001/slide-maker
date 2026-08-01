@@ -170,6 +170,7 @@ import {
 } from "./image-description-scheduler.js";
 import { trustedHostMiddleware } from "./trusted-hosts.js";
 import type { AppContext } from "./routes/context.js";
+import { registerSystemRoutes } from "./routes/system.js";
 
 export const projectStyleAnalysisInputSchema = z.object({
   slideIds: z.array(idSchema).min(1).max(STYLE_REFERENCE_IMAGE_LIMIT),
@@ -494,8 +495,6 @@ export async function createApp(
   /**
    * route 模組要用的那一份 createApp 內部世界（見 `routes/context.ts` 的三條規則）。
    *
-   * 這一批只建立型別與物件，route 本體還在下面；下一批把 route 搬成
-   * `registerXxx(app, ctx)` 時，呼叫順序仍以本檔現在的註冊順序為準。
    * 三支風格快照 helper 是 `function` 宣告（會 hoist），在這裡取用是安全的。
    */
   const ctx: AppContext = {
@@ -524,11 +523,6 @@ export async function createApp(
     saveVersionStyleReference,
     writeProjectStyleSnapshot,
   };
-  // 下一批才會出現 `registerXxx(app, ctx)` 的呼叫。物件刻意在這一批就建起來，型別對不上
-  // 的地方（活引用被解構成快照、少了某個 helper）現在就會紅，而不是等搬 route 那一刻
-  // 一次爆出來。
-  void ctx;
-
   await jobs.recoverInterruptedJobs();
   app.locals.jobRunner = jobs;
   app.locals.providerReadiness = readiness;
@@ -563,39 +557,7 @@ export async function createApp(
   ]);
   app.use(trustedHostMiddleware(allowedHosts));
 
-  app.get("/api/health", (_request, response) => response.json({ ok: true, schemaVersion: 1 }));
-  app.get("/api/providers", (_request, response) =>
-    response.json(
-      runtime.imageProviders.list().map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        availability: provider.availability,
-        capabilities: provider.capabilities,
-        timeoutMs: provider.timeoutMs,
-        maxConcurrency: provider.maxConcurrency,
-      })),
-    ),
-  );
-  app.get("/api/providers/:providerId/readiness", async (request, response) => {
-    const providerId = idSchema.parse(request.params.providerId);
-    return response.json(await readiness.check(providerId));
-  });
-  // 文字能力的 model entry 清單（供組合編輯器）。
-  app.get("/api/text-providers", (_request, response) => {
-    const defaultTextRef = runtime.library.combinations.find(
-      (combination) => combination.id === runtime.library.defaultCombinationId,
-    )?.textModelRef;
-    return response.json(
-      runtime.library.models
-        .filter((entry) => entry.capability === "text")
-        .map((entry) => ({
-          id: entry.id,
-          name: entry.name,
-          availability: runtime.structuredText(entry.id).availability,
-          isDefault: entry.id === defaultTextRef,
-        })),
-    );
-  });
+  registerSystemRoutes(app, ctx);
 
   // ── 模型庫 CRUD ────────────────────────────────────────────────────────────
   // 單一真實來源為 DATA_ROOT/models.json。每次變更 → applyLibrary（存檔＋原子重建
