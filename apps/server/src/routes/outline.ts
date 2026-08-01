@@ -775,6 +775,12 @@ export function registerDeckOutlineRoute(app: Express, ctx: AppContext): void {
               },
               () => provider.runStructured(structuredRequest),
             ),
+          // 整段設計靠「這一步永遠不 throw」撐著，而那個承諾離「被某次重構弄假」只有一步。
+          // 這道網子把它變成結構保證：任何漏網的例外都只讓風格決議消失，不會連帶把一份已經
+          // 花掉一次搜尋與兩次模型呼叫的大綱一起丟掉。
+        }).catch((error: unknown) => {
+          logWarn("style_direction_unexpected", { projectId, ...modelErrorFields(error) });
+          return undefined;
         });
     }
     const project = await repository
@@ -961,7 +967,7 @@ export function registerSlideOutlineRoute(app: Express, ctx: AppContext): void {
                 `Return revised content, narrative, layoutHint, pageType, and up to ${SLIDE_SOURCE_ID_LIMIT} relevant sourceIds. Do not return or alter the page purpose. Visual styling is decided separately from the presentation style preset — describe information structure in layoutHint, never colours, palettes, or background treatments.`,
                 // 同整份大綱那條的分工，只是這裡看得到的「全體」是 deckOutline：一致性交給
                 // 風格，這一頁要負責的是**不要與鄰頁撞版**。
-                'pageType says which kind of page this is: "cover" for an opening title page, "section" for a divider that only announces the next part, "content" for a page that carries information. Keep the current one unless the page purpose plainly says otherwise. In layoutHint, choose an information structure that does not repeat the immediately neighbouring slides shown in surroundingDeck.',
+                'pageType says which kind of page this is: "cover" for an opening title page, "section" for a divider that only announces the next part, "content" for a page that carries information. Echo currentSlide.pageType back unchanged unless the page purpose plainly contradicts it. When currentSlide has no pageType at all, return the empty string rather than guessing — an empty answer leaves the page as it is, and a guess would be pinned permanently. In layoutHint, choose an information structure that does not repeat the immediately neighbouring slides shown in surroundingDeck.',
                 // 指定的來源在檢索階段已拿到加權後的名額；這裡再明說一次，模型才會真的把內容寫在
                 // 這些來源上，而不是只讓伺服器事後把 id 併進去、內容卻與它們無關。
                 // 措辭必須讓上一行的 20 個上限繼續成立：指定的份數可以超過 20，若要求「全部都要回」，

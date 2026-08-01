@@ -57,6 +57,8 @@ const OPERATION_LABELS: Record<string, string> = {
   "outline-plan": "大綱規劃",
   "outline-draft": "大綱撰寫",
   "outline-regenerate": "大綱重建",
+  // 「AI 自由設計」在大綱之後多的那一次：整份簡報一次，決定共用的設計系統。
+  "style-direction": "風格決議",
   "ocr-style-refine": "抽字樣式精修",
   "image-description": "圖片內容描述",
 };

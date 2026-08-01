@@ -161,8 +161,12 @@ describe("style analysis output", () => {
     expect(STYLE_ANALYSIS_PROMPT).toContain("decide one answer and state it");
     // 色名沒有可執行語意，逼出 hex 才是「通盤配色」的強制力。
     expect(STYLE_ANALYSIS_PROMPT).toContain("never substitute a colour name for a value");
-    // 面積比重本身就是 invariant：3% 與 30% 是兩套設計系統。
-    expect(STYLE_ANALYSIS_PROMPT).toContain("how much of a page it covers");
+    // 面積額度本身就是 invariant：3% 與 30% 是兩套設計系統。而且它只能出現在**一軌**
+    // ——invariant 與 freeChoices 都提一次同一個量，等於那個量根本沒有被規定。
+    expect(STYLE_ANALYSIS_PROMPT).toContain("That area budget is itself an invariant");
+    expect(STYLE_ANALYSIS_PROMPT).toContain(
+      "never put a colour value, a type size, a spacing unit, or an area budget in it",
+    );
     // 插圖語彙：新增的維度，混語彙讓每頁看起來像不同份簡報。
     expect(STYLE_ANALYSIS_PROMPT).toContain("illustrationIdiom");
     // 沒看到的頁型不准編造——與 slide 端的事實接地是同一類問題。

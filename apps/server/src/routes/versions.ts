@@ -30,7 +30,12 @@ export function registerVersionRoutes(app: Express, ctx: AppContext): void {
         // 回灌大綱與指定清單留在這裡：`adoptVersion` 只掛版本、切當前版本，其餘一概不碰
         // （`hidden` 是頁面層級的旗標，還原版本不得順手清掉它）。
         if (restored.outlineSnapshot) {
-          Object.assign(slide, structuredClone(restored.outlineSnapshot), {
+          // `pageType` 先歸零再套快照，因為 `Object.assign` 只複製**存在的鍵**：沒有頁型的
+          // 快照（這個欄位加入之前的每一版，以及計畫沒表態的那幾頁——`undefined` 寫檔時就
+          // 消失了）不會蓋掉頁面上現在那個值。少了這一行，「改頁型 → 生成 → 還原到舊版本」
+          // 會留下新頁型卻同時標成 `outlineDirty: false`，而畫面上那張圖其實是在沒有頁型的
+          // 合約下畫出來的。
+          Object.assign(slide, { pageType: undefined }, structuredClone(restored.outlineSnapshot), {
             outlineDirty: false,
             // 回到舊版本＝這一頁完全回到當時的狀態，指定清單也要回到當時那一份。
             // 只夾掉越界的指定是不夠的：那樣會把「生成後才指定的來源」永久抹掉，而且不可逆；
@@ -57,8 +62,9 @@ export function registerVersionRoutes(app: Express, ctx: AppContext): void {
         if (!slide || !version) throw new Error("Version not found");
         slide.currentVersionId = version.id;
         if (version.outlineSnapshot) {
-          // 與 restore 同一套語意：切回哪一版，就用那一版當時生效的指定。
-          Object.assign(slide, structuredClone(version.outlineSnapshot), {
+          // 與 restore 同一套語意：切回哪一版，就用那一版當時生效的指定；`pageType` 同樣
+          // 要先歸零（見 restore 那條的說明）。
+          Object.assign(slide, { pageType: undefined }, structuredClone(version.outlineSnapshot), {
             outlineDirty: false,
             pinnedSourceIds: [...(version.pinnedSourceIds ?? [])],
           });

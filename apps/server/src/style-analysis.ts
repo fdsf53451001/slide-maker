@@ -13,6 +13,8 @@ import { DESIGN_SYSTEM_SECTIONS, SLIDE_PAGE_TYPES, type SlidePageType } from "@s
  * 使用者實測到的「一長串一黑一白」。三軌之後，一致性與美術自由**分軌**而不是二選一：
  * 背景進 invariant 但只鎖明暗登記（同登記內可深可淺），構圖、視覺裝置、插圖畫什麼
  * 則被明文列進 freeChoices 並鼓勵跨頁不同。
+ *
+ * @module
  */
 
 /**
@@ -173,12 +175,12 @@ export const STYLE_ANALYSIS_PROMPT = [
   "Sort what you see into three tracks, and be explicit about which track each observation belongs to. This separation is the whole point of the analysis: a deck that reuses one layout on every page is as broken as a deck whose pages share nothing.",
   "invariants: what must be identical on every single page. Background, palette, type, spacing, component geometry, image treatment, and illustration idiom all live here.",
   "pageTypeRules: how a cover, a section divider, and a content page each apply those invariants.",
-  "freeChoices: the axes each page should decide for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where the accent colour lands and how much area it covers, the ratio of copy to visual, and how tight or generous the whitespace is. List what the references show genuinely varying from page to page. Never put a colour value, a type size, or a spacing unit in this track.",
+  "freeChoices: the axes each page should decide for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the margins. List what the references show genuinely varying from page to page. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, or an area budget in it — those are invariants, and naming the same quantity in both tracks is the same as leaving it unruled.",
   "invariants.tonalRegister: answer with exactly 'dark' or 'light' — is this deck read as dark-on-light or light-on-dark overall? This locks only the register, not an exact colour: a section divider may sit deeper and a cover may be full-bleed imagery, but no page may cross to the other side. Decide even when one reference page looks like the exception; a rule that permits both is the same as no rule.",
   "invariants.background: the base background colour as a hex value, plus the neighbouring variants that are allowed around it (a deeper panel, a tint, a photographic wash). State the range in words; do not turn it into a licence to invert.",
-  "invariants.palette: give every colour as a hex value with its role, the concrete places it is used, and roughly how much of a page it covers. Area share is itself an invariant — an accent used on 3% of the canvas and the same accent used on 30% are two different design systems. Estimate the hex from the pixels; never substitute a colour name for a value.",
+  "invariants.palette: give every colour as a hex value with its role, the concrete places it is used, and roughly how much of a page it is allowed to cover. That area budget is itself an invariant — an accent used on 3% of the canvas and the same accent used on 30% are two different design systems. Estimate the hex from the pixels; never substitute a colour name for a value.",
   "invariants.typography: the type families and the concrete size-and-weight ladder — actual pixel sizes and weights you can measure on the page, not adjectives.",
-  "invariants.spacing: the page margins and the base spacing unit the rest of the rhythm is built from.",
+  "invariants.spacing: the outer page margins and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field.",
   "invariants.componentGeometry: corner radius, rule and border weight, shadow character, and edge treatment.",
   "invariants.imageTreatment: how photography is cropped, graded, and filtered.",
   "invariants.illustrationIdiom: what visual language non-photographic artwork speaks — flat vector, photographic collage, hand-drawn line, isometric 3D, or something else — with its line weight, fill approach, level of abstraction, whether shapes carry outlines, and any texture or grain. Pages that mix idioms read as pages from different decks, so name one and describe it precisely.",
@@ -196,7 +198,10 @@ export const STYLE_ANALYSIS_PROMPT = [
  * 裡最重要的一個欄位，而 CLAUDE.md 已經明載非嚴格 gateway 丟掉自己不認識的欄位是常態：
  * 隨便挑一邊會把淺色簡報整份壓成深色（比不鎖更糟），而背景色本來就承載同一個事實。
  *
- * 門檻用 0.5 而不是 sRGB 中間灰的 0.21：中灰底配白字在投影片上就是深色登記。
+ * 門檻是 0.30 而不是 0.5：這個判斷只需要涵蓋「中灰底配白字在投影片上就是深色登記」
+ * （`#808080` 的相對亮度 0.216 → dark），而 0.5 的邊界落在 `#BCBCBC` 附近，會把
+ * `#AAAAAA`（0.402）這種明明是淺灰底的簡報整份壓成深色——那正是這段註解說「比不鎖更糟」
+ * 的那件事。往低走的代價只是更容易落回「不鎖」，而不鎖是這裡明確可接受的降級。
  */
 function tonalRegisterFromBackground(background: string): TonalRegister | undefined {
   const matched = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/.exec(background);
@@ -208,7 +213,7 @@ function tonalRegisterFromBackground(background: string): TonalRegister | undefi
     return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
   };
   const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
-  return luminance < 0.5 ? "dark" : "light";
+  return luminance < 0.3 ? "dark" : "light";
 }
 
 export interface RenderedDesignSystem {

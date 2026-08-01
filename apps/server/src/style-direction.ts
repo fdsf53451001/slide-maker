@@ -75,12 +75,12 @@ export const STYLE_DIRECTION_PROMPT = [
   "Sort your decisions into three tracks, and be explicit about which track each one belongs to. A deck that reuses one layout on every page is as broken as a deck whose pages share nothing.",
   "invariants: what must be identical on every single page. Background, palette, type, spacing, component geometry, image treatment, and illustration idiom all live here.",
   "pageTypeRules: how a cover, a section divider, and a content page each apply those invariants. Emit an entry for every page type this deck actually contains.",
-  "freeChoices: the axes each page decides for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where the accent colour lands and how much area it covers, the ratio of copy to visual, and how tight or generous the whitespace is. Never put a colour value, a type size, or a spacing unit in this track.",
+  "freeChoices: the axes each page decides for itself, and on which pages are expected to differ from one another — the compositional skeleton, which visual device carries the idea, what an illustration depicts, where on a page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the margins. This track holds placement and proportion only: never put a colour value, a type size, a spacing unit, or an area budget in it — those are invariants, and naming the same quantity in both tracks is the same as leaving it unruled.",
   "invariants.tonalRegister: answer with exactly 'dark' or 'light'. This locks only the register, not an exact colour: a section divider may sit deeper and a cover may be full-bleed imagery, but no page may cross to the other side.",
   "invariants.background: the base background colour as a hex value, plus the neighbouring variants allowed around it. State the range in words; do not turn it into a licence to invert.",
-  "invariants.palette: every colour as a hex value with its role, where it is used, and roughly how much of a page it covers. Area share is itself an invariant — an accent on 3% of the canvas and the same accent on 30% are two different design systems. Never substitute a colour name for a value.",
+  "invariants.palette: every colour as a hex value with its role, where it is used, and roughly how much of a page it is allowed to cover. That area budget is itself an invariant — an accent on 3% of the canvas and the same accent on 30% are two different design systems. Never substitute a colour name for a value.",
   "invariants.typography: the type families and a concrete size-and-weight ladder in pixels for a 1920x1080 canvas.",
-  "invariants.spacing: the page margins and the base spacing unit the rest of the rhythm is built from.",
+  "invariants.spacing: the outer page margins and the base spacing unit the rest of the rhythm is built from. How many of those units sit between elements on a given page is a free choice, not this field.",
   "invariants.componentGeometry: corner radius, rule and border weight, shadow character, edge treatment.",
   "invariants.imageTreatment: how photography is cropped, graded, and filtered.",
   "invariants.illustrationIdiom: one visual language for non-photographic artwork — flat vector, photographic collage, hand-drawn line, isometric 3D, or something else — with its line weight, fill approach, level of abstraction, whether shapes carry outlines, and any texture or grain. Pages that mix idioms read as pages from different decks, so name one and describe it precisely.",
@@ -118,7 +118,13 @@ export async function resolveStyleDirection(input: {
     if (!(error instanceof ModelLibraryError)) throw error;
     // 只記 id 與代碼：組合名稱、模型名稱、頁面內文一律不進 log。
     logWarn("style_direction_model_unresolved", { projectId, code: error.code });
-    return { outcome: { applied: false, reason: error.code } };
+    /*
+     * 代碼要先過 schema 的形狀（`^[A-Z0-9_]+$`）才敢往回傳。`ModelLibraryError.code` 的
+     * 型別只是 `string`，而這個值最後會被 `parseProject` 驗過才落地——不合規的話**大綱那次
+     * 寫入會整個 throw**，被犧牲掉的正是那個「用來記錄可選步驟無害地失敗了」的欄位。
+     */
+    const reason = /^[A-Z0-9_]+$/.test(error.code) ? error.code : STYLE_DIRECTION_REASONS.FAILED;
+    return { outcome: { applied: false, reason } };
   }
   if (provider.availability.status !== "available") {
     const detail = provider.availability.reason;

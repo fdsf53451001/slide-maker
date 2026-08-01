@@ -71,6 +71,7 @@ import { BatchGenerateDialog, type BatchGenerateChoice } from "./editor/BatchGen
 import { ImageEditDialog } from "./editor/ImageEditDialog.js";
 import { CreateProject } from "./editor/CreateProject.js";
 import { SetupFlow } from "./editor/SetupFlow.js";
+import { styleDirectionNotice } from "./editor/styleDirection.js";
 
 /*
  * 拆檔後的 re-export：`Editor.tsx` 對外的符號面必須與拆分前逐一相同——測試檔與
@@ -1630,9 +1631,14 @@ export function Editor() {
                   if (!confirm("重新產生大綱會取代目前頁面（包含你指定的來源），確定繼續？"))
                     return;
                   setBriefBusy("regenerate");
-                  void run(() => api.regenerateOutline(project.id, true)).finally(() =>
-                    setBriefBusy(undefined),
-                  );
+                  // 風格決議跟著大綱一起回來，而這是**第二個**產生大綱的入口（精靈是另一
+                  // 個）。少了這一行，從編輯器重建大綱的人拿到的是完全靜默的降級：大綱看起來
+                  // 一切正常，唯一的徵兆要等到十幾張圖擺在一起才看得見。
+                  void run(() => api.regenerateOutline(project.id, true))
+                    .then((updated) => {
+                      if (updated) setImportNotice(styleDirectionNotice(updated));
+                    })
+                    .finally(() => setBriefBusy(undefined));
                 }}
               >
                 {briefBusy === "regenerate" ? "正在檢索來源與重建大綱…" : "依 Brief 重建大綱"}

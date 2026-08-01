@@ -17,6 +17,8 @@ export function outlineSnapshot(slide: SlideSpec) {
     sourceIds: [...slide.sourceIds],
     // 與 `jobs.ts` 的同名函式必須逐欄一致：一邊補了欄位而另一邊沒有，「編輯前的狀態」與
     // 「生成當時的狀態」就會少比一欄，橘框從此對那一欄失明。
+    // （`routes/pdf-deck.ts` 還有第三份手寫的快照字面值，但那條路匯入的頁面沒有頁型，
+    //   而它建頁面時用的是同一個字面值，兩者因此自洽。）
     pageType: slide.pageType,
   };
 }

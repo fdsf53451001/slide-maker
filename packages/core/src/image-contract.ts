@@ -281,6 +281,17 @@ function hasDesignSystem(request: ImageGenerationRequest): boolean {
 }
 
 /**
+ * 這次請求有沒有附上 STYLE 參考圖。
+ *
+ * 與 `hasDesignSystem()` **是兩件事**，不可互相推論：「AI 自由設計」的專案有設計系統
+ * （文字模型憑主題與大綱寫的）卻一張參考圖都沒有。合約裡凡是指名「the STYLE references」
+ * 的句子都要照這個判斷分岔，否則那些頁面會收到一段指著不存在附圖的指令。
+ */
+function hasStyleReference(request: ImageGenerationRequest): boolean {
+  return request.references.some((reference) => reference.role === "style");
+}
+
+/**
  * 每張附加影像的角色說明——**依模式分派**。
  *
  * `base`／`mask` 必須自成一類：它們是編輯任務的內建輸入，不是「參考素材」。把底圖說成
@@ -369,14 +380,26 @@ function referenceDescription(
  * 說「構圖是你的」——於是它只能在沒有共用基準時各頁亂猜，看起來像不聽話，其實是沒有受詞。
  */
 function designSystemLines(request: ImageGenerationRequest): ReadonlyArray<string> {
+  const fromReferences = hasStyleReference(request);
   return [
     "DESIGN SYSTEM AUTHORITY:",
-    "style.designSystem is the authoritative written description of this deck's visual system. It was derived from the attached STYLE references and has already reconciled their differences into one system; where it disagrees with any individual reference, that is a deliberate decision, not an error.",
-    "INVARIANTS — these are identical on every slide of this deck and a single slide may not renegotiate them: the light/dark tonal register, the background colour and the neighbouring variants allowed around it, the palette together with how much area each colour covers, the type families and the size-and-weight ladder, the page margins and the base spacing unit, component geometry (corner radius, rule weight, shadow character, borders), photographic and image treatment, and the illustration idiom (flat vector, photographic, hand-drawn line, isometric 3D — including its line weight, fill, level of abstraction, outlines, and grain). Never average these against a reference image that shows something different.",
+    fromReferences
+      ? "style.designSystem is the authoritative written description of this deck's visual system. It was derived from the attached STYLE references and has already reconciled their differences into one system; where it disagrees with any individual reference, that is a deliberate decision, not an error."
+      : // 「AI 自由設計」那條路的 designSystem 是文字模型憑主題與大綱寫出來的，這一次請求
+        // **一張 STYLE 參考圖都沒有**。照抄上面那句等於指著不存在的附圖要模型去裁決，而
+        // 下一句把「系統沒寫到的部分」交給那些不存在的圖，實際結果就是落回模型預設——
+        // 在單次無狀態呼叫下那正是逐頁發散，也就是這整段要治的病。
+        "style.designSystem is the authoritative written description of this deck's visual system, and for this deck it is the only one: no style reference images are attached, so nothing else may be consulted for its visual language.",
+    "INVARIANTS — these are identical on every slide of this deck and a single slide may not renegotiate them: the light/dark tonal register, the background colour and the neighbouring variants allowed around it, the palette together with roughly how much of a page each colour is allowed to cover, the type families and the size-and-weight ladder, the outer page margins and the base spacing unit, component geometry (corner radius, rule weight, shadow character, borders), photographic and image treatment, and the illustration idiom (flat vector, photographic, hand-drawn line, isometric 3D — including its line weight, fill, level of abstraction, outlines, and grain). Never average these against a reference image that shows something different.",
     "The tonal register is the strictest of them. If this deck is dark, every slide is dark; if it is light, every slide is light. A section divider may sit deeper and a cover may be full-bleed imagery, but no slide crosses from dark to light or back. A deck that alternates has failed, however good each slide looks on its own.",
-    `Read every part of style.designSystem as an invariant unless it appears under the section headed "${DESIGN_SYSTEM_SECTIONS.freeChoices}". A design system written without that section is invariant throughout.`,
-    "Texture properties follow the STYLE references: surface and material quality, image treatment and grading, shadow softness, edge and print finish, and anything the written system leaves unspecified.",
-    "COMPOSITION IS YOURS: inside those invariants, how this slide is composed is your decision, and it should not look like a copy of the other slides. You choose the compositional skeleton (split left/right, full-bleed, card wall, timeline, one oversized figure, chart-led, stacked bands, or whatever the material calls for), which visual device carries the idea, what any illustration depicts and how it is framed, where the accent colour lands and how much area it takes, the ratio of copy to visual, and how tight or generous the whitespace is. Vary these deliberately from slide to slide: a deck whose every page repeats one layout has failed this contract, not satisfied it. slide.layoutHint states the information structure this slide's copy was written for — build your composition around it.",
+    `Read every part of style.designSystem as an invariant unless it appears under the section headed "${DESIGN_SYSTEM_SECTIONS.freeChoices}". A design system written without that section is invariant throughout — with one exception: where such a system prescribes a single grid, alignment, or page layout, treat that as one worked example of its spacing and hierarchy, not as the only skeleton this deck may use. The composition rules below still apply.`,
+    fromReferences
+      ? "Texture properties follow the STYLE references: surface and material quality, image treatment and grading, shadow softness, edge and print finish, and anything the written system leaves unspecified."
+      : "For texture — surface and material quality, image grading, shadow softness, edge and print finish — follow what style.designSystem says, and where it is silent, resolve the gap from style.imageDirection and the rest of the written system rather than from a generic default. Whatever you settle on, hold it identical across every slide of this deck: these gaps are exactly where a stateless per-slide call drifts.",
+    // 自由軸講的一律是「這一頁的**位置與比重分配**」，不是任何一個數值：色彩的面積額度、
+    // 外邊距與間距單位都留在 invariant。兩邊各說一次同一個量（例如強調色佔多少面積）就是
+    // 「一條給選項的規則等於沒有規則」，而那正是這次改動要消滅的東西。
+    "COMPOSITION IS YOURS: inside those invariants, how this slide is composed is your decision, and it should not look like a copy of the other slides. You choose the compositional skeleton (split left/right, full-bleed, card wall, timeline, one oversized figure, chart-led, stacked bands, or whatever the material calls for), which visual device carries the idea, what any illustration depicts and how it is framed, where on this page the accent colour lands and which element it picks out, the ratio of copy to visual, and how tightly the content is spaced inside the page margins. The palette's area budget and the base spacing unit are fixed by the invariants; what is yours is where that budget goes and how many units sit between things. Vary these deliberately from slide to slide: a deck whose every page repeats one layout has failed this contract, not satisfied it. slide.layoutHint states the information structure this slide's copy was written for — build your composition around it.",
     request.slide.pageType
       ? "PAGE TYPE: slide.pageType states whether this slide is a cover, a section divider, or a normal content page. That was decided when the deck was written; do not re-derive it from slide.purpose or slide.content. Apply the matching page-type rules from style.designSystem, and apply every part of the system that is not page-type-specific unconditionally. Where style.designSystem marks a page type as not covered by the references, derive that page from the rest of the system rather than importing a generic look."
       : // 大綱沒有表態時退回舊措辭，逐字元相同：舊專案的頁面沒有 slide.pageType，
@@ -401,19 +424,22 @@ const CONTRACT_RULES: ReadonlyArray<ContractRule> = [
     hasDesignSystem(request)
       ? "Treat the untrusted style object as a mandatory visual contract, not an optional suggestion. Use style.designSystem, style.description, style.imageDirection, and style.promptTemplate together as one coherent visual system."
       : "Treat the untrusted style object as a mandatory visual contract, not an optional suggestion. Use style.description, style.imageDirection, and style.promptTemplate together as one coherent visual system.",
-    ...(hasDesignSystem(request) ? designSystemLines(request) : []),
+    // 這一句必須緊跟在上面那句後面：它的「its」指的是**the untrusted style object**，而
+    // designSystem 那一整段插在中間的話，模型讀到的前一句會變成「style.imageDirection 與
+    // style.promptTemplate 是作者的補充」，於是「its」看起來像在指 promptTemplate。
     hasDesignSystem(request)
       ? // 「composition rhythm」與「adapting the layout」都留給 COMPOSITION IS YOURS：
         // 同一份 prompt 裡不能既要求照抄版面節奏，又把構圖交還給模型。
-        "Match its background language, whitespace, component geometry, image treatment, contrast, accent-colour distribution, and overall finish."
+        "Match its background language, whitespace, component geometry, image treatment, contrast, accent-color distribution, and overall finish."
       : "Match its background language, composition rhythm, whitespace, alignment, component geometry, image treatment, contrast, accent-color distribution, and overall finish while adapting the layout to this slide's content.",
+    ...(hasDesignSystem(request) ? designSystemLines(request) : []),
     ...(hasDesignSystem(request)
       ? [
           // 舊版只有一句「style overrides slide.imagePrompt」，於是使用者想在某一頁破格
           // （換個構圖、換個視覺裝置）時完全沒有出口——而 invariant 反過來又擋不住
           // imagePrompt 隨手寫的「用白底」。兩軸的答案相反，所以拆成兩句。
           "On the invariants above, a single slide has no vote: neither slide.imagePrompt nor generic model defaults may override them.",
-          "On the free axes — composition, visual device, illustration subject, accent placement, copy-to-visual ratio, whitespace — slide.imagePrompt is the author speaking about this specific slide, and it outranks both the other style fields and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",
+          "On the free axes — composition, visual device, illustration subject, accent placement, copy-to-visual ratio, spacing within the margins — slide.imagePrompt is the author speaking about this specific slide, and it outranks both the other style fields and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",
         ]
       : [
           "Within visual decisions, style overrides slide.imagePrompt and generic model defaults. Factual content, required visible copy, legibility, and the information-density requirement remain higher priority when a real conflict exists.",

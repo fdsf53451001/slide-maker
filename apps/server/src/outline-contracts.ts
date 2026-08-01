@@ -333,7 +333,15 @@ export const aiRegeneratedSlideJsonSchema: Record<string, unknown> = {
     content: { type: "string" },
     narrative: { type: "string" },
     layoutHint: { type: "string" },
-    pageType: { type: "string", enum: [...SLIDE_PAGE_TYPES] },
+    /*
+     * enum 多一個空字串＝「不變」。
+     *
+     * 嚴格端點（OpenAI strict）要求 `required` 列出每一個 property，所以不能單靠把
+     * `pageType` 拿掉來表達沉默——那等於逼模型在**舊專案的頁面根本沒有現值可保留**時硬
+     * 挑一個，而最可能挑到的是 `content`。挑完就被釘住：合約明文禁止影像模型再從 purpose
+     * 反推，於是一次重生就能把一張舊封面永久改判成內頁，而且畫面上沒有任何徵兆。
+     */
+    pageType: { type: "string", enum: [...SLIDE_PAGE_TYPES, ""] },
     sourceIds: { type: "array", maxItems: SLIDE_SOURCE_ID_LIMIT, items: { type: "string" } },
   },
 };
