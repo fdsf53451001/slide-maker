@@ -13,9 +13,7 @@ import {
 } from "react";
 import {
   pageNumberFormatSchema,
-  pageNumberLayout,
   pageNumberPositionSchema,
-  pageNumberSlideLabel,
   TEXT_STROKE_DEFAULT_COLOR,
   TEXT_STROKE_DEFAULT_OPACITY,
   TEXT_STROKE_DEFAULT_WIDTH_EM,
@@ -112,6 +110,8 @@ import { useWebSearchToggle, WebSearchToggle } from "./editor/webSearch.js";
 import { SlideVisibilityIcon, TextToolIcon } from "./editor/icons.js";
 import { SlideSourceChips } from "./editor/SlideSourceChips.js";
 import { TextLayerCanvas } from "./editor/TextLayerCanvas.js";
+import { PageNumberOverlay } from "./editor/PageNumberOverlay.js";
+import { ClampedNumberField } from "./editor/ClampedNumberField.js";
 
 /*
  * 拆檔後的 re-export：`Editor.tsx` 對外的符號面必須與拆分前逐一相同——測試檔與
@@ -126,6 +126,8 @@ export {
 export { batchExtractPlan, type BatchExtractPlan } from "./editor/extractionPlan.js";
 export { strokeCssColor, textBoxBackground } from "./editor/textBoxModel.js";
 export { TextLayerCanvas } from "./editor/TextLayerCanvas.js";
+export { PageNumberOverlay } from "./editor/PageNumberOverlay.js";
+export { ClampedNumberField } from "./editor/ClampedNumberField.js";
 
 // 錯誤通知列已抽到 `./ErrorToast.tsx`（連同它那份「為什麼是 div 包 button 而不是
 // button[role=alert]」的說明）：模型庫與風格編輯器各自寫了一份形狀不同的 toast，而稽核抓到的
@@ -341,122 +343,6 @@ function BatchGenerateDialog({
         </div>
       </div>
     </div>
-  );
-}
-
-/**
- * 系統合成的頁碼，畫在畫布與簡報模式的圖片之上。
- *
- * 幾何與文字都來自 core 的 `pageNumberLayout`，與匯出端是同一份計算，預覽才會與匯出落點一致。
- * 尺寸一律用容器查詢單位（外層是 `container-type: size` 的畫布）——畫布是縮放顯示的，
- * 寫死 px 會讓頁碼在小視窗變得比匯出結果大得多。
- *
- * 收的是 `order` 而不是「第幾個」：可見序號由 `pageNumberSlideLabel` 從整份 `slides` 算，
- * 這一端不得自行扣掉隱藏頁（那會變成第五份規則）。
- */
-export function PageNumberOverlay({
-  project,
-  order,
-}: {
-  project: PresentationProject;
-  order: number;
-}) {
-  const label = pageNumberSlideLabel(project.pageNumber, project.slides, order);
-  if (!label) return null;
-  const { width, height } = project.canvas;
-  const { text, chip } = pageNumberLayout(project.pageNumber, project.canvas, label);
-  return (
-    <div className="page-number-layer">
-      {chip && (
-        <div
-          className="page-number-chip"
-          style={{
-            left: `${(chip.x / width) * 100}%`,
-            top: `${(chip.y / height) * 100}%`,
-            width: `${(chip.width / width) * 100}%`,
-            height: `${(chip.height / height) * 100}%`,
-            borderRadius: `${(chip.radius / height) * 100}cqh`,
-            background: chip.color,
-            opacity: chip.opacity,
-          }}
-        />
-      )}
-      <div
-        className="page-number-text"
-        style={{
-          left: `${(text.x / width) * 100}%`,
-          top: `${(text.y / height) * 100}%`,
-          width: `${(text.width / width) * 100}%`,
-          height: `${(text.height / height) * 100}%`,
-          justifyContent:
-            text.align === "center" ? "center" : text.align === "right" ? "flex-end" : "flex-start",
-          fontFamily: text.fontFamily,
-          fontSize: `${(text.fontSize / height) * 100}cqh`,
-          fontWeight: text.fontWeight,
-          lineHeight: text.lineHeight,
-          color: text.color,
-          opacity: text.opacity,
-        }}
-      >
-        {label}
-      </div>
-    </div>
-  );
-}
-
-/**
- * 受控、但延後送出的整數輸入框。
- *
- * 每個 keystroke 就送出去的話，「30 → 45」這種兩位數修改永遠打不進去：伺服器先收到的是
- * `4`，違反 `min` 被擋成 400，受控 input 當場被打回舊值——12–120 這種區間裡每個值的
- * 首位數字都小於下界，必中。清空欄位同理（`Number("") === 0`）。
- * 因此打字期間只動本地 draft，失焦或按 Enter 才夾進合法區間送出；空字串與非數字一律還原。
- */
-export function ClampedNumberField({
-  label,
-  value,
-  min,
-  max,
-  onCommit,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onCommit: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  // 值從外部變動（切換專案、送出後伺服器夾過的結果）時同步回 draft。
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-  const commit = () => {
-    const parsed = Number(draft.trim());
-    if (draft.trim() === "" || !Number.isFinite(parsed)) {
-      setDraft(String(value));
-      return;
-    }
-    const clamped = Math.min(max, Math.max(min, Math.round(parsed)));
-    setDraft(String(clamped));
-    if (clamped !== value) onCommit(clamped);
-  };
-  return (
-    <label>
-      {label}
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          commit();
-        }}
-      />
-    </label>
   );
 }
 
