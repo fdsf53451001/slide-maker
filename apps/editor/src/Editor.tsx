@@ -65,6 +65,7 @@ import { TextLayerCanvas } from "./editor/TextLayerCanvas.js";
 import { PageNumberOverlay } from "./editor/PageNumberOverlay.js";
 import { PageNumberFields } from "./editor/PageNumberFields.js";
 import { ExportPanel } from "./editor/ExportPanel.js";
+import { PresentationOverlay } from "./editor/PresentationOverlay.js";
 import { TextBoxProperties } from "./editor/TextBoxProperties.js";
 import { SystemSettingsDialog } from "./editor/SystemSettingsDialog.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./editor/BatchGenerateDialog.js";
@@ -2343,75 +2344,18 @@ export function Editor() {
         </div>
       )}
       {presentationIndex !== null && presentationSlide && (
-        <div
-          className="presentation-mode"
-          role="dialog"
-          aria-modal="true"
-          aria-label="全螢幕簡報"
-          onClick={() => {
-            if (presentationNext !== undefined) setPresentationIndex(presentationNext);
-          }}
-        >
-          <div className="presentation-surface">
-            {presentationImage ? (
-              // 頁碼要疊在「圖片實際佔到的那塊矩形」上，而不是整個 100vw×100vh 的舞台：
-              // 圖片是 letterbox 置中的，兩者的比例不同時會差一整條黑邊。
-              //
-              // 尺寸顯式算出來，不用 aspect-ratio + max-width：這裡是 grid item，auto track
-              // 依 max-content 撐大並溢出，`max-width` 夾不住，窄視窗下右側會被裁掉。
-              // 長度單位取 `.presentation-surface` 的容器查詢單位而非 vw／vh，見 styles.css。
-              <div
-                className="presentation-stage"
-                style={{
-                  width: `min(100cqw, calc(100cqh * ${project.canvas.width} / ${project.canvas.height}))`,
-                  height: `min(100cqh, calc(100cqw * ${project.canvas.height} / ${project.canvas.width}))`,
-                }}
-              >
-                <img
-                  src={presentationImage}
-                  alt={`簡報第 ${presentationPosition} 頁`}
-                  draggable={false}
-                />
-                <PageNumberOverlay project={pageNumberProject} order={presentationSlide.order} />
-              </div>
-            ) : (
-              <div className="presentation-empty">
-                <strong>{presentationSlide.purpose}</strong>
-                <span>這一頁尚未生成圖片</span>
-              </div>
-            )}
-          </div>
-          <div className="presentation-controls" onClick={(event) => event.stopPropagation()}>
-            <button
-              aria-label="上一頁"
-              disabled={presentationPrev === undefined}
-              onClick={() => {
-                if (presentationPrev !== undefined) setPresentationIndex(presentationPrev);
-              }}
-            >
-              ←
-            </button>
-            <span>
-              {presentationPosition} / {visibleSlideCount}
-            </span>
-            <button
-              aria-label="下一頁"
-              disabled={presentationNext === undefined}
-              onClick={() => {
-                if (presentationNext !== undefined) setPresentationIndex(presentationNext);
-              }}
-            >
-              →
-            </button>
-            <button
-              className="presentation-close"
-              aria-label="離開簡報模式"
-              onClick={exitPresentation}
-            >
-              ×
-            </button>
-          </div>
-        </div>
+        <PresentationOverlay
+          presentationSlide={presentationSlide}
+          presentationImage={presentationImage}
+          presentationPrev={presentationPrev}
+          presentationNext={presentationNext}
+          presentationPosition={presentationPosition}
+          visibleSlideCount={visibleSlideCount}
+          canvas={project.canvas}
+          pageNumberProject={pageNumberProject}
+          onPresentationIndex={setPresentationIndex}
+          onExit={exitPresentation}
+        />
       )}
       {askBatchChoice && (
         <BatchGenerateDialog
