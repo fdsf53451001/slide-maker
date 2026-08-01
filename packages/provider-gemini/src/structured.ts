@@ -1,9 +1,8 @@
 import {
-  attachProviderCallFacts,
-  mergeUsage,
+  jsonOnlySystemPrompt,
   type ProviderAvailability,
   type ProviderPreflightResult,
-  type ProviderUsage,
+  runStructuredWithRetry,
   SafeProviderError,
   type StructuredTextProvider,
   type StructuredTextRequest,
@@ -28,6 +27,12 @@ export interface GeminiStructuredTextOptions {
 }
 
 type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
+/** 值得重試的錯誤碼：推理模型偶發回非 JSON／空內容（例如整個 candidate 只剩 thought part）。 */
+const GEMINI_TRANSIENT_TEXT_CODES: ReadonlySet<string> = new Set([
+  "GEMINI_RESPONSE_INVALID",
+  "GEMINI_TEXT_EMPTY",
+]);
 
 /** 串接 candidate 內所有 text part；part 可能夾帶 thoughtSignature，只取 text 鍵。 */
 function extractText(payload: unknown): string {
@@ -76,26 +81,14 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
     // 只送 responseMimeType，不送 responseSchema：後者僅吃 OpenAPI subset（無
     // additionalProperties、$ref/oneOf 支援有限），把本專案的 outputSchema 硬塞進去
     // 會在 schema 稍複雜時直接 400。約束改由 system instruction 內嵌 schema 承擔。
-    const system = [
-      "You are a strict JSON generator. Output ONLY one JSON value that validates against this JSON Schema.",
-      "No markdown code fences, no comments, no prose, no keys outside the schema.",
-      "JSON_SCHEMA",
-      JSON.stringify(request.outputSchema),
-    ].join("\n");
-    // 推理模型偶發回非 JSON／空內容（例如整個 candidate 只剩 thought part），
-    // 故對「解析失敗」這類暫時性錯誤重試數次。
-    const transient = new Set(["GEMINI_RESPONSE_INVALID", "GEMINI_TEXT_EMPTY"]);
-    /**
-     * 逐輪累加，理由與 `provider-openai/src/structured.ts` 的同名 accumulator 完全相同：
-     * 每一輪都是一個真的請求、一份完整的長 prompt，只回報最後一輪會把成本低估到三分之一。
-     * 推理模型尤其嚴重——`thoughtsTokenCount` 常常是整包輸出的大宗，而「整個 candidate
-     * 只剩 thought part」正是這個迴圈要重試的那種失敗。
-     */
-    let accumulated: ProviderUsage | undefined;
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        const payload = await generateContent(
+    const system = jsonOnlySystemPrompt(request.outputSchema);
+
+    // 重試輪數、逐輪用量累加與 requests 語意見 `runStructuredWithRetry` 的 doc comment。
+    // 這條路上「整個 candidate 只剩 thought part」正是要重試的那種失敗，而
+    // `thoughtsTokenCount` 常常是整包輸出的大宗——失敗輪的用量特別不能丟。
+    return runStructuredWithRetry({
+      request: () =>
+        generateContent(
           this.#options.config,
           this.#options.model,
           {
@@ -104,29 +97,11 @@ export class GeminiStructuredTextProvider implements StructuredTextProvider {
             generationConfig: { responseMimeType: "application/json" },
           },
           request.signal,
-        );
-        // usage 與內容出自同一份 payload；先前只挑 candidates[0] 而把 usageMetadata 丟掉。
-        // 併進 accumulator 要排在 `extractText`／`parseJsonContent` 之前：它們正是這條路上
-        // 會 throw 的那兩個，排在後面就等於失敗輪的用量照樣遺失。
-        accumulated = mergeUsage(accumulated, parseGeminiUsage(payload));
-        return {
-          value: parseJsonContent(extractText(payload)),
-          usage: accumulated,
-          requests: attempt,
-        };
-      } catch (error) {
-        lastError = error;
-        const code = error instanceof SafeProviderError ? error.code : undefined;
-        if (attempt === 3 || !code || !transient.has(code))
-          throw attachProviderCallFacts(error, {
-            ...(accumulated === undefined ? {} : { usage: accumulated }),
-            requests: attempt,
-          });
-      }
-    }
-    throw attachProviderCallFacts(lastError, {
-      ...(accumulated === undefined ? {} : { usage: accumulated }),
-      requests: 3,
+        ),
+      parseUsage: parseGeminiUsage,
+      // 換牌留在呼叫端：helper 碰 parseLooseJson 就會讓 OPENAI_ 前綴漏進 Gemini 路徑。
+      parseValue: (payload) => parseJsonContent(extractText(payload)),
+      transientCodes: GEMINI_TRANSIENT_TEXT_CODES,
     });
   }
 }
