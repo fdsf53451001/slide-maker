@@ -23,12 +23,10 @@ import {
   TEXT_STROKE_DEFAULT_WIDTH_EM,
   TEXT_STROKE_MAX_WIDTH_EM,
   type EditableTextBox,
-  type GenerationJob,
   type PageNumberSettings,
   type PresentationBrief,
   type PresentationProject,
   type SlideSpec,
-  type SlideVersion,
   type SourceAsset,
   type StylePreset,
   SOURCE_COUNT_LIMIT,
@@ -70,6 +68,71 @@ import {
 import { useDialogA11y } from "./useDialogA11y.js";
 import { modalDialogOpen } from "./modalDialogOpen.js";
 import { ErrorToast } from "./ErrorToast.js";
+import {
+  firstPresentableIndex,
+  hiddenSlideCount,
+  nextVisibleIndex,
+  visibleSlideIds,
+} from "./editor/slideVisibility.js";
+import {
+  batchExtractPlan,
+  isBatchAbortingFailure,
+  styleRefinementFailure,
+  styleRefinementReasonText,
+  OCR_CONFIG_ABORT_CODES,
+  type StyleRefinementFailure,
+} from "./editor/extractionPlan.js";
+import {
+  defaultTextBox,
+  isTypingTarget,
+  pastePosition,
+  pushHistory,
+  sameBoxes,
+  strokeCssColor,
+  textBoxBackground,
+  RESIZE_DIRECTIONS,
+  TEXT_BACKGROUND_DEFAULT_COLOR,
+  type PendingTextSave,
+  type TextLayerTask,
+} from "./editor/textBoxModel.js";
+import {
+  normalizeWheelDelta,
+  WHEEL_GESTURE_GAP_MS,
+  WHEEL_MAX_LOCK_MS,
+  WHEEL_PAGE_LOCK_MS,
+  WHEEL_PAGE_THRESHOLD_PX,
+} from "./editor/wheel.js";
+import {
+  briefPatchWithoutWebSearch,
+  confirmStyleReplacement,
+  currentImage,
+  duration,
+  isPdfImportProject,
+  isPdfImportVersion,
+  styleOptions,
+  versionDeleteConfirmText,
+  PHASE_LABELS,
+  VERSION_DELETE_MESSAGES,
+  type CombinationSummary,
+} from "./editor/projectHelpers.js";
+import {
+  mergePageNumber,
+  PAGE_NUMBER_DEBOUNCE_MS,
+  type PageNumberPatch,
+} from "./editor/pageNumberModel.js";
+
+/*
+ * 拆檔後的 re-export：`Editor.tsx` 對外的符號面必須與拆分前逐一相同——測試檔與
+ * library build 的 `index.ts` 全部 import 自 `./Editor.js`，改路徑等於改對外契約。
+ */
+export {
+  firstPresentableIndex,
+  hiddenSlideCount,
+  nextVisibleIndex,
+  visibleSlideIds,
+} from "./editor/slideVisibility.js";
+export { batchExtractPlan, type BatchExtractPlan } from "./editor/extractionPlan.js";
+export { strokeCssColor, textBoxBackground } from "./editor/textBoxModel.js";
 
 /**
  * 量版面的 effect 要在繪製前跑（見 `Editor` 裡的用處），但 `useLayoutEffect` 在沒有 DOM 的
@@ -77,141 +140,6 @@ import { ErrorToast } from "./ErrorToast.js";
  * 退回 passive effect——反正沒有 DOM 時本來也量不到東西。
  */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
-
-type CombinationSummary = { id: string; name: string; isDefault: boolean; imageModelRef?: string };
-
-const PHASE_LABELS: Record<string, string> = {
-  queued: "等待排程",
-  preparing: "準備資料",
-  launching: "啟動 Codex",
-  waiting_for_codex: "Codex 正在生成",
-  validating_output: "驗證圖片",
-  persisting: "保存版本",
-  completed: "完成",
-  failed: "失敗",
-  cancelled: "已取消",
-};
-
-/**
- * 刪除版本的守門錯誤：伺服器 409 只回裸錯誤碼（沒有 message 欄位），直接顯示對使用者
- * 沒有意義，而且每一種都有明確的下一步動作，所以在這裡翻成可行動的說明。
- */
-const VERSION_DELETE_MESSAGES: Record<string, string> = {
-  VERSION_IN_USE: "這是使用中的版本，請先切換到其他版本再刪除。",
-  VERSION_HAS_ACTIVE_JOB: "這個版本正在被生成任務使用，請等任務結束。",
-  VERSION_REFERENCED_BY_TEXT_LAYER: "有可編輯文字版本以這一版為原圖，請先刪除那個版本。",
-};
-
-function duration(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function currentImage(project: PresentationProject, slide: SlideSpec): string | undefined {
-  const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
-  return version ? imageUrl(project.id, version.imagePath) : undefined;
-}
-
-/** 這個版本是不是 PDF 匯入落地的（原圖與可編輯文字兩個版本都算）。 */
-function isPdfImportVersion(version?: {
-  providerId?: string;
-  parameters?: Record<string, unknown>;
-}) {
-  return version?.providerId === "pdf-import" && version.parameters?.pdfImport === true;
-}
-
-/**
- * 刪除版本前的確認文字。
- *
- * PDF 匯入的可編輯文字版本是匯入當下用 PDF 原生文字層一次做出來的，刪掉就再也造不回來：
- * 重做只剩 extract-text 那條 OCR＋遮罩重繪的路，字框幾何明顯比原生文字層粗糙。泛用的
- * 「無法復原」在這裡等於沒說，使用者無從知道自己要付的是這個代價。
- *
- * `origin !== "manual"` 不是多餘的：手動文字層的新版本是 `{ ...原版本 }` 複製出來的，所以在
- * PDF 匯入的原圖版本上手動加字，新版本會同時滿足 `isPdfImportVersion() && textLayer`——
- * 少了這個條件，確認框會把「使用者剛手打的字」說成「PDF 匯入時建立的可編輯文字版本」。
- */
-function versionDeleteConfirmText(version: SlideVersion): string {
-  if (isPdfImportVersion(version) && version.textLayer && version.textLayer.origin !== "manual")
-    return "這是 PDF 匯入時建立的可編輯文字版本，刪掉後只能改用 OCR 重新抽字（字框會比原生文字層粗糙），確定嗎？";
-  if (version.textLayer?.origin === "manual")
-    return "這個版本裡手動加上的文字會一併刪除，刪掉後無法復原，確定嗎？";
-  return "刪除這個版本後無法復原，確定嗎？";
-}
-
-/**
- * 工具列「新增文字框」的預設框（白字 44px）。
- *
- * 抽成函式是因為兩條路要一模一樣的東西：已有文字層時直接推進 `textBoxes`，還沒有時
- * 得先拿它去建立文字編輯版本。
- */
-function defaultTextBox(): EditableTextBox {
-  return {
-    id: crypto.randomUUID(),
-    text: "新增文字",
-    x: 120,
-    y: 120,
-    width: 420,
-    height: 80,
-    fontFamily: "Arial",
-    fontSize: 44,
-    fontWeight: 400,
-    color: "#ffffff",
-    opacity: 1,
-    lineHeight: 1.2,
-    letterSpacing: 0,
-    align: "left",
-    verticalAlign: "top",
-    rotation: 0,
-    confidence: 1,
-    role: "presentation",
-  };
-}
-
-/** 這份專案是不是由 PDF 匯入建立的（決定 setup 階段要走分析頁而不是四步 wizard）。 */
-function isPdfImportProject(project: PresentationProject): boolean {
-  return project.slides.some((slide) =>
-    slide.versions.some((version) => isPdfImportVersion(version)),
-  );
-}
-
-/**
- * 風格下拉選單的選項。
- *
- * 專案自己的 styleSnapshot 不一定在風格庫清單裡（PDF 匯入分析出來的 `pdf-style-*`
- * 就不在），少了代表它的那個 option，`value` 會對不上任何選項，瀏覽器改為顯示
- * 第一個選項「AI 自由設計」——畫面上寫的風格與實際套用的不是同一個。
- */
-function styleOptions(styles: StylePreset[], snapshot: StylePreset) {
-  return (
-    <>
-      {!styles.some((style) => style.id === snapshot.id) && (
-        <option value={snapshot.id}>{snapshot.name}（本專案專屬）</option>
-      )}
-      {styles.map((style) => (
-        <option key={style.id} value={style.id}>
-          {style.name} v{style.version}
-        </option>
-      ))}
-    </>
-  );
-}
-
-/**
- * 換風格前的確認。專案專屬的分析結果（PDF 匯入分析出來的 designSystem）被庫裡的
- * 風格蓋掉之後沒有復原路徑，所以只有這種情況會問；一般專案照舊直接套用。
- * 回傳 false 代表不要執行。
- */
-function confirmStyleReplacement(
-  styles: StylePreset[],
-  snapshot: StylePreset,
-  nextStyleId: string,
-): boolean {
-  if (nextStyleId === snapshot.id) return false;
-  const projectLocal = !styles.some((style) => style.id === snapshot.id);
-  if (!projectLocal || !snapshot.designSystem) return true;
-  return confirm("這份簡報用的是從 PDF 分析出來的專屬風格，套用其他風格會覆蓋分析結果，確定繼續？");
-}
 
 /**
  * 單頁來源的三態選取列。勾選代表「我指定」，AI 自己挑進來的另以虛線框與 ✦ 呈現。
@@ -288,82 +216,6 @@ function SlideSourceChips({
   );
 }
 
-const RESIZE_DIRECTIONS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"] as const;
-
-const TEXT_HISTORY_LIMIT = 60;
-
-/** 啟用文字框底色時的預設色；文字預設是白字，配黑底才看得見。 */
-const TEXT_BACKGROUND_DEFAULT_COLOR = "#000000";
-
-/**
- * 貼上文字框時相對來源的位移（畫布座標）。
- *
- * 貼在原位的話副本會完全蓋住來源，使用者看不出貼上成功，也拖不到底下那一個。
- */
-const TEXT_PASTE_OFFSET = 24;
-
-/**
- * 貼上的副本在單一軸上的落點（`start` 是來源座標，`limit` 是該軸的畫布尺寸）。
- *
- * 正向位移優先，但夾在畫布內會有兩個退化情形，都會讓副本原地重疊、看不出貼上成功：
- * 來源已貼齊右／下緣（右對齊頁尾、底部圖說很常見）時往回退同樣的距離；框本身就比
- * 畫布寬／高時怎麼放都會溢出，維持正向位移，可見比夾回 0 更重要。
- */
-function placePastedBox(start: number, size: number, limit: number, offset: number): number {
-  const forward = Math.min(Math.max(0, limit - size), start + offset);
-  if (forward > start) return forward;
-  return start >= offset ? start - offset : start + offset;
-}
-
-/**
- * 連續貼上最多往下找幾階：框被夾在畫布邊緣時每一階都可能算出同一個點，不能無限找。
- * 找滿了就讓它重疊——那已經是畫布放不下的情形，重疊比卡住好。
- */
-const TEXT_PASTE_MAX_STEP = 40;
-
-/**
- * 貼上的副本落點：從第一階開始往下找，直到那個點沒有被現有文字框佔住。
- *
- * 刻意不記「上一次貼到第幾階」。階數一旦要記，就得同時綁來源框與投影片，於是
- * 換頁往返、或只是重新按一次 ⌘C（即使複製的是同一個框），都會把它重算成第一階——
- * 而第一階的位置早被上一份副本佔走，新副本逐像素疊上去，使用者看到的是「⌘V 沒反應」。
- * 改看實際佔用還順帶拿到兩件事：刪掉副本後空出來的位置會被重新使用，以及沒有任何
- * 跨頁／跨專案的階梯狀態需要清除。
- */
-function pastePosition(
-  source: EditableTextBox,
-  boxes: EditableTextBox[],
-  canvasWidth: number,
-  canvasHeight: number,
-): { x: number; y: number } {
-  let spot = { x: source.x, y: source.y };
-  for (let step = 1; step <= TEXT_PASTE_MAX_STEP; step += 1) {
-    const offset = step * TEXT_PASTE_OFFSET;
-    spot = {
-      x: placePastedBox(source.x, source.width, canvasWidth, offset),
-      y: placePastedBox(source.y, source.height, canvasHeight, offset),
-    };
-    if (!boxes.some((box) => box.x === spot.x && box.y === spot.y)) return spot;
-  }
-  return spot;
-}
-
-/**
- * 這個 keydown 是否落在「使用者正在輸入」的地方，該原封不動交給瀏覽器。
- *
- * 與方向鍵換頁那條 handler 的判定刻意有兩處不同，寫在這裡免得日後被當成筆誤「修掉」：
- * ・textarea 要看 `readOnly`——唯讀的那個就是尚未進入編輯的文字框本體，快捷鍵必須生效；
- *   非唯讀代表使用者正在打字，這三個鍵是字元層級的複製／貼上／刪字，攔了連字都刪不掉。
- * ・`button` 不放行——剛按完工具列按鈕（例如「＋ 文字框」）焦點還留在按鈕上，這時按
- *   Delete 的意圖顯然是刪畫布上選取的框，而 Delete/Backspace 對按鈕本身沒有原生行為。
- * `a` 則與那條一致放行：某些設定下 Backspace-on-link 是瀏覽器的上一頁手勢。
- */
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target instanceof HTMLTextAreaElement) return !target.readOnly;
-  return target.matches("input, select, a") || target.isContentEditable;
-}
-
 /**
  * 對話框自己接 Escape。
  *
@@ -392,61 +244,6 @@ function useDialogEscape(onEscape: () => void, busy = false): void {
 // button[role=alert]」的說明）：模型庫與風格編輯器各自寫了一份形狀不同的 toast，而稽核抓到的
 // 問題正是同一份 UI 漂移成多份拷貝（其中兩份漏了 role="alert"）。理由只留在元件那一份，
 // 這裡不再複述——同一段理由的兩份拷貝遲早會有一份先過期。
-
-/** 某一頁正在跑的文字圖層工作。 */
-type TextLayerTask = "save" | "extract" | "create";
-
-/** 待寫入伺服器的文字圖層變更；`boxes` 直接存引用（文字框陣列一律不可變更新）。 */
-type PendingTextSave = {
-  projectId: string;
-  slideId: string;
-  versionId: string;
-  boxes: EditableTextBox[];
-  threshold: number;
-};
-
-// 文字框陣列一律以不可變方式更新，歷史可直接存引用，不需深拷貝。
-function pushHistory(history: EditableTextBox[][], boxes: EditableTextBox[]): EditableTextBox[][] {
-  return [...history, boxes].slice(-TEXT_HISTORY_LIMIT);
-}
-
-/** 單一文字框的 key 順序無關序列化；見 {@link sameBoxes}。 */
-function stableBoxKey(box: EditableTextBox): string {
-  return JSON.stringify(
-    Object.fromEntries(Object.entries(box).sort(([a], [b]) => (a < b ? -1 : 1))),
-  );
-}
-
-/**
- * 兩批文字框是否等價——**必須與 key 順序無關**，這是自動儲存唯一的守門員。
- *
- * 不能直接比 `JSON.stringify(boxes)`：optional 欄位（目前是底色那兩個）在本地是執行期
- * 才被 spread 加上去的，會排在物件尾端；而伺服器回應是 zod 依 schema 宣告順序重建的，
- * 同一個框的兩份字串永遠不相等。守門員一失效，自動儲存就進入
- * 「存 → 收到新 project → effect 重跑 → 仍判定不相等 → 再存」的無限迴圈
- * （`textDirty` 只在重新播種時歸零，PUT 不會清掉它），而每一輪伺服器都要重跑一次
- * `renderComposite()` 並換掉 `imagePath`，畫布會跟著每秒重新載入。
- */
-function sameBoxes(a: readonly EditableTextBox[], b: readonly EditableTextBox[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((box, index) => {
-    const other = b[index];
-    return other !== undefined && stableBoxKey(box) === stableBoxKey(other);
-  });
-}
-
-/**
- * 送出 brief 草稿時要拿掉 `webSearchMode`。
- *
- * 草稿都是「開專案／開精靈當下」的快照，而 `webSearchMode` 由自動搜尋勾選框獨佔
- * （見 `useWebSearchToggle`）。PATCH /brief 是 merge（`app.ts`：`{ ...current.brief, ...patch }`），
- * 少送這個欄位就是「不要動它」；整份送回去則會把之後（可能是另一個人）切換過的搜尋設定倒回舊值。
- */
-function briefPatchWithoutWebSearch(brief: PresentationBrief): Partial<PresentationBrief> {
-  const patch: Partial<PresentationBrief> = { ...brief };
-  delete patch.webSearchMode;
-  return patch;
-}
 
 /**
  * 自動搜尋網路資源的共用讀寫（精靈 STEP 3 與系統設定對話框兩個入口）。
@@ -633,33 +430,6 @@ export function SystemSettingsDialog({
       </div>
     </div>
   );
-}
-
-/**
- * 文字框底色的 CSS 值；沒設定底色就回 undefined（＝沿用 styles.css 的選取提示底）。
- *
- * 底色與文字的 `opacity` 是獨立的兩件事，所以透明度只能吃進色值本身，
- * 不能用容器的 `opacity`（那會連帶把文字與選取外框一起變淡）。
- */
-export function textBoxBackground(box: EditableTextBox): string | undefined {
-  if (!box.backgroundColor) return undefined;
-  return rgba(box.backgroundColor, box.backgroundOpacity ?? 1);
-}
-
-/**
- * 描邊的 CSS 色值。
- *
- * 透明度必須吃進色值本身：`-webkit-text-stroke-color` 沒有對應的 `-opacity` 屬性
- * （不像 SVG 的 `stroke-opacity`），而容器的 `opacity` 會把字身一起淡掉。
- */
-export function strokeCssColor(stroke: { color: string; opacity: number }): string {
-  return rgba(stroke.color, stroke.opacity);
-}
-
-function rgba(hex: string, alpha: number): string {
-  const value = hex.slice(1);
-  const channel = (offset: number) => Number.parseInt(value.slice(offset, offset + 2), 16);
-  return `rgba(${channel(0)}, ${channel(2)}, ${channel(4)}, ${alpha})`;
 }
 
 /**
@@ -1036,190 +806,6 @@ export function TextLayerCanvas({
 }
 
 /**
- * 從 `from`（不含）往 `direction` 找下一張可見頁，沒有就回 `undefined`。
- *
- * 簡報模式有四條換頁路徑（鍵盤、滾輪、點擊舞台、控制列按鈕），邊界邏輯只能有這一份：
- * 各寫一份 `Math.min(lastIndex, …)` 正是「某一條路會停在隱藏頁」的來源。回 `undefined`
- * 而不是「夾回原地」是刻意的——呼叫端要區分的正是「還有下一頁」與「已經到底」
- * （控制列的 `disabled`、鍵盤的不迴圈），夾回原地會把這兩件事混成同一個值。
- *
- * `from` 允許落在陣列外：`-1` 配 `+1` 得到第一張可見頁（Home、進場），
- * `slides.length` 配 `-1` 得到最後一張（End）。
- */
-export function nextVisibleIndex(
-  slides: readonly { hidden?: boolean }[],
-  from: number,
-  direction: 1 | -1,
-): number | undefined {
-  for (let index = from + direction; index >= 0 && index < slides.length; index += direction)
-    if (!slides[index]?.hidden) return index;
-  return undefined;
-}
-
-/**
- * 進場用的起始頁：選取的那頁若被隱藏就落到最近的可見頁（先往後、再往前）。
- * 全部頁面都被隱藏時回 `undefined`，呼叫端據此拒絕進入簡報模式。
- */
-export function firstPresentableIndex(
-  slides: readonly { hidden?: boolean }[],
-  preferred: number,
-): number | undefined {
-  const current = slides[preferred];
-  if (current && !current.hidden) return preferred;
-  return nextVisibleIndex(slides, preferred, 1) ?? nextVisibleIndex(slides, preferred, -1);
-}
-
-/** 可見頁的 id，依現有順序；`api.generateAll` 的 `slideIds` 就吃這個。 */
-export function visibleSlideIds(slides: readonly { id: string; hidden?: boolean }[]): string[] {
-  return slides.filter((slide) => !slide.hidden).map((slide) => slide.id);
-}
-
-/** 隱藏頁的張數；0 代表批次生成完全不必多問一次。 */
-export function hiddenSlideCount(slides: readonly { hidden?: boolean }[]): number {
-  return slides.reduce((count, slide) => (slide.hidden ? count + 1 : count), 0);
-}
-
-/**
- * 批次抽字一遇到就整批停下的錯誤代碼。
- *
- * 這幾個講的都是「伺服器現在整個不行」而不是某一頁的問題：`OCR_QUEUE_BUSY` 是閘門正滿
- * （繼續送只會讓別人的抽字也排不進去）、`OCR_UNAVAILABLE` 是 OCR 環境沒裝好、
- * `OCR_QUEUE_SHUTDOWN` 是伺服器正在重啟、`PROVIDER_PREFLIGHT_BLOCKED` 是 readiness 閘門
- * 擋下（`app.ts` 的 `assertCanGenerate` → 409）。硬跑下去只是把同一個失敗重複 N 次。
- *
- * {@link OCR_CONFIG_ABORT_CODES} 那幾個也在內：抽字端點在跑 OCR **之前**就擋下樣式精修的
- * 設定錯誤，那是專案／模型庫層級的問題，下一頁不會變好，繼續送只是 N 次空轉。
- */
-const OCR_CONFIG_ABORT_CODES = new Set([
-  "COMBINATION_NOT_FOUND",
-  "COMBINATION_TEXT_MISSING",
-  "NO_DEFAULT_COMBINATION",
-  "TEXT_MODEL_NOT_FOUND",
-]);
-const OCR_BATCH_ABORT_CODES = new Set([
-  "OCR_QUEUE_BUSY",
-  "OCR_QUEUE_SHUTDOWN",
-  "OCR_UNAVAILABLE",
-  "PROVIDER_PREFLIGHT_BLOCKED",
-  ...OCR_CONFIG_ABORT_CODES,
-]);
-
-/**
- * 樣式精修沒套上時的原因代碼 → 使用者看得懂的說明。
- *
- * 這一條的存在理由：`applied === false` 的產物與「這一頁本來就是白字」在畫面上長得一模
- * 一樣（`boxesFromOcr` 的預設就是 `#ffffff` ＋ Arial），不講出來使用者只會以為是抽字抽壞了。
- */
-const STYLE_REFINEMENT_REASONS: Record<string, string> = {
-  TEXT_MODEL_UNAVAILABLE: "專案綁定組合的文字模型目前不可用",
-  STYLE_REFINE_FAILED: "文字模型呼叫或回應解析失敗",
-  STYLE_REFINE_EMPTY: "文字模型沒有回傳可用的樣式（回了空清單，或框的編號全對不上）",
-};
-
-/** 樣式精修降級的原因代碼與伺服器附的補充說明。 */
-interface StyleRefinementFailure {
-  reason: string;
-  /** provider 的可用性說明（例如「需設定 SLIDE_MAKER_ENABLE_CODEX_SOFT_SANDBOX=1」）。 */
-  detail?: string;
-}
-
-/** 樣式精修降級的說明句（單頁與批次共用同一份措辭）。 */
-function styleRefinementReasonText(failure: StyleRefinementFailure): string {
-  const base = STYLE_REFINEMENT_REASONS[failure.reason] ?? `原因代碼 ${failure.reason}`;
-  // 伺服器的補充說明往往就是下一步（缺哪個環境變數、缺哪把 key），接在原因後面照原樣顯示。
-  return failure.detail ? `${base}（${failure.detail}）` : base;
-}
-
-/**
- * 這一次抽字有沒有降級成「沒有風格」？`undefined` 代表樣式精修有套上。
- *
- * 讀 job 而不是重新推論：前端不得鏡射伺服器組態（有沒有文字模型、模型可不可用）來猜這件
- * 事，那必然漂移——答案只有伺服器知道，所以由它跟著 202 一起回來。舊 job 沒有這個欄位
- * （schema 是 optional），當作有套上，行為與加入前一致。
- */
-function styleRefinementFailure(job: GenerationJob): StyleRefinementFailure | undefined {
-  const refinement = job.textExtraction?.styleRefinement;
-  if (!refinement || refinement.applied) return undefined;
-  return {
-    reason: refinement.reason ?? "UNKNOWN",
-    ...(refinement.detail ? { detail: refinement.detail } : {}),
-  };
-}
-
-/**
- * 這個失敗是「伺服器現在整個不行」（整批停下），還是「這一頁的狀況」（跳過繼續跑）？
- *
- * 光看錯誤碼不夠。抽字端點的失敗有一大票走不到具名代碼：`MASKED_EDITING_UNSUPPORTED`
- * 之類的裸 `Error` 會落到 `app.ts` 最後那條 500 `INTERNAL_SERVER_ERROR`，反向代理逾時、
- * 憑證過期也一樣——這些下一頁都不會變好，而 150 頁的 PDF 匯入專案等於 150 次註定失敗的
- * 往返（每次都還先排一次 OCR 佇列）。所以除了代碼，`5xx` 與 `401`／`403` 也一律中止。
- *
- * 刻意**不**整個 4xx 都中止：`OCR_NO_TEXT`、`OCR_NO_PRESENTATION_TEXT`、
- * `TEXT_LAYER_BOX_LIMIT`、`EDIT_BASE_VERSION_MISSING` 都是這一頁自己的狀況（整份簡報裡
- * 有幾頁純圖表本來就很正常），跳過就好。
- *
- * 也刻意**不**對 `OCR_QUEUE_BUSY` 加退避重試：撞到就停是這條路的設計（見 `ocr-queue.ts`），
- * 重試只會讓這個批次跟別人的抽字互相搶閘門。
- */
-function isBatchAbortingFailure(reason: unknown): boolean {
-  if (!(reason instanceof ApiError)) return false;
-  if (reason.code && OCR_BATCH_ABORT_CODES.has(reason.code)) return true;
-  return reason.status >= 500 || reason.status === 401 || reason.status === 403;
-}
-
-/** 「批次抽離全部文字」的目標頁與跳過的頁（分原因），一次掃完給確認框、按鈕與 tooltip 共用。 */
-export interface BatchExtractPlan {
-  /** 要處理的頁，依現有順序。 */
-  targets: readonly SlideSpec[];
-  /** 目標頁裡的隱藏頁張數（確認框要講出來）。 */
-  hiddenTargets: number;
-  /** 這一版已經有「抽出來的」文字層，再抽一次是重做已經精確的東西。 */
-  skippedExtracted: number;
-  /** 還沒有圖（沒有 `currentVersionId`，或那個版本不在 `versions` 裡）。 */
-  skippedNoImage: number;
-}
-
-/**
- * 掃出批次抽字要處理哪幾頁。
- *
- * 合格條件與單頁那顆「抽離文字」鈕**完全同一條**：這一版要有圖，而且不能已經有 `extracted`
- * 的文字層（那份是 OCR ＋ 抹字做出來的，或 PDF 匯入的原生文字層，重抽只是拿較差的結果覆蓋
- * 較好的）。手動層（`origin === "manual"`）合格——它的背景一個字都沒抹，圖上原本的文字還
- * 等著被抽出來，伺服器端會把兩者合併。
- *
- * **隱藏頁一律納入這份清單**：抽字是讓頁面變得可編輯，不是產出成品，隱藏頁一樣要能編輯。
- *
- * 但「納入清單」不等於「不必問」。成本取決於抹字引擎，兩種情況要分開：預設的 OpenCV
- * 在本機跑、不吃任何配額，沒有取捨可問，所以只在確認框裡把張數講出來就夠；選「生圖模型」
- * 時 `app.ts` 的抽字端點會**逐頁**排一個遮罩編輯 job，每一頁都燒一次影像模型配額——那與
- * 「批次生成全部頁面」是同一個成本結構，依 CLAUDE.md 必須用共用的 `BatchGenerateDialog`
- * 讓使用者三選一，不是只告知。挑清單的責任在這裡，問不問由呼叫端依引擎決定。
- */
-export function batchExtractPlan(slides: readonly SlideSpec[]): BatchExtractPlan {
-  const targets: SlideSpec[] = [];
-  let skippedExtracted = 0;
-  let skippedNoImage = 0;
-  for (const slide of slides) {
-    const version = slide.versions.find((candidate) => candidate.id === slide.currentVersionId);
-    if (!version) {
-      skippedNoImage += 1;
-      continue;
-    }
-    if (version.textLayer && (version.textLayer.origin ?? "extracted") === "extracted") {
-      skippedExtracted += 1;
-      continue;
-    }
-    targets.push(slide);
-  }
-  return {
-    targets,
-    hiddenTargets: hiddenSlideCount(targets),
-    skippedExtracted,
-    skippedNoImage,
-  };
-}
-
-/**
  * 批次生成遇到隱藏頁時，使用者選了什麼。
  *
  * `"all"` 刻意對應「不傳 `slideIds`」而不是「傳全部 id」：那是加入這個對話框之前的行為，
@@ -1331,22 +917,6 @@ function BatchGenerateDialog({
       </div>
     </div>
   );
-}
-
-/** 頁碼設定的部分更新；`background` 是巢狀 partial，與伺服器端的 PATCH schema 同形。 */
-type PageNumberPatch = Partial<Omit<PageNumberSettings, "background">> & {
-  background?: Partial<PageNumberSettings["background"]>;
-};
-
-/**
- * 連續型控制項（滑桿、色票）合併連發變更的視窗。
- *
- * 拖一次滑桿是數十個 change；取到「放手後幾乎立刻生效」與「一次拖曳只寫一次」的平衡。
- */
-const PAGE_NUMBER_DEBOUNCE_MS = 250;
-
-function mergePageNumber(current: PageNumberSettings, patch: PageNumberPatch): PageNumberSettings {
-  return { ...current, ...patch, background: { ...current.background, ...patch.background } };
 }
 
 /**
@@ -2708,58 +2278,6 @@ function SetupFlow({
       )}
     </main>
   );
-}
-
-/**
- * 簡報模式滾輪換頁的門檻（正規化後的像素）。
- *
- * 取 40 是夾在兩個實測量級之間：滑鼠一格 notch 最小的情況是 Firefox 的
- * `deltaMode=1`／3 行（正規化後 48px，Chrome 的像素模式一格是 100px），所以門檻低於 48
- * 才能保證「轉一格＝換一頁」；而觸控板一個 frame 只送個位數 px，40px 又高到不會被
- * 手指靠上去的微小位移誤觸。
- */
-const WHEEL_PAGE_THRESHOLD_PX = 40;
-
-/** `deltaMode=1`（行）換算成像素用的行高；瀏覽器自己的預設行高也是這個量級。 */
-const WHEEL_LINE_HEIGHT_PX = 16;
-
-/**
- * 換頁後的冷卻時間：這段時間內的滾輪事件一律丟棄。
- *
- * 觸控板一次輕滑會連送數十個事件，沒有這道鎖會一口氣跳完整份簡報。
- * 320ms 與編輯區滾輪換頁（`handleStageWheel`）用同一個量級，兩處手感一致。
- */
-const WHEEL_PAGE_LOCK_MS = 320;
-
-/**
- * 判定「同一個手勢」的事件間隔。
- *
- * 慣性滾動的事件是 ~60Hz 連續進來的（間隔 <20ms），只要還沒斷過這麼久就當成同一次
- * 手勢：冷卻期會被一路往後推，尾巴才不會在鎖解開後又湊滿門檻多切一頁。
- * 反過來，間隔超過這個值代表使用者重新出手，累積量歸零，免得兩次沒湊滿門檻的
- * 輕碰隔了幾秒還被加在一起。
- */
-const WHEEL_GESTURE_GAP_MS = 140;
-
-/**
- * 冷卻可以被慣性尾巴往後推的上限（自換頁那一刻起算）。
- *
- * 沒有這個上限的話，持續轉滾輪的使用者（notch 間隔可能只有幾十毫秒）會被判成
- * 「同一個手勢永遠沒結束」而卡在同一頁；有了上限，最壞情況仍能每 900ms 換一頁，
- * 而 900ms 足以蓋掉一般觸控板甩動的慣性尾巴。
- */
-const WHEEL_MAX_LOCK_MS = 900;
-
-/**
- * 把滾輪位移正規化成像素，並取軸向位移較大的那一軸。
- *
- * `deltaMode` 不同時 delta 的量級差很多（行／頁 vs 像素），不換算就沒辦法用同一個門檻比。
- */
-function normalizeWheelDelta(event: WheelEvent): number {
-  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
-  if (event.deltaMode === 1) return delta * WHEEL_LINE_HEIGHT_PX;
-  if (event.deltaMode === 2) return delta * window.innerHeight;
-  return delta;
 }
 
 export function Editor() {
