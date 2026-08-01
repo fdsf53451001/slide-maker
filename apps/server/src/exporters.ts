@@ -77,8 +77,7 @@ async function pngFor(
   project: PresentationProject,
   imagePath: string,
 ): Promise<Uint8Array> {
-  const relativePath = imagePath.replace(/^assets\//, "");
-  const bytes = new Uint8Array(await readFile(repository.assetPath(project.id, relativePath)));
+  const bytes = new Uint8Array(await readFile(repository.resolveAsset(project.id, imagePath)));
   if (imagePath.toLowerCase().endsWith(".svg")) {
     return new Resvg(Buffer.from(bytes), { fitTo: { mode: "width", value: project.canvas.width } })
       .render()

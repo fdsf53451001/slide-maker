@@ -20,6 +20,7 @@ import { FileProjectRepository } from "./repository.js";
 import { FileStyleRepository } from "./styles.js";
 import { renderComposite, unerasedImagePath } from "./text-layers.js";
 import type { UsageLedger, UsageRecordInput } from "./usage-ledger.js";
+import { adoptVersion, staleVersionAssets, versionAssetPaths } from "./version-assets.js";
 
 /** JobRunner 記帳所需的兩件事：帳本本身，與「provider id → 模型識別欄位」的解析。 */
 export interface JobUsageRecording {
@@ -828,7 +829,7 @@ export class JobRunner {
         // 怎麼描述這張圖），維持原樣。
         .filter((source) => sourceAttachesReferenceImage(source.usage))
         .map((source) => ({
-          path: this.repository.assetPath(projectId, source.assetPath.replace(/^assets\//, "")),
+          path: this.repository.resolveAsset(projectId, source.assetPath),
           mediaType: source.mediaType,
           role: (source.usage === "style-reference"
             ? "style"
@@ -844,12 +845,11 @@ export class JobRunner {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
         if (!baseVersion || !job.editInstruction) throw new Error("EDIT_BASE_VERSION_MISSING");
         const basePath = editBaseImagePath(baseVersion, job.operation);
-        const baseRelative = basePath.replace(/^assets\//, "");
-        const baseMediaType = /\.jpe?g$/i.test(baseRelative) ? "image/jpeg" : "image/png";
+        const baseMediaType = /\.jpe?g$/i.test(basePath) ? "image/jpeg" : "image/png";
         // 底圖與遮罩是編輯任務的內建輸入，必須標成 base／mask：標成 content 會讓合約
         // 的「參考圖不得把文字帶進輸出」等生成專用禁令誤傷這張要保留的原圖。
         references.unshift({
-          path: this.repository.assetPath(projectId, baseRelative),
+          path: this.repository.resolveAsset(projectId, basePath),
           mediaType: baseMediaType,
           role: "base",
           name: "Current slide image",
@@ -858,7 +858,7 @@ export class JobRunner {
         let maskImageIndex: number | undefined;
         if (job.maskPath) {
           references.splice(1, 0, {
-            path: this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, "")),
+            path: this.repository.resolveAsset(projectId, job.maskPath),
             mediaType: "image/png",
             role: "mask",
             name: "Edit mask",
@@ -1005,8 +1005,8 @@ export class JobRunner {
         // 這裡是遮罩外原樣保留的來源，兩者分歧就等於「改的是 A、貼回 B」。
         const basePath = editBaseImagePath(baseVersion, job.operation);
         const [baseBytes, maskBytes] = await Promise.all([
-          readFile(this.repository.assetPath(projectId, basePath.replace(/^assets\//, ""))),
-          readFile(this.repository.assetPath(projectId, job.maskPath.replace(/^assets\//, ""))),
+          readFile(this.repository.resolveAsset(projectId, basePath)),
+          readFile(this.repository.resolveAsset(projectId, job.maskPath)),
         ]);
         safe = {
           bytes: await compositeMaskedEdit(
@@ -1109,17 +1109,15 @@ export class JobRunner {
         const staleCandidates = new Set<string>();
         if (replaceIndex >= 0) {
           const previous = currentSlide.versions[replaceIndex]!;
-          staleCandidates.add(previous.imagePath);
-          if (previous.textLayer) {
-            staleCandidates.add(previous.textLayer.backgroundPath);
-            staleCandidates.add(previous.textLayer.compositePath);
-          }
+          for (const assetPath of versionAssetPaths(previous)) staleCandidates.add(assetPath);
           currentSlide.versions[replaceIndex] = {
             ...nextVersion,
             createdAt: previous.createdAt,
           };
-        } else currentSlide.versions.push(nextVersion);
-        currentSlide.currentVersionId = versionId;
+          // 取代路徑重用同一個 versionId，這行因此是「維持指向」而不是「切過去」；
+          // 新增路徑的同一件事由 `adoptVersion` 一起做掉。
+          currentSlide.currentVersionId = versionId;
+        } else adoptVersion(currentSlide, nextVersion);
         currentSlide.outlineDirty =
           job.operation !== "generate"
             ? currentSlide.outlineDirty || !sameOutline(currentSlide, generatedOutline)
@@ -1133,17 +1131,9 @@ export class JobRunner {
         currentJob.finishedAt = currentJob.updatedAt;
         current.updatedAt = currentJob.updatedAt;
         queueMicrotask(() => this.logPhase(structuredClone(currentJob)));
-        const referencedAssets = new Set(
-          current.slides.flatMap((candidate) =>
-            candidate.versions.flatMap((version) => [
-              version.imagePath,
-              ...(version.textLayer
-                ? [version.textLayer.backgroundPath, version.textLayer.compositePath]
-                : []),
-            ]),
-          ),
-        );
-        return [...staleCandidates].filter((assetPath) => !referencedAssets.has(assetPath));
+        // 取代路徑的三張候選裡，仍被別的版本引用的要留下（背景圖常常是別的版本的
+        // imagePath）——只能在上面的取代寫回去**之後**才算得準。
+        return staleVersionAssets(current, staleCandidates);
       });
       const completed = staleAssets !== undefined;
       resultPersisted = completed;
