@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-import { dirname, join, sep } from "node:path";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
 import sharp from "sharp";
@@ -15,6 +13,7 @@ import {
   type PdfTextBlock,
   type PdfTextFragment,
 } from "./pdf-text.js";
+import { PDFJS_CMAP_URL, PDFJS_STANDARD_FONT_URL } from "./pdfjs-assets.js";
 
 /**
  * 「把 PDF 匯入成簡報專案」的光柵化管線（實際做事的一層）。
@@ -145,9 +144,6 @@ export interface DeckRenderSink<T> {
   onPageFailed?: (pageNumber: number) => void;
 }
 
-const require_ = createRequire(import.meta.url);
-const pdfjsRoot = dirname(require_.resolve("pdfjs-dist/package.json"));
-
 interface CanvasAndContext {
   canvas: { toBuffer(mimeType: string): Buffer; width: number; height: number };
   context: unknown;
@@ -171,8 +167,8 @@ export async function loadPdfDocument(bytes: Uint8Array): Promise<PDFDocumentPro
       // pdf.js 會接管 buffer，複製一份避免呼叫端的 bytes 被 detach。
       data: new Uint8Array(bytes),
       isEvalSupported: false,
-      standardFontDataUrl: join(pdfjsRoot, `standard_fonts${sep}`),
-      cMapUrl: join(pdfjsRoot, `cmaps${sep}`),
+      standardFontDataUrl: PDFJS_STANDARD_FONT_URL,
+      cMapUrl: PDFJS_CMAP_URL,
       cMapPacked: true,
     }).promise;
   } catch {

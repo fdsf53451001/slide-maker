@@ -8,6 +8,7 @@ import {
   SOURCE_TOTAL_BYTES_LIMIT,
   type SourceAsset,
 } from "@slide-maker/core";
+import { PDFJS_CMAP_URL, PDFJS_STANDARD_FONT_URL } from "./pdfjs-assets.js";
 
 const MAX_SOURCE_BYTES = MAX_UPLOAD_BYTES;
 const TEXT_TYPES = new Set(["text/plain", "text/markdown"]);
@@ -223,6 +224,77 @@ function isGlyph(item: unknown): item is PdfGlyph {
 }
 
 /**
+ * 不使用空白分詞的書寫系統：CJK 標點與符號（3000–303F）、假名（3040–30FF）、統一表意文字
+ * 擴充 A（3400–4DBF）與基本區（4E00–9FFF）、相容表意文字（F900–FAFF）、全形英數與標點
+ * （FF01–FF60）、全形貨幣符號（FFE0–FFE6）、擴充 B 以上（20000–2EBEF）。
+ * 刻意不含諺文——韓文是用空白分詞的，`가 나 다` 有可能真的是三個單音節詞。
+ *
+ * 範圍端點一律寫成 `\uXXXX` 而**不是**字面字元，這不是風格偏好：相容表意文字的
+ * 第一個字 U+F900 是 canonical singleton，NFC 會把它換成 U+8C48，整條範圍於是靜默
+ * 變成 U+8C48–U+FAFF——正好吞掉上一行說要排除的諺文（U+AC00–D7AF），而測資全是
+ * 中日文，一條測試都不會紅（實測 NFC 過的版本把 `가 나 다` 併成 `가나다`），
+ * 而且兩份在 diff 上長得一模一樣。任何會做 NFC 的環節都踩得到——編輯器、剪貼簿、
+ * 經 argv 傳遞（本檔的 `safeFilename()` 自己就在對檔名做 NFC）。其餘端點在 NFC 下
+ * 穩定（全形與 U+3000 只有 compatibility 分解，那要 NFKC 才會動），但一起 escape，
+ * 下次加範圍才不必逐一重判。
+ */
+const CJK_SINGLE_CHAR =
+  /^[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF01-\uFF60\uFFE0-\uFFE6\u{20000}-\u{2EBEF}]$/u;
+/** 「每個 token 都是孤立單一字元」的連續片段（至少三個），中間的空白才可能是排版字距。 */
+const SPACED_SINGLE_CHARS = /(?:^|(?<=\s))\S(?: \S){2,}(?=\s|$)/gu;
+
+/**
+ * 拿掉中文標題／表頭因加寬字距（tracking）而被插進來的空白。
+ *
+ * 這些空白**多半不是這個檔案插的**：pdf.js 的 `getTextContent()` 只要相鄰字的推進量
+ * 超過 0.102 倍字級就會自己把 `" "` 塞進 `item.str`（`TRACKING_SPACE_FACTOR`），而中文
+ * 標題的字距普遍就在 0.2–0.5 倍字級。實測某中文財報：輸出裡 9876 組「中文 空白 中文」
+ * 有 8637 組（87%）在 `layoutPdfPage` 看到之前就已經在 `str` 裡了，所以無論把下面那條
+ * 詞界門檻（`lineHeight * 0.25`）調成什麼都救不了——這一步只能在字串層做。代價是
+ * `searchSources()` 的子字串比對整份對不上：那份財報的 10 個抽樣片語只命中 2 個，
+ * 修好之後 10 個全中。
+ *
+ * 判準是「這一段的每個 token 都是孤立的單一 CJK 字元，且至少連續三個」，不是「兩個中文字
+ * 之間的空白一律拿掉」：後者會把 `產品 發展` 這種真的詞界／欄界也併掉（那個空白是下面
+ * 的 gap 規則依幾何插的，是對的）。反過來也不能放寬到不看字元種類——拉丁文靠空白分詞，
+ * 把 `S A L E` 併成 `SALE`、把目錄引導點 `. . . . .` 併成 `.....` 都是造出新字串（實測
+ * berkshire_ar 少 4601 字元、sec_10k 少 9874 字元）。
+ *
+ * 逐儲存格套用（而不是對整頁文字套）有兩個理由：儲存格內的空白必定來自同一段連續文字，
+ * 跨儲存格的那個空白是 `rows.join(" ")` 加的分隔符（對它動手會把投影片上不相干的標籤
+ * 併成假詞）；而且這樣改不到 `cells` 的長度，下面依欄數一致性做的表格偵測**在結構上**
+ * 不可能受影響。
+ *
+ * 「至少三個」是實測挑的下界，**兩端都會壞**：放寬成兩個確實多救回 `民國`／`電話`／
+ * `寒假`，但同一份財報也開始捏造 `目頁`／`數果`——兩個單字元的空白太常是真的欄界。
+ * 收緊成四個則讓三字標題漏修。這個數字有測試逐一釘住（≥2／≥4／≥6 三種改法都會紅），
+ * 因為它是整條規則唯一的可調參數，而改它的動機（多救幾個詞）永遠看起來很合理。
+ *
+ * 刻意接受的偏差，一律是**漏修**而非捏造，所以不再收緊：
+ * - 夾了數字或拉丁字母的中文標題整段漏修（`第 1 章 總 則` 原樣不動，`民 國 114 年 統 計`
+ *   只修後半）——`every` 一旦遇到非 CJK 的 token 就放過整段。
+ * - 不在上面字元類裡的 CJK 區塊留著空白：注音符號、康熙部首、相容形式（FE30–FE4F）、
+ *   圈號（㈠㈡㈢）、半形片假名、彎引號。
+ * - 片段緊接多字 token 時尾端殘一個空白（`中 文 測 試驗` → `中文測 試驗`）。
+ * 唯一會造出原文沒有的字串的情況是「儲存格內真的用空白列舉三個單字」（`甲 乙 丙` →
+ * `甲乙丙`）。實測 947 次合併裡有 7 筆對不上獨立引擎（PyMuPDF），但那七筆是
+ * `layoutPdfPage` **原本就**把三個表頭黏進同一格的既有幾何限制，不是這條規則造成的。
+ *
+ * **第③條 PDF 路徑（`pdf-deck-render.ts` 的 `pageTextFragments()`）刻意不套這條規則。**
+ * 那邊抽出來的字帶著同樣的字距空白（`TRACKING_SPACE_FACTOR` 對每一次 `getTextContent()`
+ * 都生效），但它的產物是**要畫在投影片上的**：box 幾何取自 fragment 的 x／width，而重繪
+ * 走系統字型、沒有 letterSpacing 欄位，拿掉空白會讓字明顯窄於框、與底下抹過字的背景對不
+ * 上。這條路的產物則是**要拿去做子字串比對的**，漏字只是撈不到。看到「兩條 `getTextContent()`
+ * 只有一條有處理」而想統一的話，統一過去是畫面退化，而且沒有測試擋得住。
+ */
+function untrackCjk(cell: string): string {
+  return cell.replace(SPACED_SINGLE_CHARS, (run) => {
+    const tokens = run.split(" ");
+    return tokens.every((token) => CJK_SINGLE_CHAR.test(token)) ? tokens.join("") : run;
+  });
+}
+
+/**
  * 把一頁的文字片段依座標還原成文字，能認出表格就輸出 markdown pipe table。
  *
  * PDF 沒有「段落」或「儲存格」的概念，只有一堆帶座標的文字片段，所以版面得從幾何反推：
@@ -269,7 +341,7 @@ function layoutPdfPage(items: readonly unknown[]): string {
       end = x + glyph.width;
     }
     if (buffer.trim()) cells.push(buffer.trim());
-    return cells;
+    return cells.map(untrackCjk);
   });
 
   // 連續且欄數一致（≥2 欄、≥2 列）的區塊視為表格。
@@ -316,6 +388,18 @@ async function parsePdf(bytes: Uint8Array): Promise<string> {
       data: new Uint8Array(bytes),
       isEvalSupported: false,
       useSystemFonts: true,
+      // 少了這兩行，用預先定義 CJK CMap（`/Encoding /UniCNS-UCS2-H` 這類，Distiller 配
+      // 系統中文字型輸出的常見形狀）的 PDF 會整份掉字：pdf.js 的 translateFont 直接失敗，
+      // 每個中文字抽出來都是空字串，而且**只在 stderr 留一行 warning**，沒有錯誤碼。
+      // 實測一份 36 頁繁中手冊：CJK 字元 151 → 6909、抽樣片語命中 0/10 → 10/10。
+      // cmaps 是逐檔懶載入的（那份只讀了 1 個檔、41 KB；純英文文件一個都不讀）。
+      cMapUrl: PDFJS_CMAP_URL,
+      cMapPacked: true,
+      // `useSystemFonts: true` 之下這個只對非內嵌的 Symbol／ZapfDingbats 生效
+      // （pdf.worker.mjs 的 fetchStandardFontData 對其餘標準字型直接回 null），
+      // 實測 21 份語料與一份手工 Symbol 樣本的抽出文字都逐字相同，傳它只是消掉警告。
+      // 修好中文的是上面兩行，不是這一行。
+      standardFontDataUrl: PDFJS_STANDARD_FONT_URL,
     }).promise;
   } catch {
     throw new Error("SOURCE_PDF_INVALID");
