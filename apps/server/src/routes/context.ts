@@ -32,7 +32,8 @@ type ImageDescriptionScheduler = ReturnType<typeof createImageDescriptionSchedul
  *    sources route 共用的唯一實作（見 `web-source-pipeline.ts`），透過這個物件傳同一個
  *    函式值，route 檔不得各自重建。
  * 3. **只列真的跨 route 檔的東西。** 只有單一 route 檔會用到的閉包（`mutateLibrary`、
- *    `projectStyleId`、`analyzeStyleReferences`）跟著那個檔案搬，不進這裡；
+ *    `analyzeStyleReferences`）跟著那個檔案搬，不進這裡；`projectStyleId` 更進一步——
+ *    它是前後端共用的合約，住在 `packages/core`；
  *    `imageDescriptions`／`imageDescriptionMode` 只服務 createApp 自己的 wiring 與
  *    factory，也不進來。
  */

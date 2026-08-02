@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { DESIGN_SYSTEM_SECTIONS, SLIDE_PAGE_TYPES, type SlidePageType } from "@slide-maker/core";
+import {
+  DESIGN_SYSTEM_SECTIONS,
+  SLIDE_PAGE_TYPES,
+  TONAL_REGISTERS,
+  tonalRegisterBullet,
+  type SlidePageType,
+  type TonalRegister,
+} from "@slide-maker/core";
 
 /**
  * 參考圖風格分析：結構化輸出 → StylePreset.designSystem 的 markdown。
@@ -49,15 +56,6 @@ const pageTypeLabels: Record<SlidePageType, string> = {
 };
 
 /**
- * 整份簡報的明暗登記。**必須是列舉而不是散文**：這是「一黑一白」的直接解藥，而一句
- * 「以深色為主、局部可用淺色」在 prompt 裡讀起來完全合法，等於什麼都沒鎖。
- */
-export const tonalRegisters = ["dark", "light"] as const;
-export type TonalRegister = (typeof tonalRegisters)[number];
-
-const tonalRegisterLabels: Record<TonalRegister, string> = { dark: "深色", light: "淺色" };
-
-/**
  * enum 欄位一律先正規化再 parse，不直接掛 `z.enum()`。
  *
  * 兩個理由：①非嚴格 gateway（尤其 Gemini 系）不遵守 json_schema，回 `"Dark"`／`"深色"`
@@ -67,8 +65,8 @@ const tonalRegisterLabels: Record<TonalRegister, string> = { dark: "深色", lig
  */
 const tonalRegisterSchema = z.preprocess((value) => {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return (tonalRegisters as readonly string[]).includes(normalized) ? normalized : undefined;
-}, z.enum(tonalRegisters).optional());
+  return (TONAL_REGISTERS as readonly string[]).includes(normalized) ? normalized : undefined;
+}, z.enum(TONAL_REGISTERS).optional());
 
 const paletteEntrySchema = z.object({
   hex: z.string().min(1).max(40),
@@ -156,7 +154,7 @@ export const styleAnalysisJsonSchema: Record<string, unknown> = {
         "illustrationIdiom",
       ],
       properties: {
-        tonalRegister: { type: "string", enum: [...tonalRegisters] },
+        tonalRegister: { type: "string", enum: [...TONAL_REGISTERS] },
         background: { type: "string" },
         palette: {
           type: "array",
@@ -289,10 +287,9 @@ export function renderDesignSystem(analysis: StyleAnalysis): RenderedDesignSyste
   };
 
   push(DESIGN_SYSTEM_SECTIONS.rationale, analysis.designRationale);
-  if (derived)
-    bullets.push(
-      `- 明暗登記：${tonalRegisterLabels[derived]}（${derived}）。整份簡報維持這一個登記——段落頁可以更深、封面可以滿版影像，但沒有任何一頁翻到另一邊。`,
-    );
+  // 這一行的字面由 core 產生：唯一的 reader 是編輯器（風格庫頁「AI 產生」區的明暗 chip），
+  // 兩邊各寫一份就會在改字時靜默失聯。見 `design-system.ts` 的 `tonalRegisterBullet()`。
+  if (derived) bullets.push(tonalRegisterBullet(derived));
   bullet("背景", invariants.background);
   if (invariants.palette.length)
     bullets.push(

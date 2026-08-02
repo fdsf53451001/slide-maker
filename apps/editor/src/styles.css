@@ -1220,6 +1220,49 @@ button {
 .library-heading > div {
   max-width: 620px;
 }
+/* 「AI 產生」區：沿用 .style-library 的格線與 .style-card 的卡片語彙，只多一列標籤與
+   一行複製結果。刻意不另立一套視覺——它與上面的風格庫是同一種東西的兩種歸屬。 */
+.ai-style-section .dashboard-section-heading > div {
+  max-width: 620px;
+}
+.ai-style-section .dashboard-section-heading p {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  line-height: 1.65;
+  font-size: 12px;
+}
+.style-card > .ai-style-tags {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.ai-style-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-1);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+/* 圓點只是輔助：深／淺這件事由標籤文字本身講清楚，不靠顏色單獨承載（1.4.1）。 */
+.ai-style-tag.tonal-dark::before,
+.ai-style-tag.tonal-light::before {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 50%;
+  content: "";
+}
+.ai-style-tag.tonal-dark::before {
+  background: #10151f;
+}
+.ai-style-tag.tonal-light::before {
+  background: #eef2f8;
+}
+.style-card > .ai-style-copied {
+  color: var(--success);
+}
 .primary {
   background: var(--accent) !important;
   color: var(--on-accent) !important;

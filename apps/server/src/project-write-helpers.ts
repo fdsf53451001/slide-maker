@@ -7,25 +7,9 @@ import {
 
 export const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 
-/**
- * 專案本地風格 fork 的 id。
- *
- * **凡是把「只屬於這個專案」的東西寫進 `styleSnapshot` 的路徑，都必須先 fork 成這個 id。**
- * 理由不是命名整潔而是保命：`refreshStyleForGeneration()` 在每次生成前拿
- * `styles.get(styleSnapshot.id)` 比對版本，版本一不同就 `structuredClone(latest)` 整包蓋掉。
- * 風格庫裡沒有這個 id，那道同步因此查不到、也就蓋不掉。
- *
- * 留在庫裡的 id（例如 `ai-free-design`）只是「目前兩邊版本號剛好相同」在擋著，而那是巧合：
- * 使用者到風格庫改一次 `avoid` 就 version+1，下一次生成時專案專屬的那份設計系統會**靜默
- * 消失**——而且那時 `POST /outline` 已被 `OUTLINE_HAS_GENERATED_VERSIONS` 擋住，沒有復原
- * 路徑，前端也還顯示著 `styleDirection: {applied:true}`。
- *
- * 名字裡的 `pdf-` 是歷史包袱（第一個用它的是 PDF 匯入的分析頁），現在參考圖分析與
- * 「AI 自由設計」的風格決議共用同一個。**字串不可改**：既有專案的 `project.json` 存著它。
- */
-export function projectStyleId(projectId: string): string {
-  return `pdf-style-${projectId}`;
-}
+// `projectStyleId()` 已搬到 `packages/core/src/project-style.ts`（連同解釋它為何必須留在
+// 風格庫之外的那段註解）：編輯器的風格庫頁要用同一個判斷列出「AI 產生」區，那是兩端共用的
+// 合約，不能各寫一份。從 `@slide-maker/core` import 即可。
 
 export function outlineSnapshot(slide: SlideSpec) {
   return {

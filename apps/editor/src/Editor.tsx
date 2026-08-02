@@ -725,6 +725,11 @@ export function Editor() {
             await api.deleteProject(target.id);
             setProjects((current) => current.filter((candidate) => candidate.id !== target.id));
           }}
+          // 與 StyleEditor 的 onSaved 同一份合併規則，只是不跟著導頁：使用者還在挑下一份要
+          // 複製的東西，把他丟進風格編輯器等於打斷這件事。
+          onStyleCreated={(saved) =>
+            setStyles((all) => [saved, ...all.filter((item) => item.id !== saved.id)])
+          }
         />
       </>
     );

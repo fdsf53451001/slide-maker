@@ -5,6 +5,7 @@ import {
   createSlidesFromBrief,
   logWarn,
   outlineStructureInstruction,
+  projectStyleId,
   SafeProviderError,
   slideSpecSchema,
   stylePresetSchema,
@@ -54,12 +55,7 @@ import {
   SLIDE_SOURCE_ID_LIMIT,
   type OutlineCatalogEntry,
 } from "../outline-sources.js";
-import {
-  asPersisted,
-  idSchema,
-  preserveCurrentOutlineSnapshot,
-  projectStyleId,
-} from "../project-write-helpers.js";
+import { asPersisted, idSchema, preserveCurrentOutlineSnapshot } from "../project-write-helpers.js";
 import { assertSourceCapacity, sourceCapacityError } from "../sources.js";
 import {
   resolveStyleDirection,

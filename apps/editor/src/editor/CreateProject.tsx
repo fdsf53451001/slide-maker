@@ -1,11 +1,33 @@
-import { useCallback, useId, useRef, useState } from "react";
-import type { PresentationProject, StylePreset } from "@slide-maker/core";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
+import {
+  TONAL_REGISTER_LABELS,
+  type PresentationProject,
+  type StylePreset,
+} from "@slide-maker/core";
 import { api, styleAssetUrl } from "../api.js";
 import { LibraryHeader } from "../LibraryHeader.js";
 import { PdfDeckImportModal } from "../PdfDeckImportModal.js";
 import { useDialogA11y } from "../useDialogA11y.js";
+import {
+  AI_STYLE_ORIGIN_LABELS,
+  aiStyleEntries,
+  styleLibraryCopyInput,
+  type AiStyleEntry,
+} from "./aiStyles.js";
 import { useDialogEscape } from "./dialogEscape.js";
 import { currentImage } from "./projectHelpers.js";
+
+/**
+ * 「AI 產生」區的兩段固定文案。
+ *
+ * 寫成字串常數而不是直接放進 JSX：這兩句都超過一行，Prettier 會把它們折行，而 JSX 把
+ * 「換行＋縮排」收斂成一個半形空白——中文句子中間於是多出一個看得見的空格。
+ */
+const AI_STYLE_TRADEOFF =
+  "複製到風格庫的是當下的快照：原簡報維持不變、之後兩邊也不會互相同步，而且複本只帶設計系統，不含參考圖。";
+
+const AI_STYLE_EMPTY_HINT =
+  "用「AI 自由設計」產生大綱後，系統會替那份簡報決議一套專屬的設計系統；從 PDF 匯入並分析參考圖也會產生一套。它們只屬於各自的簡報，會列在這裡。";
 
 export function CreateProject({
   projects,
@@ -15,6 +37,7 @@ export function CreateProject({
   onCreate,
   onNavigate,
   onDelete,
+  onStyleCreated,
   onImportNotice,
   onError,
 }: {
@@ -25,6 +48,12 @@ export function CreateProject({
   onCreate: (topic: string, styleId?: string) => Promise<void>;
   onNavigate: (path: string) => void;
   onDelete: (project: PresentationProject) => Promise<void>;
+  /**
+   * 新建立的風格庫項目（目前只有「AI 產生」區的複製動作會用到）。交回上層而不是自己
+   * 重抓一次 `GET /api/styles`：`styles` 這份清單住在 `Editor`，這裡塞不回去，而少了它，
+   * 使用者按完複製之後上方的風格庫要等重新整理才看得到新的那一份。
+   */
+  onStyleCreated: (style: StylePreset) => void;
   /** 匯入報告要交給上層顯示：`onOpen` 會立刻把這個元件換掉。 */
   onImportNotice: (notice: string | undefined) => void;
   /**
@@ -43,6 +72,10 @@ export function CreateProject({
   const [pendingDelete, setPendingDelete] = useState<PresentationProject | undefined>();
   const [deleting, setDeleting] = useState(false);
   const [bundleBusy, setBundleBusy] = useState(false);
+  /** 正在複製到風格庫的那一份（專案 id）。同時只允許一個：兩下點擊會建出兩份同名風格。 */
+  const [copyingStyleFor, setCopyingStyleFor] = useState<string>();
+  /** 已經複製成功的專案 id → 複本名稱。訊息留在卡片上，不佔全域 toast。 */
+  const [copiedStyles, setCopiedStyles] = useState<Record<string, string>>({});
   const bundleInput = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
   const confirmHeadingId = useId();
@@ -69,6 +102,69 @@ export function CreateProject({
       setBundleBusy(false);
     }
   };
+  // 只在風格庫頁用得到，但 hook 不能掛在條件裡。
+  const aiStyles = useMemo(() => aiStyleEntries(projects), [projects]);
+
+  /**
+   * 複製一份到風格庫。**新 id、快照拷貝、原專案不改指向**——改指向就等於把它放回
+   * 「風格庫查得到 → 版本一動就被整包蓋掉」的老路（見 `aiStyles.ts` 的註解）。
+   */
+  const copyStyleToLibrary = async (entry: AiStyleEntry) => {
+    setCopyingStyleFor(entry.project.id);
+    onError(undefined);
+    try {
+      const created = await api.createStyle(styleLibraryCopyInput(entry));
+      onStyleCreated(created);
+      setCopiedStyles((current) => ({ ...current, [entry.project.id]: created.name }));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "複製到風格庫失敗");
+    } finally {
+      setCopyingStyleFor(undefined);
+    }
+  };
+
+  const aiStyleCard = (entry: AiStyleEntry) => {
+    const copying = copyingStyleFor === entry.project.id;
+    const copied = copiedStyles[entry.project.id];
+    return (
+      <article key={entry.project.id} className="style-card ai-style-card">
+        <button
+          className="style-card-preview"
+          onClick={() => onOpen(entry.project)}
+          aria-label={`開啟 ${entry.project.name}`}
+        >
+          {/* 不寫「第一頁」：取的是第一張**有圖的可見頁**，未必是第 1 頁（見 aiStyles.ts）。 */}
+          {entry.cover ? (
+            <img src={entry.cover} alt={`${entry.style.name} 的頁面預覽`} />
+          ) : (
+            <span>
+              {entry.style.name}
+              <small>尚未生成任何頁面</small>
+            </span>
+          )}
+        </button>
+        <strong>{entry.style.name}</strong>
+        <small>來自「{entry.project.name}」</small>
+        <div className="ai-style-tags">
+          <span className="ai-style-tag">{AI_STYLE_ORIGIN_LABELS[entry.origin]}</span>
+          {/* 舊格式沒有明暗登記那一行，就一個 chip 都不顯示——猜錯的那一半會把淺色簡報標成深色。 */}
+          {entry.tonalRegister && (
+            <span className={`ai-style-tag tonal-${entry.tonalRegister}`}>
+              {TONAL_REGISTER_LABELS[entry.tonalRegister]}
+            </span>
+          )}
+        </div>
+        <div>
+          <button disabled={copying} onClick={() => void copyStyleToLibrary(entry)}>
+            {copying ? "複製中…" : "複製到風格庫"}
+          </button>
+          <button onClick={() => onOpen(entry.project)}>開啟簡報</button>
+        </div>
+        {copied && <small className="ai-style-copied">已複製為「{copied}」</small>}
+      </article>
+    );
+  };
+
   const styleCard = (style: StylePreset) => {
     const cover =
       style.referenceImages.find((item) => item.id === style.coverImageId) ??
@@ -268,19 +364,45 @@ export function CreateProject({
             </section>
           </>
         ) : (
-          <section className="dashboard-section style-library-section">
-            <div className="library-heading">
-              <div>
-                <span className="section-label">STYLE LIBRARY</span>
-                <h1>風格庫</h1>
-                <p>用參考圖與視覺規則，維持不同簡報之間的一致性。</p>
+          <>
+            <section className="dashboard-section style-library-section">
+              <div className="library-heading">
+                <div>
+                  <span className="section-label">STYLE LIBRARY</span>
+                  <h1>風格庫</h1>
+                  <p>用參考圖與視覺規則，維持不同簡報之間的一致性。</p>
+                </div>
+                <button className="primary new-style" onClick={() => onNavigate("/styles/new")}>
+                  ＋ 建立風格
+                </button>
               </div>
-              <button className="primary new-style" onClick={() => onNavigate("/styles/new")}>
-                ＋ 建立風格
-              </button>
-            </div>
-            <div className="style-library">{styles.map(styleCard)}</div>
-          </section>
+              <div className="style-library">{styles.map(styleCard)}</div>
+            </section>
+
+            {/*
+              各專案自己那份 AI 產生的設計系統。**唯讀衍生視圖**：這裡不做刪除、改名、編輯
+              ——那些風格必須留在風格庫之外才不會被生成前的版本同步蓋掉（見 aiStyles.ts）。
+              要編輯就先複製一份到風格庫。
+            */}
+            <section className="dashboard-section ai-style-section">
+              <div className="dashboard-section-heading">
+                <div>
+                  <span className="section-label">GENERATED BY AI</span>
+                  <h2>AI 產生</h2>
+                  <p>{AI_STYLE_TRADEOFF}</p>
+                </div>
+                <span>{aiStyles.length} 套</span>
+              </div>
+              {aiStyles.length === 0 ? (
+                <div className="empty-dashboard">
+                  <b>還沒有 AI 產生的設計系統</b>
+                  <span>{AI_STYLE_EMPTY_HINT}</span>
+                </div>
+              ) : (
+                <div className="style-library">{aiStyles.map(aiStyleCard)}</div>
+              )}
+            </section>
+          </>
         )}
       </div>
       {importing && (

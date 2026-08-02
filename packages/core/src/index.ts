@@ -2,6 +2,7 @@ export * from "./schemas.js";
 export * from "./providers.js";
 export * from "./provider-retry.js";
 export * from "./project.js";
+export * from "./project-style.js";
 export * from "./page-number.js";
 export * from "./text-stroke.js";
 export * from "./slide-content.js";

@@ -36,6 +36,15 @@ export const URL_SOURCE_BATCH_LIMIT = 10;
 export const STYLE_REFERENCE_IMAGE_LIMIT = 4;
 
 /**
+ * 風格名稱的字元上限（`stylePresetInputSchema` 的 `name`）。
+ *
+ * 兩邊都要知道：伺服器用它擋寫入，編輯器在**組出**名稱時要先裁到這個長度——風格庫頁的
+ * 「AI 產生」區把來源專案名接進複本名稱（`設計系統（來自 某某簡報）`），專案名沒有這麼短
+ * 的上限，不裁就會拿一個註定被 400 擋下的字串去按按鈕。
+ */
+export const STYLE_NAME_MAX_LENGTH = 120;
+
+/**
  * 單一上傳檔案的位元組上限，以及 PDF 匯入簡報的頁數上限。
  *
  * 同樣是「兩邊都要知道」：伺服器用它們擋（`sources.ts` 的 `MAX_SOURCE_BYTES`、
@@ -566,7 +575,7 @@ export const stylePresetInputSchema = stylePresetSchema
     referenceImages: true,
     coverImageId: true,
   })
-  .extend({ name: z.string().trim().min(1).max(120) });
+  .extend({ name: z.string().trim().min(1).max(STYLE_NAME_MAX_LENGTH) });
 
 export type PresentationBrief = z.infer<typeof presentationBriefSchema>;
 export type StylePreset = z.infer<typeof stylePresetSchema>;

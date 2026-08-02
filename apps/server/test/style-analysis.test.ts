@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESIGN_SYSTEM_SECTIONS } from "@slide-maker/core";
+import { DESIGN_SYSTEM_SECTIONS, designSystemTonalRegister } from "@slide-maker/core";
 import {
   renderDesignSystem,
   STYLE_ANALYSIS_PROMPT,
@@ -53,6 +53,31 @@ describe("style analysis output", () => {
     expect(rendered.tonalRegisterSource).toBe("model");
     expect(rendered.markdown).toContain("- 明暗登記：淺色（light）");
     expect(rendered.markdown).toContain("沒有任何一頁翻到另一邊");
+  });
+
+  /**
+   * 寫的人是這裡，讀的人是編輯器（風格庫頁「AI 產生」區那顆深色／淺色 chip）。兩端各寫一份
+   * 字面的話，改一個字之後前端只會安靜地不再顯示 chip——沒有測試會紅，而畫面上「這份風格
+   * 沒鎖明暗」與「有鎖但前端讀不到」長得一模一樣。這一條把 round-trip 釘住。
+   */
+  it("emits a tonal register line the editor can read back", () => {
+    for (const register of ["light", "dark"] as const) {
+      const rendered = renderDesignSystem(
+        styleAnalysisSchema.parse({
+          ...complete,
+          invariants: { ...complete.invariants, tonalRegister: register },
+        }),
+      );
+      expect(designSystemTonalRegister(rendered.markdown)).toBe(register);
+    }
+    // 沒鎖的時候讀回來必須是 undefined，而不是預設某一邊。
+    const unlocked = renderDesignSystem(
+      styleAnalysisSchema.parse({
+        ...complete,
+        invariants: { ...complete.invariants, tonalRegister: undefined, background: "米白" },
+      }),
+    );
+    expect(designSystemTonalRegister(unlocked.markdown)).toBeUndefined();
   });
 
   it("recovers the tonal register from the background hex when the gateway drops the enum", () => {

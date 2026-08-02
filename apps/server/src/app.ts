@@ -2,6 +2,8 @@ import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import express, { type Express, type Request, type Response } from "express";
 import {
+  isProjectLocalStyle,
+  projectStyleId,
   stylePresetSchema,
   type ModelLibrary,
   type PresentationProject,
@@ -12,7 +14,6 @@ import { FileProjectRepository } from "./repository.js";
 import { ModelLibraryRepository } from "./model-library-repository.js";
 import { buildSeedLibrary, withLocalInpaintEntry } from "./model-library-seed.js";
 import { ModelLibraryError, ModelRuntime } from "./model-runtime.js";
-import { projectStyleId } from "./project-write-helpers.js";
 import { runtimePaths } from "./runtime-paths.js";
 import {
   LOCAL_HOSTNAMES,
@@ -339,7 +340,7 @@ export async function createApp(
    * 刪掉會讓庫裡的風格指到不存在的檔案。
    */
   function ownedStyleReferences(project: PresentationProject): string[] {
-    if (project.styleSnapshot.id !== projectStyleId(project.id)) return [];
+    if (!isProjectLocalStyle(project)) return [];
     return project.styleSnapshot.referenceImages.map((image) => image.id);
   }
 
