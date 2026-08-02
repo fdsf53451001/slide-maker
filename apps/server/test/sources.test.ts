@@ -2,6 +2,7 @@ import { strToU8, zipSync } from "fflate";
 import { PDFDocument, StandardFonts, degrees } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { ingestSource } from "../src/sources.js";
+import { cjkCMapPdf, cjkTrackingPdf, COLUMN_LABELS, TRACKING_HEADING } from "./helpers/raw-pdf.js";
 
 const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PPTX_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -451,6 +452,83 @@ describe("PDF 文字抽取", () => {
         "assets/fake.pdf",
       ),
     ).rejects.toThrow("SOURCE_PDF_INVALID");
+  });
+
+  it("用預先定義 CJK CMap 的 PDF 讀得出中文，而不是整份掉字", async () => {
+    // 這個失效**不拋錯**，只在 stderr 留一行 warning，而且同一頁的其他文字照樣抽得到——
+    // 所以「有沒有拋錯」與「字元數 > 0」兩種斷言在改壞之後都還是綠的。唯一測得到的是
+    // 直接比對那幾個中文字，並同時釘住 ASCII 那行本來就在（免得有人把整頁抽空也算過）。
+    const source = await ingestSource(
+      { name: "manual.pdf", mediaType: "application/pdf", allowModelAccess: true },
+      cjkCMapPdf(),
+      "assets/manual.pdf",
+    );
+    expect(source.extractedText).toContain("中文測試");
+    expect(source.extractedText).toContain("ASCII stays readable");
+  });
+
+  it("加寬字距塞進來的空白會併回去，真的詞界與拉丁字母則原樣保留", async () => {
+    const source = await ingestSource(
+      { name: "roadmap.pdf", mediaType: "application/pdf", allowModelAccess: true },
+      cjkTrackingPdf(),
+      "assets/roadmap.pdf",
+    );
+    const lines = source.extractedText.split("\n");
+    // 釘住行數：⑥ 是三欄的，若有人再加一行剛好也是三欄，兩行會被連成一個表格區塊而讓
+    // lines[5] 變成 `| 北 | 中 | 南 |`。少了這條，失敗訊息會指著「⑥ 壞了」，但真正壞的
+    // 是 fixture 的結構。
+    expect(lines).toHaveLength(6);
+    // ① 字距 0.4em 的中文標題。0.4em 是**故意**挑在 pdf.js 的 [0.102em, 0.6em] 之間：
+    // 低於下界它根本不會插空白，那等於拿沒有加寬字距的中文當測資，改壞了也一樣綠。
+    expect(lines[0]).toBe(TRACKING_HEADING);
+    // ② 同樣六個字、字距 0 的對照組：規則不該對本來就正常的行造成任何差別。
+    expect(lines[1]).toBe(TRACKING_HEADING);
+    // ③ 兩個**多字詞**之間隔 10pt，那是真的詞界／欄界（空白由幾何規則插的，是對的）。
+    // 「所有 CJK-CJK 之間的空白一律拿掉」那種粗暴做法會在這一行紅掉。
+    expect(lines[2]).toBe("產品 發展");
+    // ④ 拉丁字母的加寬字距。不看字元種類的做法會把它併成 SALE——拉丁靠空白分詞，
+    // 併起來是造出一個原文沒有的字串（目錄的引導點 `. . . .` 同理）。
+    expect(lines[3]).toBe("S A L E");
+    // ⑤ 一般英文句子原樣，詞間空白一個都不能少。
+    expect(lines[4]).toBe("roadmap for product development");
+    // ⑥ 三個各自成欄的單字標籤：它們之間的空白是切完儲存格才補上的分隔符，不是字距。
+    // 規則逐儲存格套用時看不到這個空白；改成「對整頁組好的文字套一次」就會併成 `北中南`
+    // 這個原文沒有的假詞。這是唯一分得出兩種套用位置的斷言——其餘 fixture 在兩種寫法下
+    // 逐字相同（實測 whole-page 變體時整組 33 條全綠）。
+    expect(lines[5]).toBe([...COLUMN_LABELS].join(" "));
+  });
+
+  it("回歸：純拉丁 PDF 的輸出逐字不變", async () => {
+    // 這條是唯一能分辨「儲存格層的字串處理」與「調 layoutPdfPage 的幾何門檻」的指標：
+    // 五種分群／相對門檻做法實測全都讓拉丁的黏字率上升（同一份語料少掉四千到近萬字元），
+    // 而它們在上面那些中文斷言上一樣是綠的。
+    const source = await ingestSource(
+      { name: "sales.pdf", mediaType: "application/pdf", allowModelAccess: true },
+      await pdfWithTable(),
+      "assets/sales.pdf",
+    );
+    expect(source.extractedText).toBe(
+      "2025 Sales Report\n" +
+        "| Item | Qty | Rate |\n" +
+        "| --- | --- | --- |\n" +
+        "| Model Y | 12000 | 15% |\n" +
+        "| A | 1 | - |\n" +
+        "Source: Ministry of Transport",
+    );
+  });
+
+  it("回歸：中文字距處理動的是儲存格內容，欄列結構一格都不會少", async () => {
+    // `untrackCjk` 改的是 cell 字串、不是 `cells.length`，所以依欄數一致性做的表格偵測
+    // 在結構上不可能受影響。有人把它改成「對整頁組好的文字做」時，跨儲存格的分隔空白
+    // 會一起被吃掉，這條就會紅。
+    const source = await ingestSource(
+      { name: "sales.pdf", mediaType: "application/pdf", allowModelAccess: true },
+      await pdfWithTable(),
+      "assets/sales.pdf",
+    );
+    const pipes = source.extractedText.split("\n").filter((line) => line.startsWith("|"));
+    expect(pipes).toHaveLength(4);
+    expect(new Set(pipes.map((line) => line.split("|").length))).toEqual(new Set([5]));
   });
 });
 
