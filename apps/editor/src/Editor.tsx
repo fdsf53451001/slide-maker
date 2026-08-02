@@ -680,6 +680,24 @@ export function Editor() {
 
   if (route === "/models") return <ModelLibrary onNavigate={navigate} />;
 
+  /*
+   * 專案本地風格（AI 產生的那批）走自己的路由：它們刻意不在風格庫裡，`/styles/:id` 對它們
+   * 必然 404。必須排在 `styleRoute` **之前**——`/styles/ai/<id>` 會被那條的 `[a-zA-Z0-9_-]+`
+   * 吃掉第一段，變成去查一個叫 `ai` 的風格。
+   */
+  const aiStyleRoute = /^\/styles\/ai\/([a-zA-Z0-9_-]+)$/.exec(route);
+  const aiStyleOwner = aiStyleRoute
+    ? projects.find((item) => item.id === aiStyleRoute[1])
+    : undefined;
+  if (aiStyleOwner)
+    return (
+      <StyleEditor
+        presetStyle={aiStyleOwner.styleSnapshot}
+        onSaved={() => undefined}
+        onExit={() => navigate("/styles")}
+      />
+    );
+
   const versionRoute = /^\/styles\/([a-zA-Z0-9_-]+)\/versions\/(\d+)$/.exec(route);
   const styleRoute = /^\/styles\/([a-zA-Z0-9_-]+)$/.exec(route);
   if (route === "/styles/new" || versionRoute || styleRoute)

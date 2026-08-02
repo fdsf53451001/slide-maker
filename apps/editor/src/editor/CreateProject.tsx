@@ -130,8 +130,16 @@ export function CreateProject({
       <article key={entry.project.id} className="style-card ai-style-card">
         <button
           className="style-card-preview"
-          onClick={() => onOpen(entry.project)}
-          aria-label={`開啟 ${entry.project.name}`}
+          /*
+           * 縮圖點下去看的是**設計系統**，不是開簡報。這一區存在的理由就是那份設計系統
+           * 在此之前完全不可見（產生了、每頁都在用、但沒有任何路徑讀得到它），點縮圖跳去
+           * 簡報等於把使用者送回原本那個黑箱。開簡報留在下方的具名按鈕。
+           *
+           * 一般風格卡片的縮圖是 `onNavigate('/styles/:id')`，那條路對這一區不成立——
+           * 專案本地風格刻意不在風格庫裡，`GET /api/styles/:id` 會 404。
+           */
+          onClick={() => onNavigate(`/styles/ai/${entry.project.id}`)}
+          aria-label={`查看 ${entry.project.name} 的設計系統`}
         >
           {/* 不寫「第一頁」：取的是第一張**有圖的可見頁**，未必是第 1 頁（見 aiStyles.ts）。 */}
           {entry.cover ? (
@@ -143,24 +151,27 @@ export function CreateProject({
             </span>
           )}
         </button>
-        <strong>{entry.style.name}</strong>
-        <small>來自「{entry.project.name}」</small>
-        <div className="ai-style-tags">
-          <span className="ai-style-tag">{AI_STYLE_ORIGIN_LABELS[entry.origin]}</span>
-          {/* 舊格式沒有明暗登記那一行，就一個 chip 都不顯示——猜錯的那一半會把淺色簡報標成深色。 */}
-          {entry.tonalRegister && (
-            <span className={`ai-style-tag tonal-${entry.tonalRegister}`}>
-              {TONAL_REGISTER_LABELS[entry.tonalRegister]}
-            </span>
-          )}
-        </div>
+        {/*
+         * 版面與一般風格卡片**逐格相同**：粗體識別字 ＋ 一行 dim meta ＋ 兩顆等寬按鈕。
+         * 這一區與那一區在同一個 220px 格線裡並排，多一列 chips、多一顆按鈕、底下再多一行
+         * 狀態字，看起來就是另一個東西——而它們本來就該讀成同一類。
+         *
+         * 粗體放**專案名**而不是風格名：風格名常常是「AI 自由設計」這種泛稱（決議那條路
+         * 沿用預設風格的名字），三張卡片並排會全部長一樣，分不出誰是誰。
+         */}
+        <strong>{entry.project.name}</strong>
+        <small>
+          {AI_STYLE_ORIGIN_LABELS[entry.origin]}
+          {/* 舊格式沒有明暗登記那一行就不顯示——猜錯的那一半會把淺色簡報標成深色。 */}
+          {entry.tonalRegister && ` · ${TONAL_REGISTER_LABELS[entry.tonalRegister]}`}
+        </small>
         <div>
-          <button disabled={copying} onClick={() => void copyStyleToLibrary(entry)}>
-            {copying ? "複製中…" : "複製到風格庫"}
+          <button onClick={() => onNavigate(`/styles/ai/${entry.project.id}`)}>查看設計</button>
+          {/* 複製結果回報在按鈕自己身上，不另外多一行：那一行會把這張卡片撐得比鄰居高。 */}
+          <button disabled={copying || !!copied} onClick={() => void copyStyleToLibrary(entry)}>
+            {copying ? "複製中…" : copied ? "已複製" : "複製到風格庫"}
           </button>
-          <button onClick={() => onOpen(entry.project)}>開啟簡報</button>
         </div>
-        {copied && <small className="ai-style-copied">已複製為「{copied}」</small>}
       </article>
     );
   };

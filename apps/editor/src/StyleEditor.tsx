@@ -73,17 +73,28 @@ class StyleVersionMissingError extends Error {}
 export function StyleEditor({
   styleId,
   historicalVersion,
+  presetStyle,
   onSaved,
   onExit,
 }: {
   styleId?: string;
   historicalVersion?: number;
+  /**
+   * 直接給定要顯示的風格，不經 `/api/styles/:id`。
+   *
+   * 給專案本地風格（`pdf-style-<projectId>`）用：它們**刻意不在風格庫裡**（見
+   * `projectStyleId()` 的註解），所以那條 API 對它們必然 404。在此之前它們沒有任何可讀的
+   * 畫面——設計系統產生了、每一頁都在用它，使用者卻看不到它決定了什麼。
+   *
+   * 一律唯讀：這一份的主是專案，能在這裡存檔等於開了第二個 writer。要改就先複製到風格庫。
+   */
+  presetStyle?: StylePreset;
   onSaved: (style: StylePreset) => void;
   onExit: () => void;
 }) {
-  const [style, setStyle] = useState<StylePreset>();
+  const [style, setStyle] = useState<StylePreset | undefined>(presetStyle);
   const [versions, setVersions] = useState<StylePreset[]>([]);
-  const [draft, setDraft] = useState<Draft>(() => fromStyle());
+  const [draft, setDraft] = useState<Draft>(() => fromStyle(presetStyle));
   const [baseline, setBaseline] = useState(() => JSON.stringify(fromStyle()));
   /**
    * 正在進行的動作：`kind`（在跑的是哪一件）＋ `label`（播報用的一句話）。
@@ -122,7 +133,7 @@ export function StyleEditor({
   >([]);
   const [analysisCombinationId, setAnalysisCombinationId] = useState("");
   const dirty = JSON.stringify(draft) !== baseline;
-  const readOnly = !!historicalVersion || !!style?.system;
+  const readOnly = !!historicalVersion || !!style?.system || !!presetStyle;
 
   useEffect(() => {
     let current = true;
@@ -299,7 +310,15 @@ export function StyleEditor({
         <section className="style-editor-grid">
           <div className="style-form">
             <div className="section-label">STYLE SETTINGS</div>
-            <h1>{readOnly ? "檢視風格版本" : "定義視覺語言"}</h1>
+            <h1>
+              {presetStyle ? "這份簡報的設計系統" : readOnly ? "檢視風格版本" : "定義視覺語言"}
+            </h1>
+            {presetStyle && (
+              <div className="provider-note">
+                這是 AI 為單一簡報決議出來的設計系統，主在那份簡報、不在風格庫，所以只能檢視。
+                要拿它當別份簡報的起點，回風格庫按「複製到風格庫」。
+              </div>
+            )}
             {style?.system && (
               <div className="provider-note">「AI 自由設計」是唯讀系統風格；可複製後再編輯。</div>
             )}

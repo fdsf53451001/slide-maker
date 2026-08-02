@@ -1231,10 +1231,6 @@ button {
   line-height: 1.65;
   font-size: 12px;
 }
-.style-card > .ai-style-tags {
-  flex-wrap: wrap;
-  margin-top: 8px;
-}
 .ai-style-tag {
   display: inline-flex;
   align-items: center;
@@ -1259,9 +1255,6 @@ button {
 }
 .ai-style-tag.tonal-light::before {
   background: #eef2f8;
-}
-.style-card > .ai-style-copied {
-  color: var(--success);
 }
 .primary {
   background: var(--accent) !important;
