@@ -11,10 +11,13 @@ import type { AppContext } from "./context.js";
 /**
  * 「貼上網址」整批擷取的時間預算。
  *
- * 10 個網址 ×（原生 fetch 15 秒 + render 30 秒）循序跑就是 450 秒，超過 Cloud Run 預設的
- * 300 秒請求上限——閘道砍掉連線時資料其實已經寫進去了，使用者看到失敗卻多出一批來源。
- * 240 秒留給交易、索引與回應足夠的餘裕；超時的網址逐筆回 `WEB_SOURCE_BATCH_TIMEOUT`，
- * 使用者知道要分批再試。
+ * 擷取完全外包給 render 服務（`renderOnly`）之後，最壞情況是 10 個網址 × 30 秒 render 逾時
+ * ＝ 300 秒循序跑，正好等於 Cloud Run 預設的請求上限——閘道砍掉連線時資料其實已經寫進去
+ * 了，使用者看到失敗卻多出一批來源。240 秒留給交易、索引與回應足夠的餘裕；超時的網址逐筆
+ * 回 `WEB_SOURCE_BATCH_TIMEOUT`，使用者知道要分批再試。
+ *
+ * （外包前這裡還要再加上原生 fetch 的 15 秒／筆，最壞是 450 秒。上限沒跟著調鬆：真正的
+ * 約束是 Cloud Run 那 300 秒，不是我們算得出來的最壞值。）
  */
 const URL_SOURCES_BUDGET_MS = 240_000;
 
@@ -134,6 +137,10 @@ export function registerWebSourceRoutes(app: Express, ctx: AppContext): void {
     const materialized = accepted.length
       ? await materializeWebSources(projectId, before.sources, accepted, {
           renderer: htmlRenderer,
+          // 這條路徑的擷取完全外包給 render 服務，不做原生 fetch。原生擷取＋空殼啟發式
+          // 對混合渲染頁（伺服器渲染大半、關鍵區塊留給 client 填）會判成「有正文」而收下
+          // 一份含 `{{ }}` 模板殘骸、內容缺一半的來源，使用者無從察覺。
+          renderOnly: true,
           requireBody: true,
           refresh: true,
           deadline: Date.now() + URL_SOURCES_BUDGET_MS,

@@ -162,10 +162,15 @@ export const MAX_WEB_RENDER_TIMEOUT_MS = 10 * 60_000;
  * `jina`（預設）＝ `https://r.jina.ai/`，`none` ＝ 完全停用、只走原生 fetch。
  *
  * **隱私取捨（設定前務必知道）**：選 `jina` 等於把「使用者貼的網址」與「該網址的內容」
- * 送到第三方服務（Jina AI）處理。這條路徑刻意只用在兩個條件同時成立時：使用者**手動**
- * 貼上網址，且原生擷取被 `looksLikeEmptyShell()` 判定為空殼。既有的網路搜尋擷取路徑
+ * 送到第三方服務（Jina AI）處理。觸發條件只有一個——使用者**手動**貼上網址，那條路徑的
+ * 擷取完全外包給它（`renderOnly`），每一筆都會送出去。既有的網路搜尋擷取路徑
  * （`materializeWebSources` → `captureWebPage`）不帶 renderer，行為完全不變——搜尋結果
  * 是模型給的網址，使用者沒有逐筆同意把它們送去第三方。
+ *
+ * 外包掉的原因是原生擷取＋空殼啟發式看不出**混合渲染**：頁面伺服器渲染了大半內容、關鍵
+ * 區塊留給 client 填，`looksLikeEmptyShell()` 會判成「有正文」而收下一份缺一半、還夾著
+ * `{{ }}` 模板殘骸的來源（見 `CapturePageOptions.renderOnly` 的實測數字）。代價是這條路徑
+ * 對第三方有硬相依：設 `none` 時它不會退回原生擷取，而是明確回 `WEB_SOURCE_RENDER_UNAVAILABLE`。
  *
  * 無金鑰模式約 20 RPM（Jina 的免費配額，依對方政策可能變動），設 `SLIDE_MAKER_JINA_API_KEY`
  * 可提高上限。另外，免費模式**預設回快取快照**，所以 adapter 一律送 `x-no-cache`——更慢、

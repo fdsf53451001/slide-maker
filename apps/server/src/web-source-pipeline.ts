@@ -90,8 +90,12 @@ export function createWebSourcePipeline(
    * 把一批網頁結果落地成專案來源（同 URL 更新既有筆、否則新增），只收抓得到正文的。
    *
    * 搜尋擷取與「貼上網址」兩條入口共用這一份，差別只在 `options`：
-   * - `renderer`：交給 `captureWebPage` 的第三方 render fallback。**搜尋路徑不傳**——
+   * - `renderer`：交給 `captureWebPage` 的第三方 render 服務。**搜尋路徑不傳**——
    *   那些網址是模型給的，使用者沒有逐筆同意把它們送去第三方。
+   * - `renderOnly`：擷取完全外包給 `renderer`，不做原生 fetch。貼上網址用它，因為原生
+   *   擷取＋空殼啟發式看不出「混合渲染頁只有一半有內容」（見 `CapturePageOptions`）。
+   *   與 `renderer` 是**兩個**旋鈕：前者是「要不要呼叫第三方」，後者是「呼叫它是取代還是
+   *   補強」，合併成一個就沒辦法表達搜尋路徑那種「有服務也不准用」的狀態。
    * - `requireBody`：驗收標準改成「剝掉標題後仍有正文」。貼上網址沒有搜尋摘要可退，
    *   存一份空來源等於騙人。
    * - `refresh`：略過「已存在且是 full 就不重抓」的捷徑。使用者手動貼上網址，意思就是
@@ -109,6 +113,7 @@ export function createWebSourcePipeline(
     foundSources: readonly WebSearchResult[],
     options: {
       renderer?: HtmlRenderer | undefined;
+      renderOnly?: boolean;
       requireBody?: boolean;
       refresh?: boolean;
       deadline?: number;
@@ -141,6 +146,7 @@ export function createWebSourcePipeline(
       const capturedAt = new Date().toISOString();
       const captured = await capturePage(found, capturedAt, undefined, {
         renderer: options.renderer,
+        renderOnly: options.renderOnly,
         requireBody: options.requireBody,
       });
       if (captured.metadata.contentStatus !== "full") {

@@ -2,8 +2,11 @@
  * 動態網頁（SPA）的正文補抓：把「跑得動 JavaScript 的 render 服務」抽象成一個介面。
  *
  * `web-capture.ts` 是純 fetch + regex 剝標籤，對 client-side rendering 的站台只會拿到
- * 一個空的 `<div id="root">` 殼。這裡定義的 `HtmlRenderer` 是那條路的 fallback——**只是
- * fallback**：呼叫端（`captureWebPage`）必須先判定原生擷取拿到的是空殼才會用它。
+ * 一個空的 `<div id="root">` 殼。這裡定義的 `HtmlRenderer` 補的就是那一段。
+ *
+ * 呼叫端有**兩種**用法，由 `CapturePageOptions.renderOnly` 決定：搜尋擷取路徑根本不傳
+ * renderer（那些網址是模型給的，使用者沒有逐筆同意外送）；「貼上網址」則完全外包給它，
+ * 不做原生 fetch——原生擷取＋空殼啟發式看不出混合渲染頁只有一半有內容。
  *
  * 介面化而非把 Jina 寫死在呼叫端，是因為這是「把使用者的網址與內容送去第三方」的決定，
  * 未來換成自架 headless browser、或依部署環境停用，都不該去動擷取邏輯本身。
@@ -89,7 +92,22 @@ export function parseJinaReader(raw: string): { fields: Map<string, string>; bod
 }
 
 /**
- * 兩個網址指的是不是同一頁：協定、主機、路徑（忽略結尾斜線）、query 都要一致。
+ * 兩個網址指的是不是同一頁：協定、主機、路徑（忽略結尾斜線）要一致，query 則允許回報方
+ * 比請求**少**幾個參數。
+ *
+ * query 不能逐字比。實測（2026-08-02，三個網址各打一次 r.jina.ai）Jina 回報的 `URL Source`
+ * 是 canonical 化後的網址：功能性參數原樣保留（`?tab=tech`、`?q=slide`、`?page=2` 都在），
+ * 但追蹤參數會被剝掉——請求 `?utm_source=test&page=2` 回來的是 `?page=2`。逐字比的結果是
+ * 把「同一頁」判成 `WEB_RENDER_URL_MISMATCH`，而使用者從社群貼文或電子報複製的網址幾乎
+ * 都帶 `utm_*`，等於那一整類網址全部加不進來。
+ *
+ * 判準是**子集**而不是「剝掉一份追蹤參數黑名單再比」：黑名單得跟著對方的 canonical 化規則
+ * 走（今天是 `utm_*`，明天可能是 `fbclid`、`ref`），漏一個就是同一種靜默失敗。子集判準對
+ * 「對方少剝了什麼」免疫。放寬的只有 query，protocol／host／path 仍逐字比，所以剝參數最多
+ * 讓範圍變窄，不會變成另一個站或另一條路徑。
+ *
+ * 已知殘留風險：被剝掉的參數若正好決定內容（`?id=123` 沒了會變成列表頁），子集判準看不出來。
+ * 實測未見 Jina 剝這類參數，而對照組（逐字比）的代價是整類網址失敗，取捨後接受。
  *
  * fragment 不比，因為它根本不會送到伺服器（見 `web-capture.ts` 的 `isHashRouteUrl`）。
  */
@@ -100,9 +118,18 @@ function sameTarget(requested: URL, reported: string): boolean {
   } catch {
     return false;
   }
-  const key = (url: URL) =>
-    `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}${url.search}`;
-  return key(parsed) === key(requested);
+  const origin = (url: URL) => `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  if (origin(parsed) !== origin(requested)) return false;
+  // 同一個 key 可以重複（`?tag=a&tag=b`），所以逐 (key, value) 對計數，不能用 Set。
+  const asked = new Map<string, number>();
+  for (const [key, value] of requested.searchParams)
+    asked.set(`${key}=${value}`, (asked.get(`${key}=${value}`) ?? 0) + 1);
+  for (const [key, value] of parsed.searchParams) {
+    const count = asked.get(`${key}=${value}`) ?? 0;
+    if (count === 0) return false;
+    asked.set(`${key}=${value}`, count - 1);
+  }
+  return true;
 }
 
 /**
@@ -156,10 +183,22 @@ export function createJinaRenderer({
       // 比較是「同一頁」而非逐字相等（結尾斜線不算差異），寧可嚴一點：判錯會以
       // WEB_RENDER_URL_MISMATCH 呈現給使用者，收錯內容則完全看不出來。
       if (reported && !sameTarget(target, reported)) throw new Error("WEB_RENDER_URL_MISMATCH");
-      // Jina 用 `Warning:` 回報自己的狀況（含「對目標網址取得失敗」與「這是快取快照」）。
-      // 我們已經送了 `x-no-cache`，所以任何 warning 都是非預期狀況：當成這一筆失敗，
-      // 而不是把那行字當正文存進來源。
-      if (fields.has("warning")) throw new Error("WEB_RENDER_WARNING");
+      // Jina 用 `Warning:` 回報自己的狀況。一律當成這一筆失敗（那行字不是正文，收下等於
+      // 把錯誤訊息存成來源），但**要分得開**——實測到的兩種 warning 對使用者的意義完全不同：
+      //
+      // - `Target URL returned error 400: Bad Request`：目標站擋掉了 render 服務。重試沒有用，
+      //   使用者得改貼別的網址或自己複製內容。
+      // - `This page maybe not yet fully loaded, consider explicitly specify a timeout.`：Jina
+      //   自己的載入品質警告，那一頁還在動。重試是有意義的下一步（`x-timeout: 20` 實測擋不掉
+      //   這個 warning，所以只能分類、不能靠調參解決）。
+      //
+      // 收斂成一句「render 服務回報異常」會讓前者被無限重試、後者被當成沒救而放棄。
+      const warning = fields.get("warning");
+      if (warning !== undefined) {
+        if (/target url returned error/i.test(warning)) throw new Error("WEB_RENDER_TARGET_ERROR");
+        if (/not yet fully loaded/i.test(warning)) throw new Error("WEB_RENDER_INCOMPLETE");
+        throw new Error("WEB_RENDER_WARNING");
+      }
       if (!body) throw new Error("WEB_RENDER_EMPTY");
       return { text: body, title: fields.get("title") ?? "" };
     },

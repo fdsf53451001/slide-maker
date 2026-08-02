@@ -207,6 +207,46 @@ describe("Jina 回應的前言", () => {
     expect(page.text).toBe("內容。");
   });
 
+  it("追蹤參數被 canonical 化掉不算不同的頁", async () => {
+    // 實測 2026-08-02：請求 `?utm_source=test&page=2`，Jina 回報的 URL Source 是 `?page=2`
+    // ——功能性參數原樣保留（`?tab=tech`、`?q=slide` 也都在），只有追蹤參數被剝掉。逐字比
+    // query 會把同一頁判成 WEB_RENDER_URL_MISMATCH，而使用者從社群貼文或電子報複製的網址
+    // 幾乎都帶 utm_*，等於那一整類網址全部加不進來。
+    const page = await renderWith(
+      wrapped("URL Source: https://example.com/event?page=2", "內容。"),
+      "https://example.com/event?utm_source=test&page=2",
+    );
+    expect(page.text).toBe("內容。");
+  });
+
+  it("回報的 query 多出請求沒有的參數仍算不同的頁", async () => {
+    // 放寬只到「對方比我們少」這個方向。多出來或值不同都代表那是另一份內容，收下就會把
+    // 別頁存成這個網址的來源——而那是完全看不出來的錯。
+    await expect(
+      renderWith(
+        wrapped("URL Source: https://example.com/event?page=3", "另一頁。"),
+        "https://example.com/event?page=2",
+      ),
+    ).rejects.toThrow("WEB_RENDER_URL_MISMATCH");
+  });
+
+  it("目標站擋掉 render 服務與頁面沒載完是兩個代碼：使用者的下一步相反", async () => {
+    // 實測到的兩種 Warning。前者重試一百次也一樣（該改貼別的網址或自己複製內容），後者
+    // 重試就可能成功。收斂成同一句話會讓人在錯的那一邊耗著。`x-timeout: 20` 實測擋不掉
+    // 後者，所以只能分類、不能靠調參解決。
+    await expect(
+      renderWith(wrapped("Warning: Target URL returned error 400: Bad Request", "錯誤頁。")),
+    ).rejects.toThrow("WEB_RENDER_TARGET_ERROR");
+    await expect(
+      renderWith(
+        wrapped(
+          "Warning: This page maybe not yet fully loaded, consider explicitly specify a timeout.",
+          "還在載入的半成品。",
+        ),
+      ),
+    ).rejects.toThrow("WEB_RENDER_INCOMPLETE");
+  });
+
   it("Warning 欄位＝服務回報自身異常：整筆判失敗，那行字不是正文", async () => {
     // 我們已經送了 x-no-cache，所以任何 warning（含「這是快取快照」與「抓不到目標網址」）
     // 都是非預期狀況。收下等於把服務的錯誤訊息存成使用者的來源。

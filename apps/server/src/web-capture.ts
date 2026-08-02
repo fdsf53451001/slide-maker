@@ -188,10 +188,28 @@ function failureCode(error: unknown, codes: { timeout: string; fallback: string 
 
 export interface CapturePageOptions {
   /**
-   * 第三方 render fallback。不傳就完全維持純 fetch 行為（既有的搜尋擷取路徑正是這樣呼叫，
-   * 不得改變），傳了也只在 `looksLikeEmptyShell()` 成立時才會用到。
+   * 第三方 render 服務。不傳就完全維持純 fetch 行為（既有的搜尋擷取路徑正是這樣呼叫，
+   * 不得改變）；傳了之後怎麼用由 `renderOnly` 決定——預設是 fallback（只在
+   * `looksLikeEmptyShell()` 成立時才呼叫），`renderOnly: true` 則完全取代原生擷取。
    */
   renderer?: HtmlRenderer | undefined;
+  /**
+   * 這一筆的擷取**完全外包**給 `renderer`：不做原生 fetch，render 失敗就是這一筆失敗。
+   *
+   * 「貼上網址」通道用它。原本那條路是「先原生擷取，判定成空殼才補抓」，而判空殼的
+   * `looksLikeEmptyShell()` 是為「整頁都是殼」設計的，處理不了**混合渲染**——伺服器渲染
+   * 大半內容、關鍵區塊留給 client 填。實例（2026-08-02，`ithelp.ithome.com.tw/2026ironman/event`）：
+   * 原生擷取拿到 3,162 字元「真正的」中文內容，`looksLikeEmptyShell()` 因此回 false、不補抓，
+   * 於是 11 處未渲染的 Vue 模板（`{{ topic.title }}`）原樣進了來源正文，競賽主題清單整段是空的；
+   * 同一頁交給 render 服務是 14,010 字元、0 處殘骸、11 組主題全部展開。啟發式在這裡不是調得
+   * 不夠好，是問錯了問題——「這頁有沒有正文」答對了，「這頁完不完整」沒被問。
+   *
+   * 外包掉就沒有這個判斷了，代價是這條路徑對第三方的可用性有硬相依（renderer 沒設或失敗
+   * ＝這一筆失敗）。手貼網址承擔得起：使用者當下就在看結果，逐筆回報原因後重試或改貼別的
+   * 網址都是他做得到的下一步。**搜尋擷取路徑不傳這個旗標**（也不傳 `renderer`），那些網址
+   * 是模型給的、使用者沒有逐筆同意外送，行為必須逐字不變。
+   */
+  renderOnly?: boolean | undefined;
   /**
    * 驗收標準：`true` 代表呼叫端要的是**真正的正文**，剝掉標題後空無一物就判這一筆失敗
    * （`contentStatus = summary_only`）。「貼上網址」通道用它，因為那裡沒有搜尋摘要可退。
@@ -222,7 +240,7 @@ export async function captureWebPage(
   fetcher: typeof fetch = fetch,
   options: CapturePageOptions = {},
 ): Promise<{ text: string; metadata: Record<string, string> }> {
-  const { renderer, requireBody, resolveUrl = assertPublicHttpUrlResolved } = options;
+  const { renderer, renderOnly, requireBody, resolveUrl = assertPublicHttpUrlResolved } = options;
   // 初始 URL 的驗證必須在 try **之內**：這個函式的契約是「失敗不 throw、回 summary_only」，
   // 而私有／畸形的起始 URL（或解析到內網的公開泛域名）在 try 外驗證會直接 reject，違反契約
   // 並讓上游整批中止（materializeWebSources 沒有逐筆 try/catch）。放進 try 後，這類輸入走
@@ -238,40 +256,45 @@ export async function captureWebPage(
   try {
     url = await resolveUrl(found.url);
     resolvedUrl = url.toString();
-    const signal = AbortSignal.timeout(15_000);
-    let response: Response | undefined;
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      response = await fetcher(url, {
-        redirect: "manual",
-        signal,
-        headers: {
-          Accept: "text/html,text/plain,text/markdown;q=0.9",
-          "User-Agent": "SlideMaker/0.1 source-capture",
-        },
-      });
-      if (response.status < 300 || response.status >= 400) break;
-      const location = response.headers.get("location");
-      if (!location) throw new Error("WEB_SOURCE_REDIRECT_INVALID");
-      if (redirects === MAX_REDIRECTS) throw new Error("WEB_SOURCE_REDIRECT_LIMIT");
-      url = await resolveUrl(new URL(location, url).toString());
-      resolvedUrl = url.toString();
+    // `renderOnly` 時原生擷取整段不跑，但 URL 驗證仍要做：它同時是 SSRF 防線（不能把內網
+    // 位址交給第三方去解）與正規化來源（`resolvedUrl` 是這一筆來源的識別，去重靠它）。
+    // 重導向跟隨連帶消失，最終網址改由 render 服務回報並在 adapter 內比對（`sameTarget`）。
+    if (!renderOnly) {
+      const signal = AbortSignal.timeout(15_000);
+      let response: Response | undefined;
+      for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+        response = await fetcher(url, {
+          redirect: "manual",
+          signal,
+          headers: {
+            Accept: "text/html,text/plain,text/markdown;q=0.9",
+            "User-Agent": "SlideMaker/0.1 source-capture",
+          },
+        });
+        if (response.status < 300 || response.status >= 400) break;
+        const location = response.headers.get("location");
+        if (!location) throw new Error("WEB_SOURCE_REDIRECT_INVALID");
+        if (redirects === MAX_REDIRECTS) throw new Error("WEB_SOURCE_REDIRECT_LIMIT");
+        url = await resolveUrl(new URL(location, url).toString());
+        resolvedUrl = url.toString();
+      }
+      if (!response) throw new Error("WEB_SOURCE_EMPTY_RESPONSE");
+      if (!response.ok) throw new Error(`WEB_SOURCE_HTTP_${response.status}`);
+      if (response.url) resolvedUrl = (await resolveUrl(response.url)).toString();
+      const bytes = await readCappedBytes(response, MAX_WEB_BYTES, "WEB_SOURCE_TOO_LARGE");
+      const mediaType =
+        response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+      if (
+        mediaType &&
+        mediaType !== "text/html" &&
+        mediaType !== "text/plain" &&
+        mediaType !== "text/markdown"
+      )
+        throw new Error("WEB_SOURCE_MEDIA_UNSUPPORTED");
+      raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      body = mediaType === "text/html" || /<html[\s>]/i.test(raw) ? readableHtml(raw) : raw.trim();
+      body = body.slice(0, MAX_CAPTURE_CHARS).trim();
     }
-    if (!response) throw new Error("WEB_SOURCE_EMPTY_RESPONSE");
-    if (!response.ok) throw new Error(`WEB_SOURCE_HTTP_${response.status}`);
-    if (response.url) resolvedUrl = (await resolveUrl(response.url)).toString();
-    const bytes = await readCappedBytes(response, MAX_WEB_BYTES, "WEB_SOURCE_TOO_LARGE");
-    const mediaType =
-      response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-    if (
-      mediaType &&
-      mediaType !== "text/html" &&
-      mediaType !== "text/plain" &&
-      mediaType !== "text/markdown"
-    )
-      throw new Error("WEB_SOURCE_MEDIA_UNSUPPORTED");
-    raw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-    body = mediaType === "text/html" || /<html[\s>]/i.test(raw) ? readableHtml(raw) : raw.trim();
-    body = body.slice(0, MAX_CAPTURE_CHARS).trim();
   } catch (error) {
     body = "";
     failureReason = failureCode(error, {
@@ -279,12 +302,21 @@ export async function captureWebPage(
       fallback: "WEB_SOURCE_FETCH_FAILED",
     });
   }
-  const shell = looksLikeEmptyShell(raw, body, htmlTitle(raw));
-  // 只有「呼叫端明確給了 renderer」「原生擷取確實是空殼」且「起始 URL 通過了驗證（url 有值）」
-  // 三個條件同時成立才走第三方。`url` 為 undefined 代表初始驗證就失敗了（私有／畸形起始
-  // URL），此時沒有一個驗過的公開網址可交給 renderer，直接跳過 fallback。`url` 在重導向迴圈
-  // 裡每一步都過 resolveUrl，所以送出去的必然是驗過的公開網址。
-  if (renderer && shell && url) {
+  // `renderOnly` 時原生擷取沒跑，`raw`／`body` 必然是空的——那不是「這頁是空殼」，只是
+  // 沒去抓。讓 `looksLikeEmptyShell()` 對這種輸入表態會得到一個沒有意義的 true，並讓下面
+  // 「沒有 renderer 又是空殼」那條分支誤判，所以外包模式下根本不問它。
+  const shell = !renderOnly && looksLikeEmptyShell(raw, body, htmlTitle(raw));
+  // 走不走第三方分成兩種語意，不可合併：外包模式下 render 是**唯一**擷取方式，無條件呼叫；
+  // 預設模式下它是 fallback，只在原生擷取確實只拿到殼時才多花這一次。
+  //
+  // 兩者都要求 `url` 有值：undefined 代表初始驗證就失敗了（私有／畸形起始 URL），此時沒有
+  // 一個驗過的公開網址可交給第三方。`url` 在重導向迴圈裡每一步都過 resolveUrl，所以送出去
+  // 的必然是驗過的公開網址。
+  if (renderOnly && !renderer) {
+    // 外包模式下沒有 renderer ＝這條路徑在這個部署上不能用。與「網站擋我們」分得開，
+    // 否則使用者會對著一個設定問題一直重試同一個網址。
+    failureReason = "WEB_SOURCE_RENDER_UNAVAILABLE";
+  } else if (renderer && url && (renderOnly || shell)) {
     try {
       const rendered = await renderer.render(url);
       const text = rendered.text.slice(0, MAX_CAPTURE_CHARS).trim();
@@ -295,8 +327,10 @@ export async function captureWebPage(
         failureReason = "";
       } else failureReason = "WEB_RENDER_EMPTY";
     } catch (error) {
-      // render 失敗不 throw（fallback 是加分項），但代碼要留下來：限流、逾時、服務回報
-      // 目標網址有問題……使用者該做的事完全不同，收斂成同一句話等於沒說。
+      // render 失敗一律不 throw（這個函式的契約是「失敗回 summary_only」），但代碼要留
+      // 下來：限流、逾時、目標站擋掉 render 服務、那一頁還沒載完……使用者該做的事完全
+      // 不同，收斂成同一句話等於沒說。外包模式下這裡是唯一的失敗出口，代碼就是使用者
+      // 拿得到的全部資訊，更不能糊掉。
       failureReason = failureCode(error, {
         timeout: "WEB_RENDER_TIMEOUT",
         fallback: "WEB_RENDER_FAILED",
