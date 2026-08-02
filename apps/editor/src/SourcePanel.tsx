@@ -468,7 +468,9 @@ const URL_FAILURE_REASONS: Record<string, string> = {
   WEB_SOURCE_CONTENT_UNVERIFIED: "抓不到網頁正文（可能需要登入、或該站阻擋自動擷取）",
   WEB_SOURCE_HASH_ROUTE_UNSUPPORTED:
     "網址的 # 之後是頁面路徑（單頁應用），伺服器只拿得到首頁；請改貼該頁的實際網址",
-  WEB_SOURCE_RENDER_UNAVAILABLE: "這頁要跑 JavaScript 才有內容，但伺服器未啟用外部 render 服務",
+  // 貼上網址的擷取完全外包給外部 render 服務，所以沒啟用＝整個功能不能用，而不是
+  // 「這一頁比較特別」。訊息要讓使用者知道重試沒有意義，該去找的是部署設定。
+  WEB_SOURCE_RENDER_UNAVAILABLE: "伺服器未啟用外部 render 服務，目前無法用貼上網址加入來源",
   WEB_SOURCE_TIMEOUT: "連線逾時，稍後再試一次",
   WEB_SOURCE_TOO_LARGE: "網頁內容過大，已略過",
   WEB_SOURCE_BATCH_TIMEOUT: "整批擷取已用完時間預算，這一筆還沒輪到；請分批再試",
@@ -477,6 +479,11 @@ const URL_FAILURE_REASONS: Record<string, string> = {
   WEB_RENDER_EMPTY: "外部 render 服務沒有取得任何正文",
   WEB_RENDER_TOO_LARGE: "外部 render 服務回傳的內容過大，已略過",
   WEB_RENDER_URL_MISMATCH: "外部 render 服務回傳的是另一個網址的內容，已拒收",
+  // 這兩條都是 render 服務的 `Warning:`，但下一步相反：目標站擋人的話重試一百次也一樣，
+  // 頁面沒載完則是重試就可能成功。分不開就會讓人在錯的那一邊耗著。
+  WEB_RENDER_TARGET_ERROR:
+    "目標網站拒絕了 render 服務的請求（多半擋自動擷取）；重試無效，請改貼其他網址或自行複製內容",
+  WEB_RENDER_INCOMPLETE: "這一頁還沒載完就被 render 服務回報了，內容可能不完整，已拒收；請再試一次",
   WEB_RENDER_WARNING: "外部 render 服務回報這個網址擷取有問題",
   WEB_RENDER_FAILED: "外部 render 服務失敗，稍後再試一次",
   // 兩種上限分開：份數滿了是「刪幾份」，容量滿了是「刪大的那幾份」——下一步不同，所以

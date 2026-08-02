@@ -366,3 +366,100 @@ describe("正文短但合法的頁面", () => {
     expect(captured.text.split("## 全文\n\n")[1]!.trim()).toBe(brief);
   });
 });
+
+describe("外包模式（renderOnly）", () => {
+  /** 原生 fetch 有沒有真的發生。外包模式下這個陣列必須永遠是空的。 */
+  function recordingFetcher(respond: () => Response) {
+    const calls: string[] = [];
+    const fetcher = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return respond();
+    }) as typeof fetch;
+    return { fetcher, calls };
+  }
+
+  /**
+   * 使用者實際踩到的形狀（2026-08-02，`ithelp.ithome.com.tw/2026ironman/event`）：伺服器
+   * 渲染了三千多字真實中文內容，關鍵區塊卻留給 Vue 在瀏覽器端填，原始 HTML 裡就是
+   * `{{ topic.title }}` 這串字面。
+   *
+   * 這個 fixture 的重點是它**不是空殼**：正文遠超 SPA_SHELL_CHARS、也沒有任何 SPA 掛載點
+   * 指紋，`looksLikeEmptyShell()` 對它回 false。拿一個真的空殼來測，改動前的程式碼也會通過
+   * ＝等於沒測。
+   */
+  const mixedRenderPage = () =>
+    htmlPage(`${"這是伺服器渲染的真實內容。".repeat(200)}競賽主題 {{ topic.title }}`);
+
+  it("原生 fetch 一次都不發生，正文一律取自 renderer", async () => {
+    const { fetcher, calls } = recordingFetcher(mixedRenderPage);
+    const { renderer, calls: rendered } = recordingRenderer(
+      async () => "render 服務拿到的完整正文，競賽主題：JavaScript、Kubernetes、Modern Web。",
+    );
+    const captured = await captureWebPage(found(), undefined, fetcher, {
+      renderer,
+      renderOnly: true,
+      requireBody: true,
+    });
+    expect(calls).toEqual([]);
+    expect(rendered).toEqual(["https://example.com/page"]);
+    expect(captured.metadata.contentStatus).toBe("full");
+    expect(captured.text).toContain("Kubernetes");
+    expect(captured.text).not.toContain("{{ topic.title }}");
+    expect(captured.metadata.renderedBy).toBe("fake");
+  });
+
+  it("同一頁在預設模式下會被原樣收下（含 {{ }} 殘骸）：這正是外包要解決的問題", async () => {
+    // 對照組。少了它，上一條測試通過只能證明「外包模式會呼叫 renderer」，證明不了
+    // 「不外包就會收下半份內容」——而後者才是改這條路徑的理由。
+    const { renderer, calls } = recordingRenderer(async () => "不該被用到");
+    const captured = await captureWebPage(found(), undefined, async () => mixedRenderPage(), {
+      renderer,
+      requireBody: true,
+    });
+    expect(calls).toEqual([]);
+    expect(captured.metadata.contentStatus).toBe("full");
+    expect(captured.text).toContain("{{ topic.title }}");
+  });
+
+  it("render 失敗就是這一筆失敗，不退回原生擷取的半份內容", async () => {
+    const { fetcher, calls } = recordingFetcher(mixedRenderPage);
+    const captured = await captureWebPage(found(), undefined, fetcher, {
+      renderer: {
+        name: "jina",
+        render: async () => {
+          throw new Error("WEB_RENDER_RATE_LIMITED");
+        },
+      },
+      renderOnly: true,
+      requireBody: true,
+    });
+    expect(calls).toEqual([]);
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_RENDER_RATE_LIMITED");
+    expect(captured.metadata.renderedBy).toBeUndefined();
+  });
+
+  it("沒有 renderer 時明確回報是伺服器沒啟用，且不偷偷退回原生 fetch", async () => {
+    // 外包模式下沒有 render 服務＝這條路徑在這個部署上不能用。這是設定問題，訊息要讓
+    // 使用者去找部署設定而不是一直重試同一個網址。
+    const { fetcher, calls } = recordingFetcher(mixedRenderPage);
+    const captured = await captureWebPage(found(), undefined, fetcher, {
+      renderOnly: true,
+      requireBody: true,
+    });
+    expect(calls).toEqual([]);
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+    expect(captured.metadata.failureReason).toBe("WEB_SOURCE_RENDER_UNAVAILABLE");
+  });
+
+  it("私有網址擋在送出第三方之前：外包擷取不等於把 SSRF 防線也外包掉", async () => {
+    const { renderer, calls } = recordingRenderer(async () => "不該被用到");
+    const captured = await captureWebPage(found("http://127.0.0.1/admin"), undefined, undefined, {
+      renderer,
+      renderOnly: true,
+      requireBody: true,
+    });
+    expect(calls).toEqual([]);
+    expect(captured.metadata.contentStatus).toBe("summary_only");
+  });
+});
