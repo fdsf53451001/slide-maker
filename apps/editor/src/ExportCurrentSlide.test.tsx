@@ -102,19 +102,20 @@ function groupLinks(title: string) {
 }
 
 describe("匯出面板分成「專案」與「當前頁面」兩區", () => {
-  it("四個專案級下載全部收在「專案」區，單頁 PNG 獨立在「當前頁面」區", async () => {
+  it("專案級下載全部收在「專案」區，單頁 PNG 獨立在「當前頁面」區", async () => {
     const state = { project: deck("匯出分區", [true, true, true]) };
     stubApi(state);
     await enter("匯出分區");
 
     expect(groupTitles()[0]).toBe("專案");
     expect(groupTitles()[1]).toContain("當前頁面");
-    // 作用範圍不同的下載不能混在一起：四個專案級連結長得一模一樣，沒有分區時使用者
+    // 作用範圍不同的下載不能混在一起：專案級的連結長得一模一樣，沒有分區時使用者
     // 無從得知新增的那一個只匯出一頁。
     expect(groupLinks("專案").map((link) => link.href)).toEqual([
       `/api/projects/${state.project.id}/export/pptx`,
       `/api/projects/${state.project.id}/export/pdf`,
       `/api/projects/${state.project.id}/export/png.zip`,
+      `/api/projects/${state.project.id}/export/outline.md`,
       `/api/projects/${state.project.id}/export/slide-project`,
     ]);
     expect(groupLinks("當前頁面")).toEqual([
@@ -153,7 +154,7 @@ describe("匯出面板分成「專案」與「當前頁面」兩區", () => {
       document.querySelectorAll<HTMLElement>(".export-panel .export-blocked"),
     );
     expect(blocked.map((node) => node.textContent).join("")).toContain("這一頁還沒有圖片");
-    // 專案級的四個不受影響：整份匯出對「缺圖的可見頁」另有自己的錯誤路徑。
-    expect(groupLinks("專案")).toHaveLength(4);
+    // 專案級的五個不受影響：整份匯出對「缺圖的可見頁」另有自己的錯誤路徑。
+    expect(groupLinks("專案")).toHaveLength(5);
   });
 });

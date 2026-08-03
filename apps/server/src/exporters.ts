@@ -1,14 +1,17 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
-import { basename, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { PDFDocument } from "pdf-lib";
 import PptxGenJS from "pptxgenjs";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { Resvg } from "@resvg/resvg-js";
 import sharp, { type Sharp } from "sharp";
 import {
+  outlineMarkdown,
+  outlineMarkdownFilename,
   pageNumberLayout,
   pageNumberSlideLabel,
   parseProject,
+  safeProjectFilename,
   textStroke,
   type PresentationProject,
   type SlideVersion,
@@ -16,7 +19,7 @@ import {
 import { textElements } from "./text-layers.js";
 import type { FileProjectRepository } from "./repository.js";
 
-export type ExportFormat = "pptx" | "pdf" | "png.zip" | "slide-project";
+export type ExportFormat = "pptx" | "pdf" | "png.zip" | "slide-project" | "outline.md";
 
 type PptxGenJSConstructor = typeof PptxGenJS;
 
@@ -37,10 +40,11 @@ export function resolvePptxConstructor(candidate: unknown): PptxGenJSConstructor
  * （`png.zip`，收錄全部頁面）時隱藏頁照常輸出。
  *
  * 兩種模式共用一條規則：**隱藏頁永遠不會讓整份匯出失敗**。沒有目前版本的隱藏頁在
- * `png.zip` 也一樣略過——它沒有任何位元組可以輸出，卻會讓四種格式裡只有 `png.zip` 丟
- * `SLIDE_VERSION_MISSING`／HTTP 400，而匯出連結是裸 `<a href>`，使用者會在瀏覽器分頁看到
+ * `png.zip` 也一樣略過——它沒有任何位元組可以輸出，卻會讓帶圖的那四種格式裡只有 `png.zip`
+ * 丟 `SLIDE_VERSION_MISSING`／HTTP 400，而匯出連結是裸 `<a href>`，使用者會在瀏覽器分頁看到
  * 一段 JSON。觀察得到的行為上這沒有違反「png.zip 收錄全部頁面」：那一頁本來就沒有圖。
- * 可見頁缺圖仍然是錯誤（那是使用者真的漏生成了一頁，四種格式該一起說同一個故事）。
+ * 可見頁缺圖仍然是錯誤（那是使用者真的漏生成了一頁，那四種該一起說同一個故事）。
+ * `outline.md` 完全不經過這裡：它一個資產都不讀，缺圖與它無關。
  */
 function currentVersions(project: PresentationProject, options: { includeHidden?: boolean } = {}) {
   const includeHidden = options.includeHidden ?? true;
@@ -63,8 +67,8 @@ function currentVersions(project: PresentationProject, options: { includeHidden?
  * 兩種格式在這個狀態下都會產出「合法但退化」的檔案而不是報錯：pptx 是零張投影片的封裝，
  * pdf 更糟——`PDFDocument.save()` 對沒有頁面的文件會補一張空白 A4 直式頁（595×842），
  * 使用者拿到的是一張與 16:9 簡報毫無關係的白紙。簡報模式對「全部隱藏」已經明確拒絕並說明
- * 原因，匯出這條路必須有同一條防線。`png.zip`／`slide-project` 不受影響：它們收錄全部頁面，
- * 全部隱藏時仍是完整的檔案。
+ * 原因，匯出這條路必須有同一條防線。`png.zip`／`slide-project`／`outline.md` 不受影響：
+ * 它們收錄全部頁面，全部隱藏時仍是完整的檔案。
  */
 function visibleVersions(project: PresentationProject) {
   const entries = currentVersions(project, { includeHidden: false });
@@ -432,6 +436,10 @@ export async function exportPresentation(
   if (format === "png.zip") return exportPngZip(repository, project);
   if (format === "pdf") return exportPdf(repository, project);
   if (format === "pptx") return exportPptx(repository, project);
+  // 唯一不讀任何資產的格式：內容全部在 project.json 裡，沒有 repository 存取、也不經過
+  // visibleVersions()——大綱是內容文件，全部頁面都隱藏時照樣匯出得出來（pptx／pdf 在那個
+  // 狀態會產出「合法但退化」的檔案，所以只有那兩種以 EXPORT_NO_VISIBLE_SLIDES 拒絕）。
+  if (format === "outline.md") return strToU8(outlineMarkdown(project));
   return exportProject(repository, project);
 }
 
@@ -468,23 +476,20 @@ export function parseProjectBundle(bytes: Uint8Array): {
   return { project, assets };
 }
 
-/** 專案名稱洗成可以當檔名的字串；洗光了就退回 `presentation`。 */
-function safeProjectFilename(project: PresentationProject): string {
-  return (
-    basename(project.name)
-      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-      .replace(/^-+|-+$/g, "") || "presentation"
-  );
-}
-
 /**
- * 下載檔名。format 一律當副檔名用，唯一的例外是 `slide-project`：它的內容是 zip，
- * 但 `.slide-project` 這個副檔名在使用者的作業系統上沒有任何關聯程式，點兩下打不開，
- * 所以檔名補上 `.zip` 結尾（`png.zip` 本來就已經帶著 `.zip`）。
+ * 下載檔名。format 一律當副檔名用，有兩個例外：
+ *
+ * - `slide-project`：內容是 zip，但 `.slide-project` 這個副檔名在使用者的作業系統上沒有任何
+ *   關聯程式，點兩下打不開，所以檔名補上 `.zip` 結尾（`png.zip` 本來就已經帶著 `.zip`）。
+ * - `outline.md`：改呼叫 core 的 `outlineMarkdownFilename()`。精靈那顆下載按鈕在瀏覽器裡產生
+ *   同一份檔案，檔名規則只能有一份。通用那條剛好也會拼出 `<專案>.outline.md`，但那是巧合，
+ *   不可以拿來當「所以不必分開」的理由——規則一改就靜默分岔成兩個檔名。
+ *
  * URL 的 path segment 與 `ExportFormat` 型別不受影響，只有檔名不同。
  */
 export function exportFilename(project: PresentationProject, format: ExportFormat): string {
-  return `${safeProjectFilename(project)}.${format === "slide-project" ? "slide-project.zip" : format}`;
+  if (format === "outline.md") return outlineMarkdownFilename(project.name);
+  return `${safeProjectFilename(project.name)}.${format === "slide-project" ? "slide-project.zip" : format}`;
 }
 
 /**
@@ -495,5 +500,5 @@ export function exportFilename(project: PresentationProject, format: ExportForma
  * 扣掉隱藏頁：那是頁碼（chrome）的規則，檔名要對得上的是專案裡的實際頁序。
  */
 export function exportSlideFilename(project: PresentationProject, order: number): string {
-  return `${safeProjectFilename(project)}-${String(order + 1).padStart(3, "0")}.png`;
+  return `${safeProjectFilename(project.name)}-${String(order + 1).padStart(3, "0")}.png`;
 }

@@ -111,12 +111,14 @@ describe("專案封存的下載檔名與匯入（HTTP 層）", () => {
     expect(header).not.toContain(".slide-project.zip.zip");
   });
 
-  it("其他三種格式的檔名維持原副檔名", async (context) => {
+  it("其他格式的檔名維持原副檔名", async (context) => {
     if (unavailable) return context.skip();
+    // `Record<Exclude<…>>` 是刻意的：新增匯出格式時這裡會編不過，逼人回來補上它的檔名。
     const expected: Record<Exclude<ExportFormat, "slide-project">, string> = {
       pptx: "季度-回顧.pptx",
       pdf: "季度-回顧.pdf",
       "png.zip": "季度-回顧.png.zip",
+      "outline.md": "季度-回顧.outline.md",
     };
     for (const [format, filename] of Object.entries(expected)) {
       const response = await fetch(`${baseUrl}/api/projects/${project.id}/export/${format}`);

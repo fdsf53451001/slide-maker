@@ -14,7 +14,7 @@ import { sendChunked } from "../http-stream.js";
 import { idSchema } from "../project-write-helpers.js";
 import type { AppContext } from "./context.js";
 
-/** 四種格式的整份匯出、單頁 PNG、專案封存匯入，以及專案資產的靜態取用。 */
+/** 五種格式的整份匯出、單頁 PNG、專案封存匯入，以及專案資產的靜態取用。 */
 export function registerExportRoutes(app: Express, ctx: AppContext): void {
   const { repository, retriever } = ctx;
 
@@ -22,7 +22,7 @@ export function registerExportRoutes(app: Express, ctx: AppContext): void {
     const project = await repository.loadProject(idSchema.parse(request.params.projectId));
     if (!project) throw new Error("Project not found");
     const format = z
-      .enum(["pptx", "pdf", "png.zip", "slide-project"])
+      .enum(["pptx", "pdf", "png.zip", "slide-project", "outline.md"])
       .parse(request.params.format) as ExportFormat;
     const bytes = await exportPresentation(repository, project, format);
     const mediaTypes: Record<ExportFormat, string> = {
@@ -30,6 +30,7 @@ export function registerExportRoutes(app: Express, ctx: AppContext): void {
       pdf: "application/pdf",
       "png.zip": "application/zip",
       "slide-project": "application/zip",
+      "outline.md": "text/markdown; charset=utf-8",
     };
     response.setHeader("Content-Type", mediaTypes[format]);
     response.setHeader(
@@ -38,6 +39,8 @@ export function registerExportRoutes(app: Express, ctx: AppContext): void {
     );
     // 一定要走 chunked：`response.send()` 會補 Content-Length，Cloud Run 對這種
     // non-streamed 回應有 32 MiB 上限，大一點的簡報匯出必爆。詳見 sendChunked。
+    // **沒有格式例外**：`outline.md` 是純文字、看起來一定很小，但 100 頁的大綱不小，
+    // 而且一條路上放兩種寫法，下一個人只會抄到錯的那一種。
     await sendChunked(response, bytes);
   });
 

@@ -1,7 +1,7 @@
 import type { SlideSpec } from "@slide-maker/core";
 
 /**
- * 匯出面板。四種格式的下載連結都是裸 `<a href>`（瀏覽器直接接手串流回應），所以
+ * 匯出面板。專案級格式的下載連結都是裸 `<a href>`（瀏覽器直接接手串流回應），所以
  * 「伺服器會回 400」的那兩種情形必須在這裡就擋掉並就地說明——按下去只會得到一段 JSON。
  */
 export function ExportPanel({
@@ -40,8 +40,13 @@ export function ExportPanel({
           // 全部隱藏時伺服器會回 400；匯出連結是裸 `<a href>`，讓它按下去等於把一段
           // JSON 丟進瀏覽器分頁。這裡先擋住並就地說明。
           <p className="export-blocked" role="status">
+            {/*
+              刻意**不寫死幾種**：這句原本是「下方兩種格式」，加進「下載大綱」之後就變成
+              一個讀起來正確、實際上錯的數字（下面有三個連結），而且沒有任何測試會發現。
+              下面那幾個連結本來就寫著自己的名字，這裡只需要說「其餘的都收錄」。
+            */}
             所有頁面都已隱藏，pptx／pdf 沒有可以匯出的頁面。請先取消隱藏至少一頁；
-            下方兩種格式仍會收錄全部頁面。
+            下方其餘格式仍會收錄全部頁面。
           </p>
         ) : (
           <>
@@ -55,6 +60,14 @@ export function ExportPanel({
         )}
         <a href={`/api/projects/${encodeURIComponent(projectId)}/export/png.zip`}>
           下載每頁 PNG (.zip)
+        </a>
+        {/*
+        刻意放在 `visibleSlideCount === 0` 那個分支**外面**：那個分支擋的是「pptx／pdf 沒有
+        可以匯出的頁面」，而大綱是內容文件、與圖片無關——隱藏頁照樣收錄（並在檔案裡標明），
+        全部頁面都隱藏時它仍然匯得出來，就像旁邊的 png.zip 與備份一樣。
+      */}
+        <a href={`/api/projects/${encodeURIComponent(projectId)}/export/outline.md`}>
+          下載大綱 (.md)
         </a>
         <a href={`/api/projects/${encodeURIComponent(projectId)}/export/slide-project`}>
           備份完整專案 (.slide-project.zip)

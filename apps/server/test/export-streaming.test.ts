@@ -252,7 +252,20 @@ describe("project export streaming", () => {
 
   afterAll(() => close(server));
 
-  const formats: ExportFormat[] = ["pptx", "pdf", "png.zip", "slide-project"];
+  /*
+   * `ExportFormat[]` **不是** exhaustive 型別：新增一個匯出格式時，這份清單會靜默地漏掉它，
+   * 而這裡正是「有沒有走 sendChunked」唯一的整批守門。改成 `satisfies Record<Exclude<…>>`
+   * 之後，新格式會讓這一行編不過，逼人明講它是要進來、還是刻意排除。
+   *
+   * `outline.md` 是刻意排除的那一個：下面斷言每一份都大於一個 chunk（串流路徑才真的被走
+   * 過），而純文字的大綱永遠塞不進那個門檻。它的 chunked 守門在 `export-outline-md.test.ts`。
+   */
+  const formats = Object.keys({
+    pptx: true,
+    pdf: true,
+    "png.zip": true,
+    "slide-project": true,
+  } satisfies Record<Exclude<ExportFormat, "outline.md">, true>) as ExportFormat[];
 
   it("streams every format chunked and delivers exactly what the exporter produced", async (context) => {
     if (unavailable) return context.skip();
