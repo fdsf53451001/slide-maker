@@ -131,6 +131,13 @@ export function SetupFlow({
   // 解析失敗（status: "failed"）的素材抽不出任何內容，不算數；圖片等其他狀態都算。
   const materialsRequired =
     !webSearch.enabled && !project.sources.some((source) => source.status !== "failed");
+  /*
+   * 主畫面允許不填需求就建立專案（`brief.topic` 可以是空字串），所以「還沒填主題」是這裡
+   * 的常態而非例外：STEP 2 把欄位框成橘色、STEP 3 說明要回去補，兩步都不讓大綱產生——
+   * 沒有主題就沒有東西可以規劃。
+   */
+  const topicMissing = !brief.topic.trim();
+  const topicHintId = "setup-topic-hint";
 
   const produceOutline = async () => {
     setBusy(true);
@@ -306,6 +313,12 @@ export function SetupFlow({
                 已關閉自動搜尋，請先上傳或貼上至少一項素材再產生大綱。
               </p>
             )}
+            {/* 不填需求就開始的專案，可以直接從步驟列跳到這一步；此時大綱一樣產不出來。 */}
+            {topicMissing && (
+              <p className="setup-materials-hint" id="setup-topic-missing-hint">
+                尚未填寫簡報需求，請回到「需求」步驟補上再產生大綱。
+              </p>
+            )}
             <div className="setup-materials-actions">
               <button
                 type="button"
@@ -325,9 +338,17 @@ export function SetupFlow({
                 />
                 <button
                   className="primary setup-submit"
-                  disabled={busy || !brief.topic.trim() || materialsRequired}
-                  // 停用按鈕本身不會說明原因，讀屏使用者需要指回那句提示。
-                  aria-describedby={materialsRequired ? "setup-materials-hint" : undefined}
+                  disabled={busy || topicMissing || materialsRequired}
+                  // 停用按鈕本身不會說明原因，讀屏使用者需要指回那句提示；兩個原因可能同時
+                  // 成立（既沒填需求也沒素材），所以 id 是串起來的而不是二選一。
+                  aria-describedby={
+                    [
+                      materialsRequired ? "setup-materials-hint" : "",
+                      topicMissing ? "setup-topic-missing-hint" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ") || undefined
+                  }
                   onClick={() => void produceOutline()}
                 >
                   {busy ? "正在產生大綱…" : `產生 ${brief.desiredSlideCount} 頁大綱`}
@@ -342,14 +363,29 @@ export function SetupFlow({
             <h1>先確認這份簡報要說什麼</h1>
             <p>系統會依下列需求建立大綱；頁數以這裡確認的數字為準。</p>
             <div className="setup-grid">
-              <label className="wide">
-                簡報需求
-                <textarea
-                  rows={4}
-                  value={brief.topic}
-                  onChange={(event) => setBrief({ ...brief, topic: event.target.value })}
-                />
-              </label>
+              {/*
+                主畫面允許不填需求就開始，所以這一格常常是空的——空著時用橘色外框把它標出來
+                並說明下一步為什麼停用。停用的按鈕自己不會說話，這句提示就是它的理由。
+              */}
+              {/* 提示句刻意放在 `<label>` **外面**：包在裡面會被算進欄位的無障礙名稱，
+                  螢幕閱讀器會把它念成「簡報需求 尚未填寫：…」，而 aria-describedby 隨即
+                  再念一次。 */}
+              <div className={`wide${topicMissing ? " field-needs-input" : ""}`}>
+                <label>
+                  簡報需求
+                  <textarea
+                    rows={4}
+                    value={brief.topic}
+                    aria-describedby={topicMissing ? topicHintId : undefined}
+                    onChange={(event) => setBrief({ ...brief, topic: event.target.value })}
+                  />
+                </label>
+                {topicMissing && (
+                  <small className="field-needs-input-hint" id={topicHintId}>
+                    尚未填寫：描述這份簡報要說什麼，才能產生大綱。
+                  </small>
+                )}
+              </div>
               <label>
                 目標觀眾
                 <input
@@ -409,11 +445,10 @@ export function SetupFlow({
             <button
               className="primary setup-submit"
               disabled={
-                busy ||
-                !brief.topic.trim() ||
-                brief.desiredSlideCount < 1 ||
-                brief.desiredSlideCount > 100
+                busy || topicMissing || brief.desiredSlideCount < 1 || brief.desiredSlideCount > 100
               }
+              // 停用按鈕本身不會說明原因，讀屏使用者需要指回欄位下方那句提示。
+              aria-describedby={topicMissing ? topicHintId : undefined}
               onClick={() => {
                 void api
                   .updateBrief(project.id, briefPatchWithoutWebSearch(brief))

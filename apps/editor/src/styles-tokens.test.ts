@@ -48,6 +48,22 @@ describe("styles.css 的自訂屬性", () => {
     expect(orphans).toEqual([]);
   });
 
+  /*
+    精靈裡「尚未填寫」的欄位（不填需求就開始的專案，STEP 2 的簡報需求就是空的）只在 DOM 上
+    掛一個 class，橘框整個押在這份 CSS 上——jsdom 不套樣式表，元件測試斷言得到 class、
+    斷言不到使用者看不看得見。
+  */
+  it("尚未填寫的欄位有橘色外框，而且不吃掉焦點光暈", () => {
+    const rule = [...css.matchAll(/([^{}]*\.field-needs-input[^{}]*)\{([^}]*)\}/g)].find((match) =>
+      /border-color/.test(match[2] ?? ""),
+    );
+    expect(rule).toBeDefined();
+    expect(rule![2]).toMatch(/var\(--accent\)/);
+    // 這條選擇器比 `.setup-card textarea:focus` 更特異，少了 `:not(:focus)` 就會蓋掉焦點的
+    // 3px 光暈——而聚焦樣式把 outline 關掉了，那圈光暈是唯一的焦點指示。
+    expect(rule![1]).toMatch(/:not\(:focus\)/);
+  });
+
   it("「最近更新」面板的底色是不透明的", () => {
     // 疊在儀表板上的面板一旦有透明度，後面的縮圖與卡片就會從字底下透上來。
     // 這裡比對字面值而不是算出來的顏色：jsdom 不套用樣式表，量不到 computed style。

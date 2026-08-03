@@ -3810,6 +3810,21 @@ header {
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.1);
   background: #151e2f;
 }
+/* 尚未填寫的必要欄位：沿用 `.outline-dirty` 那組橘框（同一個 accent、同一個光暈強度），
+   讓「這一格需要你動手」在整個編輯器裡長得一樣。`:not(:focus)` 不可省——這條選擇器比
+   `.setup-card textarea:focus` 更特異，少了它，聚焦時 3px 的焦點光暈會被這裡的 1px 蓋掉，
+   而聚焦樣式把 outline 關掉了，那圈光暈就是唯一的焦點指示。 */
+.setup-card .field-needs-input textarea:not(:focus),
+.setup-card .field-needs-input input:not(:focus) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18);
+}
+.setup-card .field-needs-input-hint {
+  display: block;
+  margin-top: 7px;
+  color: var(--warning);
+  font-size: 12px;
+}
 .setup-provider {
   padding: 22px 34px;
   margin-bottom: 18px;

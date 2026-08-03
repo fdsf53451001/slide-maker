@@ -65,7 +65,14 @@ export function sourceAttachesReferenceImage(usage: z.infer<typeof sourceUsageSc
 }
 
 export const presentationBriefSchema = z.object({
-  topic: z.string().trim().min(1),
+  /*
+   * 允許空字串：主畫面的「開始規劃」不強迫先想好主題，空著也能建立專案，需求在精靈的
+   * STEP 2 補填（該欄位空著時會以橘色外框標示尚未填寫）。**下游擋在「產生大綱」那一步**
+   * ——沒有主題就沒有東西可以規劃——而不是擋在建立專案，否則使用者連上傳素材、挑模型
+   * 組合都做不了。空 topic 的專案名稱由 {@link UNTITLED_PROJECT_NAME} 補上（`name` 仍是
+   * `min(1)`，那是列表上唯一認得出這份專案的字）。
+   */
+  topic: z.string().trim(),
   audience: z.string().trim().default("一般觀眾"),
   purpose: z.string().trim().default("清楚傳達主題"),
   language: z.string().trim().default("zh-TW"),

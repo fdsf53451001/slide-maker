@@ -4,6 +4,7 @@ import {
   createProject,
   pageNumberSettingsSchema,
   presentationBriefSchema,
+  UNTITLED_PROJECT_NAME,
   type PresentationBrief,
 } from "@slide-maker/core";
 import { ModelLibraryError } from "../model-runtime.js";
@@ -21,7 +22,9 @@ export function registerProjectRoutes(app: Express, ctx: AppContext): void {
   app.post("/api/projects", async (request, response) => {
     const input = z
       .object({
-        topic: z.string().trim().min(1).max(500),
+        // 允許空字串：主畫面不填需求也能開始（名稱由 core 補 UNTITLED_PROJECT_NAME），
+        // 缺主題擋在「產生大綱」而不是擋在建立專案。
+        topic: z.string().trim().max(500),
         name: z.string().trim().min(1).max(200).optional(),
         brief: presentationBriefSchema.partial().optional(),
         styleId: idSchema.optional(),
@@ -50,8 +53,17 @@ export function registerProjectRoutes(app: Express, ctx: AppContext): void {
     const patch = presentationBriefSchema.partial().parse(request.body);
     const project = await repository.updateProject(projectId, (current) => {
       const previousTopic = current.brief.topic;
+      /*
+       * 「名稱還是自動跟著主題走」的兩種形狀：名稱等於舊主題（一般情況），或舊主題是空的
+       * 而名稱正是空主題的替代名。後者是「不填需求就開始」的專案稍後補填主題時的樣子——
+       * 少了它，那份專案會永遠叫「未命名簡報」。條件綁在 `previousTopic === ""` 上，
+       * 使用者自己把專案改名成同樣字串（主題另有其字）時不會被覆蓋。
+       */
+      const autoNamed =
+        current.name === previousTopic ||
+        (previousTopic === "" && current.name === UNTITLED_PROJECT_NAME);
       current.brief = presentationBriefSchema.parse({ ...current.brief, ...patch });
-      current.name = patch.topic && current.name === previousTopic ? patch.topic : current.name;
+      current.name = patch.topic && autoNamed ? patch.topic : current.name;
       current.updatedAt = new Date().toISOString();
       return structuredClone(current);
     });
