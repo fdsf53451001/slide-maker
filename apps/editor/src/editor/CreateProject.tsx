@@ -109,10 +109,15 @@ export function CreateProject({
                 <h1>今天想做什麼簡報？</h1>
                 <p>描述主題、用途、對象與想要的頁數，AI 會先整理成可確認的大綱。</p>
               </div>
+              {/*
+                需求留白也能送出：這一格不是必填閘門，只是「想好了就先寫」的捷徑。空著開始
+                的專案會直接進精靈，需求欄位在那裡以橘色外框標示尚未填寫；真正擋住的是
+                「產生大綱」那一步。以前這顆按鈕在空白時是停用的，使用者於是無法先建專案
+                去上傳素材、挑模型組合。
+              */}
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (!topic.trim()) return;
                   setBusy(true);
                   void onCreate(topic, selectedStyleId).finally(() => setBusy(false));
                 }}
@@ -122,14 +127,17 @@ export function CreateProject({
                   value={topic}
                   onChange={(event) => setTopic(event.target.value)}
                   placeholder="例如：向主管說明 AI agent 導入計畫、效益與風險"
+                  aria-describedby={topic.trim() ? undefined : "create-empty-hint"}
                   autoFocus
                 />
-                <button className="primary" disabled={busy || !topic.trim()}>
+                <button className="primary" disabled={busy}>
                   {busy ? "建立中…" : "開始規劃 →"}
                 </button>
               </form>
-              <small>
-                頁數由你的需求與 AI 大綱決定。
+              <small id="create-empty-hint">
+                {topic.trim()
+                  ? "頁數由你的需求與 AI 大綱決定。"
+                  : "還沒想好也可以直接開始，之後在「需求」步驟補上。"}
                 {selectedStyleId
                   ? `目前風格：${styles.find((item) => item.id === selectedStyleId)?.name ?? "已選風格"}`
                   : "未指定時由 AI 自由設計。"}

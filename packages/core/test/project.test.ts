@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createProject, parseProject, ProviderRegistry } from "../src/index.js";
+import {
+  createProject,
+  parseProject,
+  ProviderRegistry,
+  UNTITLED_PROJECT_NAME,
+} from "../src/index.js";
 
 describe("project contract", () => {
   it("creates a schema-valid project with editable slide specs", () => {
@@ -64,6 +69,32 @@ describe("project contract", () => {
     const parsed = parseProject(project);
     expect(parsed.slides[0]?.pinnedSourceIds).toEqual([]);
     expect(parsed.slides[0]?.sourceIds).toEqual(["source-a"]);
+  });
+
+  /*
+   * 主畫面的「開始規劃」不強迫先想好主題，所以 `brief.topic` 可以是空字串。它擋在
+   * 「產生大綱」那一步，不擋在建立專案——但 `name` 仍是 `min(1)`（列表卡片上唯一認得出
+   * 這份專案的字），空主題因此必須有替代名，否則 `presentationProjectSchema.parse()`
+   * 會在建立當下就丟出來，使用者看到的是一個沒有下一步的錯誤。
+   */
+  it("允許空白主題建立專案，並補上未命名的替代名稱", () => {
+    const project = createProject({ topic: "" });
+    expect(parseProject(project)).toEqual(project);
+    expect(project.brief.topic).toBe("");
+    expect(project.name).toBe(UNTITLED_PROJECT_NAME);
+    // 佔位大綱仍要讀得通：直接內插空字串會產出「說明  為何值得…」這種句子，而這些文字
+    // 會跟著進生成大綱的 prompt。
+    expect(project.slides.map((slide) => slide.content).join("")).not.toMatch(/ {2}/);
+    expect(project.slides.some((slide) => slide.content.includes("這份簡報"))).toBe(true);
+  });
+
+  it("有主題時名稱就是主題，明確給的名稱優先於兩者", () => {
+    expect(createProject({ topic: "季度回顧" }).name).toBe("季度回顧");
+    expect(createProject({ topic: "季度回顧", name: "給董事會的版本" }).name).toBe(
+      "給董事會的版本",
+    );
+    // 只有空白的名稱等同沒給，不能讓專案叫做「   」。
+    expect(createProject({ topic: "", name: "   " }).name).toBe(UNTITLED_PROJECT_NAME);
   });
 
   it("derives the workflow stage for projects saved before the two-step flow", () => {
