@@ -5,6 +5,8 @@ export * from "./project.js";
 export * from "./page-number.js";
 export * from "./text-stroke.js";
 export * from "./slide-content.js";
+export * from "./download-filename.js";
+export * from "./outline-markdown.js";
 export * from "./image-contract.js";
 export * from "./model-library.js";
 export * from "./log.js";

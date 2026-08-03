@@ -330,6 +330,10 @@ describe("exportFilename", () => {
     expect(exportFilename(project, "png.zip")).toBe("季度回顧.png.zip");
     expect(exportFilename(project, "pptx")).toBe("季度回顧.pptx");
     expect(exportFilename(project, "pdf")).toBe("季度回顧.pdf");
+    // `outline.md` 走的是 core 的 `outlineMarkdownFilename()` 而不是通用那條字串拼接
+    //（兩者目前剛好拼出同一個字串，但規則是兩份，一改就會分岔）。這一組是唯一不需要
+    // 起服務就跑得到的檔名測試，補一行的成本是零。
+    expect(exportFilename(project, "outline.md")).toBe("季度回顧.outline.md");
   });
 
   it("名稱被清成空字串時退回 presentation", () => {

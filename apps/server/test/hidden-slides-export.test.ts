@@ -97,7 +97,7 @@ describe("隱藏頁不進 pptx／pdf 成品", () => {
     expect(pdf.getPageCount()).toBe(3);
   }, 120_000);
 
-  it("隱藏頁還沒生成圖片時**四種格式**都匯得出來（它根本沒有位元組可以輸出）", async () => {
+  it("隱藏頁還沒生成圖片時**帶圖的那四種格式**都匯得出來（它根本沒有位元組可以輸出）", async () => {
     // 濾在查版本之後的話這裡會是 SLIDE_VERSION_MISSING。三種格式修好、`png.zip` 單獨掛掉
     // 是更糟的狀態：匯出連結是裸 `<a href>`，使用者會在瀏覽器分頁看到一段 JSON，
     // 而同一份專案的另外三個下載都正常。
@@ -120,7 +120,8 @@ describe("隱藏頁不進 pptx／pdf 成品", () => {
     expect(Buffer.from(entries["002.png"]!).equals(Buffer.from(shadeSlide(SHADES[1]!)))).toBe(true);
   }, 120_000);
 
-  it("可見頁沒有圖仍然是錯誤，四種格式一起說同一個故事", async () => {
+  // `outline.md` 不在這一組裡：它一個資產都不讀，缺圖對它不是狀態（見 export-outline-md）。
+  it("可見頁沒有圖仍然是錯誤，帶圖的那四種格式一起說同一個故事", async () => {
     const { repository, project } = await deck([], [3]);
     for (const format of ["pdf", "pptx", "png.zip"] as const)
       await expect(exportPresentation(repository, project, format), format).rejects.toThrow(

@@ -1,5 +1,11 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import type { PresentationProject, StylePreset } from "@slide-maker/core";
+import {
+  outlineMarkdown,
+  outlineMarkdownFilename,
+  type PresentationProject,
+  type SlideSpec,
+  type StylePreset,
+} from "@slide-maker/core";
 import { api, type ProviderReadiness, type ProviderSummary } from "../api.js";
 import { SourcePanel } from "../SourcePanel.js";
 import { toggleSourcePin } from "../sourceSelection.js";
@@ -12,6 +18,29 @@ import {
 import { useWebSearchToggle, WebSearchToggle } from "./webSearch.js";
 import { SlideSourceChips } from "./SlideSourceChips.js";
 import { BatchGenerateDialog, type BatchGenerateChoice } from "./BatchGenerateDialog.js";
+
+/**
+ * 把**畫面上這份大綱草稿**存成 md 檔。
+ *
+ * 刻意不接匯出端點：`outline` 是本地草稿，使用者在 STEP 4 就地改的 purpose／content／敘事
+ * 要到「確認設定並生成」才 PATCH 回伺服器。走端點的話，剛改完一段文字就按下載會拿到改**之
+ * 前**的版本，而畫面上完全看不出差別。格式化與檔名都用 core 的那一份，與匯出端點逐字元相同。
+ */
+function downloadOutlineMarkdown(name: string, slides: readonly SlideSpec[]): void {
+  const url = URL.createObjectURL(
+    new Blob([outlineMarkdown({ name, slides })], { type: "text/markdown;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = outlineMarkdownFilename(name);
+  // 連結要真的在文件裡才觸發得了下載（部分瀏覽器對 detached 節點的 click 不動作）。
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // 不 revoke 的話這份 blob 會活到分頁關閉；但也不能同步 revoke——下載在 click() 之後才排
+  // 進佇列，當場釋放會讓部分瀏覽器抓到一個已經失效的 URL。挪到下一個 macrotask 才放。
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 export function SetupFlow({
   project,
@@ -718,6 +747,21 @@ export function SetupFlow({
             <button onClick={() => setShowRequirements(true)} disabled={busy}>
               返回修改需求
             </button>
+            {/*
+              0 頁時不給：下載到的會是一份只有標題的空檔。它是 <button> 而不是 <a>——檔案在
+              前端就地產生（見 downloadOutlineMarkdown），沒有可以指過去的網址；外觀由
+              `.setup-actions button` 提供，與左邊那顆次要按鈕同一套，不另立樣式。
+            */}
+            {outline.length > 0 && (
+              <button
+                type="button"
+                className="setup-outline-download"
+                disabled={busy}
+                onClick={() => downloadOutlineMarkdown(project.name, outline)}
+              >
+                下載大綱 (.md)
+              </button>
+            )}
             <button
               className="primary"
               // 有隱藏頁就先問，而且是在整條 async 鏈**開始之前**問掉：鏈中途彈窗會讓

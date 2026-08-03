@@ -136,16 +136,98 @@ function describeFailure(source: SourceAsset): string | undefined {
   return IMAGE_DESCRIPTION_FAILURES[code] ?? IMAGE_DESCRIPTION_FAILURES.failed;
 }
 
+/**
+ * 生成用途的**唯一**清單：下拉選單的選項、選單下方的說明、來源詳情的那一格全部從這裡長出來。
+ *
+ * 舊版是兩份：`sourceUsageLabel()` 一份 map、下拉選單裡每個 `<option>` 各寫一次同樣的字。
+ * enum 多一個值時只有這個 `Record` 會逼你補上（少一個鍵就編譯失敗），`<option>` 漏掉則不會有
+ * 任何東西變紅——結果是「這個用途存在、後端也吃得下，但畫面上選不到」。**型別必須留成
+ * `Record<SourceAsset["usage"], …>`**：換成陣列就沒有那道編譯期檢查了，而它正是這份合併的
+ * 主要價值。順序＝這裡的宣告順序（字串鍵的 `Object.entries` 依插入序），也就是下拉的順序。
+ *
+ * `hint` 講的是**選了會發生什麼事**，措辭上有兩條紀律：
+ *
+ * ① **不承諾程式做不到的事**。合約給生圖模型的是**要求**，不是保證——沒有任何合成路徑會把
+ *    圖貼上去，而且同一張圖在編輯／抹字模式下的合約是「background context only… do not
+ *    embed it」。`direct-asset` 因此寫成「請 AI 原樣重畫」而不是「會原樣出現」，並帶上合約
+ *    真正說的那半句（`inside a framed panel`，對 logo 而言正是最關鍵的資訊）。
+ * ② **不鏡射伺服器組態**（CLAUDE.md 那條）。會不會讀圖還取決於整條開關、有沒有文字模型、
+ *    模型支不支援讀圖——前端一律不猜；只講**使用者自己在這張卡片上控制得到**的那個條件，
+ *    也就是上方那個「允許 AI 使用」的勾選。
+ *
+ * 對照的程式碼：
+ *  - 內容依據／大綱參考：進 `buildOutlineCatalog()` 與 FTS，正文片段餵進大綱 prompt。
+ *  - 大綱參考另外整份進 `buildOutlineReference()`，而它**只吃 `extractedText`**——圖片標成
+ *    大綱參考永遠不會有文字（`shouldDescribeImageSource()` 只跑 `visual-reference`），使用者
+ *    沒有任何路徑讓它生效，所以要直接說該丟哪種檔。
+ *  - 視覺參考：`sourceAttachesReferenceImage()` 為真 ⇒ 附給生圖模型，合約角色是
+ *    content reference（"it may inform subject matter"）；PNG／JPEG **且**已勾選允許讀取時，
+ *    才另外跑一次讀圖描述（`shouldDescribeImageSource()`）。
+ *  - 風格參考：合約角色 style（"take its palette, composition rhythm, typography treatment,
+ *    spacing, and finish only"）——明文只取風格、不取內容。
+ *  - 直接素材：合約角色 direct-asset（"reproduce this image faithfully inside a framed panel
+ *    on the slide"）。
+ *  - 不參與生成：三條讀取路徑（大綱、檢索、附圖）都在第一關就把它濾掉。
+ */
+const SOURCE_USAGE_DETAIL: Record<SourceAsset["usage"], { label: string; hint: string }> = {
+  content: {
+    label: "內容依據",
+    hint: "AI 會讀它的文字，用來寫大綱與每一頁的內容。",
+  },
+  "outline-reference": {
+    label: "大綱參考",
+    hint: "AI 會照這份檔案的章節與編排決定每頁主題，內容再用其他來源補充；它同時也算內容依據。只讀得到文字，請用 Word、Markdown、PDF 這類有文字的檔（圖片不會生效）。",
+  },
+  "visual-reference": {
+    label: "視覺參考",
+    hint: "這張圖會附給生圖模型當作畫面內容的依據（圖表、示意圖）。若已勾選允許 AI 使用，也會先試著讀出圖裡的文字。",
+  },
+  "style-reference": {
+    label: "風格參考",
+    hint: "這張圖只影響畫面風格（配色、排版、字體處理），不提供內容。",
+  },
+  "direct-asset": {
+    label: "直接素材",
+    hint: "生成這一頁時會要求 AI 把這張圖原樣重畫在畫面上的一個框裡（例如 logo、產品照）；成品由 AI 繪製，不保證與原圖完全一致。",
+  },
+  "exclude-from-generation": {
+    label: "不參與生成",
+    hint: "AI 不會讀取，也不會用在任何一頁。",
+  },
+};
+
+const SOURCE_USAGE_OPTIONS = Object.entries(SOURCE_USAGE_DETAIL).map(([value, detail]) => ({
+  value: value as SourceAsset["usage"],
+  ...detail,
+}));
+
 function sourceUsageLabel(source: SourceAsset): string {
-  return (
-    {
-      content: "內容依據",
-      "visual-reference": "視覺參考",
-      "style-reference": "風格參考",
-      "direct-asset": "直接素材",
-      "exclude-from-generation": "不參與生成",
-    } as const
-  )[source.usage];
+  return SOURCE_USAGE_DETAIL[source.usage].label;
+}
+
+/**
+ * 這份大綱參考標了等於沒標的兩種形狀，回一句講得出下一步的話。
+ *
+ * 沒有這一行的話，兩種狀態在畫面上與「一切正常」長得一模一樣，使用者只會在拿到成品後回報
+ * 「它沒照我的大綱走」：
+ *  - 沒有可讀文字：`buildOutlineReference()` 跳過它。最常見的是把大綱拍成照片或掃描成無
+ *    文字層的 PDF——圖片標成大綱參考永遠不會有文字（讀圖描述只跑 `visual-reference`）。
+ *  - 未允許 AI 讀取：它在伺服器的 `eligibleSources` 就被濾掉，連 `outline_reference_empty`
+ *    那行 log 都不會有（那個計數只數濾完之後的），所以畫面是唯一講得出這件事的地方。
+ *
+ * 判斷**只用前端手上這份 payload**，不鏡射任何伺服器組態（同 `canDescribe()` 的紀律）：
+ * 這兩個條件都是使用者自己在這張卡片上看得到、也改得動的。
+ *
+ * 先問文字再問勾選：兩個都不成立時，補勾「允許 AI 使用」也不會讓一份沒有文字的檔生效，
+ * 先指向勾選等於叫使用者去做一件解決不了問題的事。
+ */
+function outlineReferenceIssue(source: SourceAsset): string | undefined {
+  if (source.usage !== "outline-reference") return undefined;
+  if (!source.extractedText.trim())
+    return "這份大綱參考沒有可讀文字，不會影響生成。請改用 Word、Markdown 或有文字層的 PDF。";
+  if (!source.allowModelAccess)
+    return "未勾選允許 AI 使用，這份大綱參考不會被讀取，也不會影響生成。";
+  return undefined;
 }
 
 function sourceSize(sizeBytes: number): string {
@@ -1081,6 +1163,10 @@ export function SourcePanel({
                 生成用途
                 <select
                   aria-label={`${source.name} 的生成用途`}
+                  // 說明綁在 select 上，讀屏才會在念完選項後接著念「選了會發生什麼事」。
+                  // 說明本身放在 label 外面：`<label>` 是 grid（標題 ｜ 下拉），塞進去會
+                  // 落在第三格、擠掉下拉的寬度。
+                  aria-describedby={`source-usage-hint-${source.id}`}
                   value={source.usage}
                   disabled={pending}
                   onChange={(event) =>
@@ -1090,13 +1176,31 @@ export function SourcePanel({
                     void changeUsage(source, event.target.value as typeof source.usage)
                   }
                 >
-                  <option value="content">內容依據</option>
-                  <option value="visual-reference">視覺參考</option>
-                  <option value="style-reference">風格參考</option>
-                  <option value="direct-asset">直接素材</option>
-                  <option value="exclude-from-generation">不參與生成</option>
+                  {SOURCE_USAGE_OPTIONS.map((option) => (
+                    // `<option>` 只放標籤：說明塞進來會把下拉撐到整個面板寬。
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
+              {/*
+                目前選到的那一項的說明。**不是** live region：它跟著使用者自己的操作變，
+                讀屏在焦點還在 select 上時會照 aria-describedby 念出新值，再加一個 status
+                只會念兩次。
+              */}
+              <p className="source-usage-hint" id={`source-usage-hint-${source.id}`}>
+                {SOURCE_USAGE_DETAIL[source.usage].hint}
+              </p>
+              {/*
+                「標了大綱參考卻不會生效」。形狀比照 `metadata.imageDescriptionFailure` 那條
+                （同一個 --warning 色、同樣不給 role）：它渲染的是**持久狀態**而不是剛發生的
+                事件，assertive region 一插入 DOM 就會打斷讀屏正在念的東西，而一個專案可以有
+                十幾份這樣的來源。這段文字就在卡片裡，瀏覽模式讀得到。
+              */}
+              {outlineReferenceIssue(source) && (
+                <p className="source-usage-warning">⚠ {outlineReferenceIssue(source)}</p>
+              )}
               <div className="source-card-actions">
                 {/* 確認之後刪除仍要跑一趟伺服器；沒有 disabled 的話按第二次會對已刪除的
                     id 再送一次，回來的是一句看不懂的 404。 */}

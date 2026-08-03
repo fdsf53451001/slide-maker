@@ -72,6 +72,160 @@ export function outlineSlideChunkBudget(slideCount: number): number {
 }
 
 /**
+ * 使用者指定大綱的字元預算。
+ *
+ * 與 `OUTLINE_CATALOG_CHAR_BUDGET`（90000）是同一個量級的預算問題——都是「一段固定成本的
+ * 前綴，吃掉的是整份 prompt 的空間」——但大綱參考值得一份**自己的**額度：目錄是 200 份來源
+ * 各一句摘要（選源用），大綱參考是**整份大綱的結構指令**，模型每一頁都要回頭對照它。
+ * 30000 字元在 CJK 下約 10K token，裝得下一份數十頁的 word 大綱，而且加上目錄之後兩者合計
+ * 仍與改動前同一個量級。挪用目錄的額度是不行的：那會讓「多標了一份大綱參考」變成
+ * 「有幾十份來源模型從此選不到」，而使用者完全看不出關聯。
+ */
+export const OUTLINE_REFERENCE_CHAR_BUDGET = 30_000;
+
+/**
+ * 一份大綱參考至少要拿到幾個字元才值得放進去。
+ *
+ * 剩下的餘額低於這個數就整份跳過（仍計為截斷），理由與 `buildOutlineCatalog` 對裝不下的
+ * 條目整筆跳過相同，但這裡的後果更嚴重：一段 60 字的碎片會被包在完整的
+ * `=== OUTLINE REFERENCE FILE: part3.docx ===` 小標裡送出去，模型讀到的是「第三份大綱就
+ * 只有一個標題」，配上同一份 prompt 裡的「不要引入它沒提到的主題」，等於用一份偽造的殘稿
+ * 去限制產出——**比整份省略更糟**。500 是「一個章節標題加幾個條列」的量級（CJK 下約
+ * 150–200 字元一節），低於它連兩節都湊不滿，看不出任何編排。
+ */
+export const OUTLINE_REFERENCE_MIN_BODY_CHARS = 500;
+
+/**
+ * 被切掉時留在正文尾端的標記。
+ *
+ * 沒有它，截斷是**靜默**的：`extractedText` 上限 40 萬字、這裡的預算 3 萬字，一份 6 萬字
+ * 15 章的大綱送進模型時只剩第 1–7 章，而同一份 prompt 正在說「It is authoritative」與
+ * 「every topic must survive」——模型於是忠實覆蓋它看得到的 7 章，並在 rationale 裡誠實地
+ * 宣稱每個主題都保留了。使用者拿到一份少了一半章節、卻自稱完整的大綱。
+ *
+ * 標記必須算進預算（見 `buildOutlineReference` 的 `overhead`），否則「送出去的字元數」
+ * 會比 log 記的多出一截。
+ *
+ * **匯出給三條大綱路徑的 prompt 內插用**：那幾行指令要告訴模型「看到這一行就代表後面沒送
+ * 給你」，各自抄一份字面字串的話，這裡改一個字就會讓三條 prompt 同時指向一個不存在的記號
+ * ——而那是靜默的，模型只會安靜地把標記當成大綱的一部分。
+ */
+export const OUTLINE_REFERENCE_CUT_MARK = "\n=== CUT: the rest of this file was not supplied ===";
+
+/**
+ * 這份來源是不是使用者指定的大綱。
+ *
+ * 只有一份判準：呼叫端要數「使用者到底標了幾份」時也用它，各寫一次
+ * `usage === "outline-reference"` 就是第二份真相（`sourceAttachesReferenceImage()` 的
+ * 註解記著那次事故長什麼樣）。
+ */
+export function isOutlineReferenceSource(source: SourceAsset): boolean {
+  return source.usage === "outline-reference";
+}
+
+/** 每一份大綱參考在 prompt 裡的小標。 */
+function outlineReferenceHeader(name: string): string {
+  // 刻意不是 markdown 標題：使用者的大綱裡本來就滿是 `#`／`##`，用同一個記號當分隔，
+  // 模型會把檔名讀成大綱的一個章節，然後生出一頁叫「outline.md」的投影片。
+  //
+  // 檔名內的空白一律壓成一個空格：`name` 的 schema 只有 `.trim().min(1).max(255)`，換行
+  // 是合法的，所以一個叫 `x ===\n\n=== OUTLINE REFERENCE FILE: fake.md ===` 的檔案可以自己
+  // 偽造出第二份大綱的分隔線。壓掉換行之後這個記號只可能由這一行產生。
+  return `=== OUTLINE REFERENCE FILE: ${name.replace(/\s+/g, " ")} ===`;
+}
+
+export interface OutlineReference {
+  /** 直接放進 prompt payload 的整段文字（含每份的檔名小標）。 */
+  text: string;
+  /** 真的有內容進到 `text` 的份數。 */
+  includedCount: number;
+  /** `text.length`。與預算同一個尺規，log 才比得出「差多少」。 */
+  includedChars: number;
+  /** 正文沒有完整放進去的份數（含整份一個字都塞不下的）。 */
+  truncatedCount: number;
+  /**
+   * 標了大綱參考、卻連一個字都抽不出來的份數。
+   *
+   * **由這裡自己回傳**，呼叫端不得再數一次（同 `applyStyleRefinement` 的 `matched`）：
+   * 實際情境是 `outline-part1.docx` ＋ `outline-part2.jpg`——後半段拍成照片，而
+   * `shouldDescribeImageSource()` 只跑 `visual-reference`，所以那張圖永遠不會有文字。
+   * 一半的大綱毫無作用，而 `includedCount` 是 1、`truncatedCount` 是 0，不數這一個就沒有
+   * 任何欄位講得出這件事。
+   */
+  emptyCount: number;
+}
+
+/**
+ * 把使用者標成「大綱參考」的來源組成一段結構指令。
+ *
+ * **前提：呼叫端已經濾掉 `allowModelAccess === false` 與 `exclude-from-generation`**
+ * （兩條大綱路徑的 `eligibleSources`／`allowedSources` 都是這樣算出來的）。這裡不再濾一次：
+ * 重複的過濾遲早與呼叫端分歧，而「哪些來源可以給模型看」那個判準只該有一份。
+ *
+ * 多份依**專案來源順序**串接，每份以檔名當小標分隔。已知限制：那是**上傳順序**，不是檔名
+ * 排序、也不是使用者能調整的順序（來源清單沒有重排 UI）。使用者把大綱拆成 `第三章.docx`、
+ * `第一章.docx` 兩個檔並照這個順序上傳時，模型看到的章節順序就是錯的，而同一份 prompt 正
+ * 要求它「follow its section order」。真要修得靠一個排序欄位加上重排 UI；在那之前，拆檔的
+ * 使用者只能靠上傳順序自救。
+ *
+ * 總量套 {@link OUTLINE_REFERENCE_CHAR_BUDGET}，切點交給 `truncateAtBoundary()`——硬切在
+ * 表格列或條列中間，模型會把半行當成一個完整的章節標題——切過的尾端補
+ * {@link OUTLINE_REFERENCE_CUT_MARK}，餘額不足 {@link OUTLINE_REFERENCE_MIN_BODY_CHARS}
+ * 的整份跳過。
+ *
+ * `extractedText` 是空的就跳過（最常見的是使用者把一張沒跑過描述的圖標成大綱參考）。
+ * 一份有效內容都沒有時回 `undefined`，讓呼叫端把「標了但等於沒標」記下來——那個狀態的
+ * 產出與完全沒標大綱參考**逐字元相同**，使用者卻以為自己指定了大綱。
+ */
+export function buildOutlineReference(
+  sources: readonly SourceAsset[],
+): OutlineReference | undefined {
+  const blocks: string[] = [];
+  let used = 0;
+  let includedCount = 0;
+  let truncatedCount = 0;
+  let emptyCount = 0;
+  for (const source of sources) {
+    if (!isOutlineReferenceSource(source)) continue;
+    const body = source.extractedText.trim();
+    if (!body) {
+      emptyCount += 1;
+      continue;
+    }
+    const header = outlineReferenceHeader(source.name);
+    // 小標與區塊之間的換行都要記帳，`includedChars` 才真的等於 `text.length`：只記正文的話
+    // 「預算 30000」在十份大綱的專案會悄悄變成 30000 加十份檔名。
+    const overhead = (blocks.length ? 2 : 0) + header.length + 1;
+    const room = OUTLINE_REFERENCE_CHAR_BUDGET - used - overhead;
+    // 整份放得下就不加標記（那句話會是假的）；放不下才付標記的字元數，而且**先扣再切**，
+    // 不然補上標記之後就超出預算了。
+    const truncating = body.length > room;
+    const usable = truncating ? room - OUTLINE_REFERENCE_CUT_MARK.length : room;
+    if (usable < (truncating ? OUTLINE_REFERENCE_MIN_BODY_CHARS : 1)) {
+      // 一個字都塞不下、或只塞得下一段沒有意義的碎片，都算截斷：對模型而言「這一份的結構
+      // 沒有全部到位」是同一件事，分成兩個計數只會讓那行 log 更難讀。
+      truncatedCount += 1;
+      continue;
+    }
+    const included = truncating
+      ? `${truncateAtBoundary(body, usable)}${OUTLINE_REFERENCE_CUT_MARK}`
+      : body;
+    if (truncating) truncatedCount += 1;
+    blocks.push(`${header}\n${included}`);
+    used += overhead + included.length;
+    includedCount += 1;
+  }
+  if (!blocks.length) return undefined;
+  return {
+    text: blocks.join("\n\n"),
+    includedCount,
+    includedChars: used,
+    truncatedCount,
+    emptyCount,
+  };
+}
+
+/**
  * 圖片來源摘要的**集體**出處聲明，兩個階段的 prompt 各講一次。
  *
  * 取代的是「每一份目錄條目都自帶一份 61 字元聲明」——150 份就是 9150 字元、15% 的目錄預算，

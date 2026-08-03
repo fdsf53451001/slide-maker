@@ -47,6 +47,10 @@ export const MAX_DECK_IMPORT_PAGES = 150;
 
 export const sourceUsageSchema = z.enum([
   "content",
+  // 「大綱參考」＝使用者自己寫好的大綱（word／md／簡報草稿），用來指定每頁主題與編排。
+  // 排在 `content` 後面是因為它語意上最近：它**同時**仍是一份內容依據（照樣進目錄、照樣被
+  // 檢索、照樣可被任何一頁引用），只是額外整份餵進大綱 prompt 當結構指令。
+  "outline-reference",
   "visual-reference",
   "style-reference",
   "direct-asset",
@@ -59,6 +63,11 @@ export const sourceUsageSchema = z.enum([
  * `jobs.ts` 組 references 與大綱決定每頁引用幾份來源，都必須用同一個判準：兩邊各寫一份
  * `usage === "visual-reference"` 之類的條件，就是「大綱以為只附了 3 張、實際附了 12 張」
  * 的來源（2026-07-29 線上 20 頁全數撞上 `GEMINI_IMAGE_REFERENCES_LIMIT`）。
+ *
+ * `outline-reference` 回 false 是刻意的：它是**結構指示**，不是畫面素材。使用者把大綱
+ * 拍成照片或存成 PDF 丟進來時，那張圖對「這一頁要長什麼樣」沒有任何貢獻，卻會吃掉
+ * `OUTLINE_SLIDE_IMAGE_REF_LIMIT` 的 3 張額度，把真正要附的圖表擠掉；而它的結構早就以
+ * 純文字整份進了大綱 prompt（`buildOutlineReference()`），再附一次圖是重複又昂貴。
  */
 export function sourceAttachesReferenceImage(usage: z.infer<typeof sourceUsageSchema>): boolean {
   return usage === "visual-reference" || usage === "style-reference" || usage === "direct-asset";

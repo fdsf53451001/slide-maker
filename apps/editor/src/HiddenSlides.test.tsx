@@ -412,7 +412,7 @@ describe("匯出面板講清楚哪些頁面會進成品", () => {
       anchor.getAttribute("href"),
     );
 
-  it("有隱藏頁時就在下載點旁邊講出可見頁數，四個專案連結都還在", async () => {
+  it("有隱藏頁時就在下載點旁邊講出可見頁數，專案連結都還在", async () => {
     const state = { project: hiddenDeck("匯出說明", [1]) };
     stubApi(state);
     await enter("匯出說明");
@@ -445,11 +445,11 @@ describe("匯出面板講清楚哪些頁面會進成品", () => {
     expect(text).not.toMatch(/頁隱藏/);
     expect(text).not.toContain("匯出會依目前頁面順序");
     expect(text).not.toContain("PNG 與專案備份收錄全部頁面");
-    // 四個專案級 ＋ 一個當前頁面。
-    expect(links()).toHaveLength(5);
+    // 五個專案級 ＋ 一個當前頁面。
+    expect(links()).toHaveLength(6);
   });
 
-  it("全部隱藏時 pptx／pdf 的連結整個不給，改成就地說明；另兩個仍在", async () => {
+  it("全部隱藏時 pptx／pdf 的連結整個不給，改成就地說明；其餘仍在", async () => {
     // 伺服器對這個狀態回 400，而匯出連結是裸 `<a href>`：讓它按得下去等於把一段 JSON
     // 丟進瀏覽器分頁。
     const state = { project: hiddenDeck("全部隱藏匯出", [0, 1, 2, 3]) };

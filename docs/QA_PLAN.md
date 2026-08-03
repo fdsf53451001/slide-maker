@@ -70,7 +70,7 @@ MVP 發布前額外閘門：
 | QA-PROJ-002   | P0     | 專案包            | `.slide-project` export/import                                     | integration        | 可重開；不得包含 secret 或衍生索引           |
 | QA-PROJ-003   | P1     | 安全              | ZIP slip、symlink、絕對路徑與越界 asset reference                  | security           | 無法寫出專案 workspace                       |
 | QA-SRC-001    | P0     | 來源 provider     | PDF/PPTX/DOCX/MD/TXT/PNG/JPG 正常與損壞輸入                        | contract           | 狀態、metadata、抽取內容及錯誤一致           |
-| QA-SRC-002    | P0     | 來源用途          | 文件預設 content、圖片預設 visual-reference；五種用途可切換        | unit/UI            | 預設與持久化符合規格                         |
+| QA-SRC-002    | P0     | 來源用途          | 文件預設 content、圖片預設 visual-reference；六種用途可切換        | unit/UI            | 預設與持久化符合規格                         |
 | QA-SRC-003    | P0     | 傳送權限          | exclude-from-generation 或未允許內容不進模型請求                   | integration        | fake provider 捕獲的 payload 不含被排除資料  |
 | QA-SRC-004    | P1     | 來源管理          | 上傳、改名、分類、搜尋、預覽、刪除警告、錯誤顯示                   | E2E                | UI 與重啟後狀態一致                          |
 | QA-SRC-005    | P0     | 追蹤              | 刪除原來源後，既有 slide version 仍保留來源快照                    | integration        | attribution 可檢視，無懸空不可讀引用         |

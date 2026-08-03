@@ -2953,6 +2953,23 @@ header {
   padding: 7px;
   font-size: 12px;
 }
+/* 目前選到那一項的說明（`aria-describedby` 指過來的那一段）。字級跟著下拉走 12px：它存在的
+   唯一理由就是被讀懂，縮成旁邊那個掃視用的 9px 等於沒寫。--text-dim 在卡片底色 #111827 上
+   5.49:1。刻意不縮排去對齊下拉：那得把「生成用途」四個字的寬度寫成一個常數，字型一換就歪。 */
+.source-usage-hint {
+  margin: 5px 12px 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+/* 「這份大綱參考不會生效」。與 .source-describe-failed 同一套視覺語彙（--warning，在
+   #111827 上 12.79:1）：兩者都是「這份來源有一部分沒有作用」的持久狀態說明。 */
+.source-usage-warning {
+  margin: 4px 12px 0;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .source-card-actions {
   display: flex;
   justify-content: flex-end;
@@ -3990,9 +4007,11 @@ header {
 .generation-settings {
   min-width: 0;
 }
+/* 三欄：返回（固定寬）、下載大綱（依字寬）、主按鈕（吃掉剩下的寬度）。中間那欄用 auto 而
+   不是再切一份固定寬，是為了讓它讀起來就是個次要動作。 */
 .setup-actions {
   display: grid;
-  grid-template-columns: 180px 1fr;
+  grid-template-columns: 180px auto 1fr;
   gap: 10px;
   margin-top: 14px;
 }
@@ -4008,7 +4027,14 @@ header {
   border-color: #53617a;
   background: #1b2435;
 }
+/* 主按鈕釘在最後一欄，不靠自動排版。1440×900 的瀏覽器實測（真的 styles.css，非推導）：
+   三顆時 `180px / 141.34px / 620.66px`，主按鈕 x=580.3；拿掉這行，主按鈕會掉到**第二列**的
+   180px 欄、因為文字換行而高 73px。0 頁（中間那顆不出現）時空的 auto 欄確實收成 0px，但
+   `gap: 10px` 在三欄佈局裡有**兩道**間隙，所以主按鈕 x=439 而不是加這欄之前的 429——不是
+   「兩種情形長得一樣」，是只差那多出來的一道 10px。單欄的手機版仍成立（只有一欄時
+   -2/-1 就是第一欄）。 */
 .setup-actions .primary {
+  grid-column: -2 / -1;
   text-align: left;
   box-shadow: 0 10px 28px rgba(var(--accent-rgb), 0.16);
 }
@@ -4088,6 +4114,12 @@ header {
   }
   .setup-actions .primary {
     grid-row: 1;
+  }
+  /* 疊成一欄之後主按鈕翻到最上面，兩顆次要按鈕跟著反序。這一行同樣是實質必要的，不是
+     保險：≤760px 拿掉它，瀏覽器實測的堆疊順序會變成 主→返回→下載，「下載大綱」被自動
+     排版丟到最底下，離它在桌機版緊鄰的那兩顆都很遠。 */
+  .setup-actions .setup-outline-download {
+    grid-row: 2;
   }
 }
 .stage-meta-actions button.active {

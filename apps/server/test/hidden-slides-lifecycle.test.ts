@@ -178,7 +178,8 @@ describe("hidden 的生命週期", () => {
       expect(body.message, format).toMatch(/所有頁面都已隱藏/);
     }
 
-    // 另外兩種格式收錄全部頁面，全部隱藏對它們不是異常狀態。
+    // 其餘格式收錄全部頁面，全部隱藏對它們不是異常狀態（`outline.md` 也一樣，
+    // 它自己那份斷言在 `export-outline-md.test.ts`）。
     const pngEntries = unzipSync(await bytesOf(`/api/projects/${project.id}/export/png.zip`));
     expect(Object.keys(pngEntries)).toHaveLength(5);
     expect(
