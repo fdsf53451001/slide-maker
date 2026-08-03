@@ -2953,6 +2953,23 @@ header {
   padding: 7px;
   font-size: 12px;
 }
+/* 目前選到那一項的說明（`aria-describedby` 指過來的那一段）。字級跟著下拉走 12px：它存在的
+   唯一理由就是被讀懂，縮成旁邊那個掃視用的 9px 等於沒寫。--text-dim 在卡片底色 #111827 上
+   5.49:1。刻意不縮排去對齊下拉：那得把「生成用途」四個字的寬度寫成一個常數，字型一換就歪。 */
+.source-usage-hint {
+  margin: 5px 12px 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+/* 「這份大綱參考不會生效」。與 .source-describe-failed 同一套視覺語彙（--warning，在
+   #111827 上 12.79:1）：兩者都是「這份來源有一部分沒有作用」的持久狀態說明。 */
+.source-usage-warning {
+  margin: 4px 12px 0;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .source-card-actions {
   display: flex;
   justify-content: flex-end;

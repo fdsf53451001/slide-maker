@@ -131,6 +131,10 @@ describe("附圖判準只有一份", () => {
     const { repository, project, runner } = await fixture(provider);
     const usages = [
       "content",
+      // 「大綱參考」是**結構指示**，不是畫面素材：使用者把大綱拍成照片丟進來時，那張圖對
+      // 「這一頁要長什麼樣」沒有貢獻，卻會吃掉每頁 3 張的參考圖額度、把真正要附的圖表擠掉。
+      // 它的結構早就以純文字整份進了大綱 prompt（`buildOutlineReference()`）。
+      "outline-reference",
       "visual-reference",
       "style-reference",
       "direct-asset",
@@ -159,6 +163,9 @@ describe("附圖判準只有一份", () => {
     // 正向對照：predicate 不是恆真也不是恆假，否則上面的相等沒有意義。
     expect(predicted.size).toBe(3);
     expect(attached.has("content.png")).toBe(false);
+    // 逐一點名這兩個「是圖片、也被選進 sourceIds、但不該附上去」的 usage：只比對兩個集合
+    // 相等的話，predicate 與 jobs.ts 一起改錯（兩邊都開始附大綱參考）仍然是綠的。
+    expect(attached.has("outline-reference.png")).toBe(false);
   });
 });
 
