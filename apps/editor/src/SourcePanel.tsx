@@ -821,13 +821,6 @@ export function SourcePanel({
   const [uploadBusy, setUploadBusy] = useState(false);
   const [query, setQuery] = useState("");
   /**
-   * 上傳時就決定要不要讓 AI 讀這批檔案。
-   *
-   * 這個開關必須在上傳**之前**：圖片一落地，伺服器就會自動跑一次 AI 內容描述把圖送給
-   * 模型；等它出現在清單裡再取消勾選已經來不及了。預設仍是允許（既有行為）。
-   */
-  const [allowModelAccess, setAllowModelAccess] = useState(true);
-  /**
    * 正在送出請求的來源 id。
    *
    * 用集合而不是單一 id：使用者可以在等待期間去點另一張卡片，兩筆請求本來就會併行，
@@ -950,7 +943,7 @@ export function SourcePanel({
     setUploadBusy(true);
     try {
       const results = await Promise.allSettled(
-        files.map((file) => api.uploadSource(project.id, file, allowModelAccess)),
+        files.map((file) => api.uploadSource(project.id, file)),
       );
       onProject(await api.getProject(project.id));
       setQuery("");
@@ -991,29 +984,6 @@ export function SourcePanel({
               void uploadSourceFiles(files);
             }}
           />
-        </label>
-        {/*
-          放在上傳按鈕**旁邊**而不是來源卡片上：圖片一上傳，伺服器就會自動把它送給 AI 讀
-          內容，落地之後才取消勾選已經來不及。label 包住 input 讓整行都可以點。
-        */}
-        <label className="source-upload-consent">
-          <input
-            type="checkbox"
-            aria-label="不要讓 AI 讀取這批檔案"
-            checked={!allowModelAccess}
-            disabled={uploadBusy}
-            onChange={(event) => setAllowModelAccess(!event.target.checked)}
-          />
-          <span>
-            不要讓 AI 讀取這批檔案
-            {/*
-              措辭刻意不斷言「一定會送」：會不會讀圖取決於伺服器的模型設定（開關、有沒有
-              設文字模型、模型支不支援讀圖），前端看不到那些。能保證的只有勾選之後的行為。
-            */}
-            <small>
-              勾選後這批檔案不會送給任何模型；未勾選時，圖片可能會被 AI 讀出內容以便檢索。
-            </small>
-          </span>
         </label>
         <button
           className="add-text-source"

@@ -77,8 +77,16 @@ describe("圖片來源的分析狀態", () => {
   });
 });
 
-describe("上傳前就能退出 AI 讀取", () => {
-  it("勾了「不要讓 AI 讀取」之後，上傳請求帶的是 allowModelAccess=false", async () => {
+describe("上傳一律允許 AI 讀取", () => {
+  /**
+   * 上傳當下的那個退出勾選框已於 2026-08-04 依產品決定移除（「會上傳＝要準備使用」），
+   * 前端從此固定送 `allowModelAccess=true`。
+   *
+   * 這條測試存在的唯一理由是防止那個預設被改回 `false`：伺服器端的授權閘門是**安靜地**
+   * 跳過沒授權的來源，所以一旦送錯，圖片描述整條路（背景讀圖 → chunks → 搜尋 → 大綱引用）
+   * 會全部失效卻不報任何錯，而伺服器端測試餵的是自己的參數、看不到前端送什麼。
+   */
+  it("上傳請求帶的是 allowModelAccess=true", async () => {
     const project = projectWith(imageSource());
     project.sources = [];
     const queries: string[] = [];
@@ -90,18 +98,70 @@ describe("上傳前就能退出 AI 讀取", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SourcePanel project={project} onProject={vi.fn()} onError={vi.fn()} />);
 
-    const consent = screen.getByRole("checkbox", { name: "不要讓 AI 讀取這批檔案" });
-    // 預設仍是允許：這個功能不改變既有使用者的預期。
-    expect((consent as HTMLInputElement).checked).toBe(false);
-    fireEvent.click(consent);
-
     const input = screen.getByLabelText("上傳來源檔案") as HTMLInputElement;
     const file = new File([new Uint8Array([137, 80, 78, 71])], "chart.png", { type: "image/png" });
     fireEvent.change(input, { target: { files: [file] } });
 
     await waitFor(() => expect(queries.length).toBe(1));
-    // 這個選擇必須在**上傳當下**送出：圖片一落地伺服器就會自動送去讀圖，事後取消來不及。
-    expect(queries[0]).toContain("allowModelAccess=false");
+    // 伺服器只認 "true"／"false" 這兩個字串，所以斷言的是 query 字面而不是「有沒有這個參數」。
+    expect(queries[0]).toContain("allowModelAccess=true");
+  });
+});
+
+describe("來源卡片上的事後 toggle", () => {
+  /**
+   * 上傳當下的勾選框移除之後，這顆是使用者**唯一**能收回模型存取權的地方（AGENTS.md 的
+   * 授權閘門那條也是這樣寫的），所以它得有測試釘住。
+   *
+   * 它擋得住的與擋不住的要分清楚：PATCH 回去之後，這份來源就進不了大綱 prompt 與 FTS
+   * 檢索（伺服器端五處過濾都看 `allowModelAccess`）；但圖片若已經被排進背景讀圖，那一次
+   * 送出收不回來。測試只能斷言前者——後者本來就不是前端做得到的事。
+   */
+  function renderWithToggle(source: SourceAsset) {
+    const project = projectWith(source);
+    const patches: Array<{ body: Record<string, unknown>; url: string }> = [];
+    const onProject = vi.fn();
+    const onError = vi.fn();
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (init?.method !== "PATCH") return Response.json(project);
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      patches.push({ body, url });
+      return Response.json({ ...project, sources: [{ ...source, ...body }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SourcePanel project={project} onProject={onProject} onError={onError} />);
+    return { project, patches, onProject, onError };
+  }
+
+  it("取消勾選會 PATCH allowModelAccess:false，並把伺服器回應交回上層", async () => {
+    const { project, patches, onProject, onError } = renderWithToggle(imageSource());
+
+    const toggle = screen.getByRole("checkbox", { name: "允許 AI 使用 cost.png" });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(patches.length).toBe(1));
+    // 斷言 body 全等而不是「包含這個鍵」：多送一個欄位（例如順手帶上 usage）會覆寫掉
+    // 使用者沒有要改的設定。
+    expect(patches[0]!.body).toEqual({ allowModelAccess: false });
+    expect(patches[0]!.url).toContain(`/sources/${project.sources[0]!.id}`);
+    await waitFor(() => expect(onProject).toHaveBeenCalled());
+    expect((onProject.mock.calls[0]![0] as PresentationProject).sources[0]!.allowModelAccess).toBe(
+      false,
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("重新勾選會 PATCH 回 true：這顆是可逆的，不是一次性的封印", async () => {
+    const { patches } = renderWithToggle(imageSource({ allowModelAccess: false }));
+
+    const toggle = screen.getByRole("checkbox", { name: "允許 AI 使用 cost.png" });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(patches.length).toBe(1));
+    expect(patches[0]!.body).toEqual({ allowModelAccess: true });
   });
 });
 

@@ -361,7 +361,10 @@ describe("圖片來源的背景內容描述", () => {
     expect(described.metadata.imageDescriptionFailure).toBe(undefined);
   });
 
-  it("上傳時就能退出：allowModelAccess=false 一個請求都不發，也不標 parsing", async (context) => {
+  // 端點層的契約，不是使用者按得到的入口：上傳當下的退出勾選框已於 2026-08-04 移除，
+  // 前端一律送 `true`。這條仍然要在——它是 API 契約，而且是唯一擋得住「送出之前」的閘門，
+  // 未來若要恢復事前退出（或有嵌入端自己呼叫這個端點），靠的就是它。
+  it("allowModelAccess=false 的上傳一個請求都不發，也不標 parsing", async (context) => {
     if (unavailable) return context.skip();
     const project = await newProject("上傳時退出");
     const uploaded = await uploadImage(project.id, "private.png", "visual-reference", false);

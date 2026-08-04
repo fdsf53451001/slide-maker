@@ -2656,34 +2656,6 @@ header {
 .upload-source input {
   display: none;
 }
-/* 上傳前的「不要讓 AI 讀取」開關：緊貼上傳按鈕，因為它必須在檔案送出之前就決定。 */
-.source-upload-consent {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: -2px 2px 2px;
-  color: var(--text-dim);
-  font-size: 11px;
-  cursor: pointer;
-}
-.source-upload-consent input {
-  margin-top: 2px;
-  accent-color: var(--accent);
-}
-.source-upload-consent span {
-  display: grid;
-  gap: 3px;
-}
-/* 這是「不要讓 AI 讀取這批檔案」的同意說明，不是 metadata 徽章：使用者必須讀懂它才決定得了
-   要不要勾，而勾選與否會直接決定檔案內容有沒有被送去給模型。9px 不可接受。 */
-.source-upload-consent small {
-  color: var(--text-dim-2);
-  font:
-    12px "DM Mono",
-    monospace;
-  letter-spacing: 0.04em;
-  line-height: 1.5;
-}
 .source-describe-failed {
   color: var(--warning);
 }
@@ -5464,17 +5436,17 @@ textarea:focus-visible,
 
    第二輪（同一條標準，補的是第一輪漏掉的 9–10px 那批）**寫在各自的規則裡，沒有加進下面
    這份清單**，理由是清單放不下它們：
-   ・`.source-upload-consent small`（9→12）與 `.source-kind`（8→10）用的是 `font` 簡寫，
-     在這裡補一條 `font-size` 只會讓簡寫裡留著一個永遠不生效的舊值＝第二份真相；
-   ・`.source-kind` 的目標是 10px 不是 12px（徽章維持密度，只是脫離「認不出字形」的下限），
-     本來就不屬於一份叫「都改成 12px」的清單；
+   ・`.source-kind`（8→10）用的是 `font` 簡寫，在這裡補一條 `font-size` 只會讓簡寫裡留著一個
+     永遠不生效的舊值＝第二份真相；
+   ・同一條 `.source-kind` 的目標又是 10px 不是 12px（徽章維持密度，只是脫離「認不出字形」的
+     下限），本來就不屬於一份叫「都改成 12px」的清單；
    ・`.density-help` 真正要切斷的是繼承（它在 11px 的 `.style-form > label` 底下，`<small>`
      再乘 UA 的 0.8×＝實際 8.8px），那個理由只有寫在它自己旁邊才看得懂。
    一半在清單、一半在定義處是最糟的排列（要查兩個地方），所以第二輪整批留在定義處。
    涵蓋範圍：.density-help、.create-panel > small、.fields .prompt、.source-kind、
-   .source-upload-consent small、.source-preview-trigger.text p、.source-usage select、
-   .source-card-actions button、.extract-engine select、.extract-hint、
-   .pdf-font-notice button。掃視用的 11px eyebrow 與 9–10px 徽章一律維持不動。 */
+   .source-preview-trigger.text p、.source-usage select、.source-card-actions button、
+   .extract-engine select、.extract-hint、.pdf-font-notice button。掃視用的 11px eyebrow
+   與 9–10px 徽章一律維持不動。 */
 .provider-note,
 .provider-warning,
 .source-empty,

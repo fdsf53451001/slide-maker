@@ -503,19 +503,19 @@ export const api = {
   /**
    * 上傳一份來源。
    *
-   * `allowModelAccess` 一定要在**上傳的當下**就能決定：圖片來源會在伺服器端自動跑一次
-   * AI 內容描述，等落地之後才取消勾選，圖片早就送出去了。伺服器只認 "true"／"false"
-   * 這兩個字串（其他值一律 400），不要在這裡塞別的寫法。
+   * `allowModelAccess` 前端**一律送 `"true"`**：上傳當下的那個勾選框已於 2026-08-04 依產品
+   * 決定移除（「會上傳＝要準備使用」）。實際後果要講清楚——圖片一落地，伺服器就會自動跑一次
+   * AI 內容描述把縮圖送給模型，而前端已經沒有任何事前攔截點；來源卡片上那顆 toggle 是**事後
+   * 止血**，它擋得住這份來源之後被放進 prompt，擋不住已經送出去的那一次。
+   *
+   * 參數是刻意拿掉而不是保留一個沒人傳的預設值：留著會讓下一個人以為前端還有辦法關掉它。
+   * 伺服器仍只認 "true"／"false" 這兩個字串（其他值一律 400），不要在這裡塞別的寫法。
    */
-  uploadSource: async (
-    projectId: string,
-    file: File,
-    allowModelAccess = true,
-  ): Promise<PresentationProject> => {
+  uploadSource: async (projectId: string, file: File): Promise<PresentationProject> => {
     const query = new URLSearchParams({
       name: file.name,
       mediaType: file.type || "application/octet-stream",
-      allowModelAccess: allowModelAccess ? "true" : "false",
+      allowModelAccess: "true",
     });
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/sources?${query}`,
