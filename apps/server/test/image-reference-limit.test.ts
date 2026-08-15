@@ -225,21 +225,31 @@ describe("limitReferences", () => {
     expect(limited.droppedIndices).toEqual([2]);
   });
 
-  it("框架範本與風格參考圖同一優先級，被砍的仍是內容圖的尾巴", () => {
-    // 少了範本這一頁會長得不像同一份簡報，與少了風格圖是同一類損失，所以同級。
+  it("超額時第一個讓位的是框架範本，不是使用者選中的內容圖", () => {
+    // 內容圖是使用者透過 sourceIds／pinnedSourceIds 明確選中的東西：少一張範本是「鄰頁略
+    // 不一致」，少一張圖表是「使用者要的佐證沒出現」，不是同一量級。
     const references = [ref("style"), ref("deck-frame"), ref("content"), ref("content")];
     const limited = limitReferences(references, 3);
-    expect(limited.keptIndices).toEqual([0, 1, 2]);
-    expect(limited.droppedIndices).toEqual([3]);
+    expect(limited.keptIndices).toEqual([0, 2, 3]);
+    expect(limited.droppedIndices).toEqual([1]);
   });
 
-  it("同優先級維持原順序：風格圖仍排在範本前面", () => {
-    // 「同一優先級」不可退化成「範本插隊」——jobs.ts 組出的順序（style → deck-frame →
-    // content）就是合約裡 Image N 的順序，換位等於換了每張圖的說明。
-    const references = [ref("content"), ref("style"), ref("deck-frame")];
-    const limited = limitReferences(references, 2);
-    expect(limited.keptIndices).toEqual([1, 2]);
-    expect(limited.droppedIndices).toEqual([0]);
+  it("三級的完整順序：風格圖 → 內容圖 → 範本", () => {
+    const references = [ref("content"), ref("deck-frame"), ref("style"), ref("content")];
+    expect(limitReferences(references, 3).droppedIndices).toEqual([1]);
+    expect(limitReferences(references, 2).droppedIndices).toEqual([1, 3]);
+    expect(limitReferences(references, 1).keptIndices).toEqual([2]);
+  });
+
+  it("塞得下時完全不重排，三種角色維持原順序", () => {
+    // 優先序只在真的超額時看得出來；額度夠時順序必須原封不動，否則合約裡的「Image N」
+    // 會與實際附圖錯位。
+    const references = [ref("style"), ref("deck-frame"), ref("content")];
+    expect(limitReferences(references, 3)).toEqual({ keptIndices: [0, 1, 2], droppedIndices: [] });
+    expect(limitReferences(references, undefined)).toEqual({
+      keptIndices: [0, 1, 2],
+      droppedIndices: [],
+    });
   });
 });
 

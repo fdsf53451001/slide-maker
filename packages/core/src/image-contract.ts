@@ -277,6 +277,56 @@ function hasDesignSystem(request: ImageGenerationRequest): boolean {
 }
 
 /**
+ * 上一頁當作框架範本（`deck-frame`）的完整規則。
+ *
+ * 每一頁都是**單次無狀態生成**，同一份簡報已生成的其他頁一張都不會附上，跨頁一致性全靠
+ * designSystem 的文字描述重現——實測兩頁的標頭樣式因此長得不一樣。附上前一頁是最小的修法：
+ * 模型看得到自己上一次把這套系統實作成什麼樣子。
+ *
+ * **形狀比照 `DIRECT-ASSET FIDELITY CONTRACT`**：沒有這個角色的附圖就回空陣列，所以沒有範本
+ * 可附時整份合約與加這個功能前逐字元相同；有範本時它是一個獨立區塊，位置排在 DESIGN SYSTEM
+ * AUTHORITY 與 DECK CHROME **之後**、附圖清單**之前**。位置是規則的一部分：對齊句要求的正是
+ * title band 位置、字級、margins、alignment，而 DESIGN SYSTEM AUTHORITY 明文寫著
+ * `Never average these against a reference image that shows something different`——兩者的關係
+ * 必須在同一個視野內消解，不能隔著一千字元。
+ *
+ * 措辭的四個張力，順序也是刻意的（先從屬、後對齊）：
+ *  ① **範本，不是要複製的目標**（使用者原話）。只說「保持一致」時，模型會連版面一起抄，
+ *     這一頁的內容被硬塞進上一頁的格子裡。
+ *  ② **權威不是它**。範本只是同一套系統的一次實作；反過來的話，上一頁的偶發偏差會沿著整份
+ *     deck 一頁一頁放大。而權威是誰**依 designSystem 在不在而不同**：`hasDesignSystem()` 是活
+ *     的分支，沒跑過 AI 分析的風格 designSystem 是空字串、整段 DESIGN SYSTEM AUTHORITY 不會
+ *     送出（本機 9 份風格有 8 份是這樣），這時把裁決權交給一個空欄位等於沒有裁決，範本事實
+ *     上變成最高權威——所以要有一句在無 designSystem 時仍然成立的退路，並就地講清楚它與
+ *     「All STYLE references have equal influence … not a master template」的關係。
+ *  ③ **它的內容一個字都不得帶進來**。生成模式對參考圖另有一條總則，但那條逐字列舉了 STYLE
+ *     與 CONTENT 兩種角色，涵蓋不到這個新角色，所以這裡自帶一句。
+ *  ④ **舊圖上的頁碼要忽略，但不能因此否定整張圖**。頁碼禁令修好之前生成的頁上都可能有模型
+ *     自畫的頁碼，所以這句在現存專案是常態觸發；寫成「that image is wrong」等於在對齊指令
+ *     正下方說「我剛叫你對齊的那張圖是錯的」，最可能的後果是把對齊指令一起削弱。
+ */
+function deckFrameRule(): ContractRule {
+  return derivedRule(["generate"], (request) => {
+    if (!request.references.some((reference) => reference.role === "deck-frame")) return [];
+    const designSystem = hasDesignSystem(request);
+    return [
+      "DECK FRAME REFERENCE:",
+      "One of the attached images is the previous slide of this same deck, already generated. It is attached for one purpose: so that neighbouring pages read as parts of one presentation.",
+      designSystem
+        ? "style.designSystem stays the authority. Where that written system and this image disagree, follow the system: the image is one execution of it, not a second specification, and the instruction never to average structural decisions against a reference image is not weakened by it."
+        : "This deck has no written design system, so the STYLE references remain the authority on how it looks, and this image only shows you where that visual language was placed on the page. Where the two disagree, follow the STYLE references. This image is not one of them and never becomes a master template; it earns no more influence than the frame it is being read for.",
+      "It is a template, not a target to copy. This slide's content is different, so lay out the content area for what this slide actually says: it does not need to resemble that page, and forcing this slide's material into that page's arrangement is a worse result than a layout that differs.",
+      "Within that, align this slide with the frame that repeats across the deck: the position and height of the title band, the type sizes and colour treatment of headline, subhead, and body copy, margins and alignment, framing elements such as rules, dividers, and colour blocks, and the overall level of finish.",
+      "Nothing in it is content for this slide: its words, headings, numbers, chart values, labels, and pictured subjects must never appear in your output.",
+      designSystem
+        ? "If it is a different page type — a cover or a section divider — while this slide is a normal content page, follow the page-type rules in style.designSystem and carry over only what that system holds in common across every page."
+        : "If it is a different page type — a cover or a section divider — while this slide is a normal content page, carry over only what holds across page types and decide the rest from slide.purpose and slide.content.",
+      "Ignore any page number, footer, or date it shows: those were drawn in error, and the deck chrome rule above still holds. Everything else about that image still stands.",
+    ];
+  });
+}
+
+/**
  * 每張附加影像的角色說明——**依模式分派**。
  *
  * `base`／`mask` 必須自成一類：它們是編輯任務的內建輸入，不是「參考素材」。把底圖說成
@@ -298,30 +348,15 @@ const MASK_REFERENCE =
   "Mask — a locator image, not artwork and not content. It only points at part of the base image; nothing in it is to be drawn onto the slide.";
 
 /**
- * 上一頁當作框架範本（`deck-frame`）。
+ * 上一頁當作框架範本（`deck-frame`）——附圖清單裡的**一行短說明**。完整規則是下方
+ * `deckFrameRule()` 的獨立區塊，比照 `DIRECT-ASSET FIDELITY CONTRACT` 的形狀。
  *
- * 每一頁都是**單次無狀態生成**，同一份簡報已生成的其他頁一張都不會附上，跨頁一致性全靠
- * designSystem 的文字描述重現——實測兩頁的標頭樣式因此長得不一樣。附上前一頁是最小的修法：
- * 模型看得到自己上一次把這套系統實作成什麼樣子。
- *
- * 措辭的三個張力都要就地消解，少一個就換來另一種壞結果：
- *  ① **範本，不是要複製的目標**（使用者原話）。只說「保持一致」時，模型會連版面一起抄，
- *     這一頁的內容被硬塞進上一頁的格子裡。
- *  ② **它的內容一個字都不得帶進來**。生成模式對 STYLE／CONTENT 參考圖另有一條總則，但那
- *     條逐字列舉了 STYLE 與 CONTENT 兩種角色，涵蓋不到這個新角色，所以這裡自帶一句。
- *  ③ **權威仍是 designSystem**。範本只是同一套系統的一次實作；反過來的話，上一頁的偶發
- *     偏差會沿著整份 deck 一頁一頁放大。頁碼是這條的極端案例：任務 A 修好之前產出的舊圖
- *     上真的有頁碼，跟著畫就等於把已修好的 bug 手動複製回來。
+ * 為什麼不像其他角色那樣把整段塞進這一行：**篇幅本身就是權重訊號**。旁邊的 STYLE／CONTENT
+ * 說明各只有一句，範本的說明壓成一行就是一千字元，讀起來像是這張圖最重要；而且那段裡最關鍵
+ * 的「它只是範本、權威仍是 designSystem」會落在最後，離「對齊它的標題帶與字級」一千字元遠。
  */
-const DECK_FRAME_GENERATE_REFERENCE = [
-  "Deck frame reference — the previous slide of this same deck, already generated.",
-  "Align this slide with its repeatable frame so that neighbouring pages read as one deck: the position and height of the title band, the type sizes and colour treatment of headline, subhead, and body copy, margins and alignment, framing elements such as rules, dividers, and colour blocks, and the overall level of finish.",
-  "It is a template, not a target to copy. This slide's content is different, so lay out the content area for what this slide actually says; it does not need to look like that page, and forcing this slide's material into that page's arrangement is a worse result than a layout that differs.",
-  "Nothing in it is content for this slide: its words, headings, numbers, chart values, labels, and pictured subjects must never appear in your output.",
-  "If it is a different page type — a cover or a section divider — while this slide is a normal content page, follow the page-type rules in style.designSystem and carry over only what that system holds in common across every page.",
-  "If it shows a page number, a footer, or a date, that image is wrong: never repeat them, the deck chrome rule above still holds.",
-  "Where it disagrees with style.designSystem, style.designSystem wins: this image is one execution of that system, not a new authority.",
-].join(" ");
+const DECK_FRAME_REFERENCE =
+  "Deck frame reference — the previous slide of this same deck, already generated. Follow the DECK FRAME REFERENCE rules above: align this slide with its repeatable frame, and treat it as a template rather than a page to copy.";
 
 const REFERENCE_DESCRIPTIONS: Record<ContractMode, Record<ImageReferenceRole, string>> = {
   generate: {
@@ -330,7 +365,7 @@ const REFERENCE_DESCRIPTIONS: Record<ContractMode, Record<ImageReferenceRole, st
     content: "Content reference — it may inform subject matter.",
     "direct-asset":
       "Direct asset — reproduce this image faithfully inside a framed panel on the slide.",
-    "deck-frame": DECK_FRAME_GENERATE_REFERENCE,
+    "deck-frame": DECK_FRAME_REFERENCE,
     // 全新生成不會有這兩種輸入；真的出現時也照編輯語意說明，不得反過來變成生成素材。
     base: "Base image — an existing slide image. Do not treat it as material to redraw or restyle.",
     mask: MASK_REFERENCE,
@@ -431,11 +466,27 @@ const CONTRACT_RULES: ReadonlyArray<ContractRule> = [
   //
   // 只能加在**同一條規則的後續行**：deck-chrome-contract.test.ts 斷言標題字串在整份合約
   // 裡只出現一次，另開一條同名規則會讓那個測試變紅。
-  rule(
-    ["generate", "edit"],
+  //
+  // 第二行**不逐字列舉 designSystem 的欄位名**：schema 的欄位是英文（palette／typography／
+  // layoutSystem／components／archetypes／designRationale），但 `renderDesignSystem()` 落到
+  // prompt 裡的是繁中標題（## 設計思路／## 色票／## 字型／## 版面系統／## 元件／## 頁型規則），
+  // 用英文欄位名等於要模型自己做一次映射——而這條規則的整個作用就是精準指出「這幾個位置的字
+  // 不是繪製指示」。改用描述性的說法，兩種寫法都對得上，也不會漏掉 designRationale 那個最
+  // 可能寫出「頁尾以細線與頁碼收束版面」的自由散文欄位。
+  //
+  // 第三行只在真的有 direct-asset 時才送：兩條契約都宣稱 outranks the style contract，使用者
+  // 把含頁碼的投影片截圖標成「直接素材」時它們會正面打架。沒有 direct-asset 時多送這句只是
+  // 在頁碼禁令旁邊放一個不存在的例外。
+  derivedRule(["generate", "edit"], (request, mode) => [
     "DECK CHROME IS NOT YOURS TO DRAW: never render page numbers, slide numbers, or any other indicator of this slide's position within the deck, and never render a running header or footer carrying the deck or section name, a date, or a copyright line. Page numbering is composited onto the slide by the system after generation, so anything drawn here would duplicate or contradict it.",
-    "This rule outranks the style contract. If style.designSystem describes deck chrome anywhere — in a palette entry's usage, in its typography, in its layout system, or in its page-type rules — or if a STYLE reference image visibly carries a page number, a running header or footer, a date, or a copyright line, that is a record of what was observed in the source deck, never an instruction to draw it here. Follow the rest of that system exactly, honour the margins and reserved edge space it specifies, and leave the chrome itself undrawn.",
-  ),
+    "This rule outranks the style contract. If style.designSystem describes deck chrome anywhere in it — in its opening rationale, its palette usage notes, its type rules, its layout system, its components, or its page-type rules — or if a STYLE or DECK FRAME reference image visibly carries a page number, a running header or footer, a date, or a copyright line, that is a record of what was observed in another deck, never an instruction to draw it here. Follow the rest of that system exactly, honour the margins and reserved edge space it specifies, and leave the chrome itself undrawn.",
+    ...(mode === "generate" &&
+    request.references.some((reference) => reference.role === "direct-asset")
+      ? [
+          "One exception, and only this one: a page number, header, footer, or date that is part of the picture inside a DIRECT-ASSET reference is that asset's own content, not chrome of the slide you are drawing. Reproduce it inside that asset's panel as the direct-asset contract requires; never lift it out onto the slide around the panel.",
+        ]
+      : []),
+  ]),
   rule(["generate", "edit"], "FACTUAL GROUNDING CONTRACT:"),
   // 接地的第一條要分模式。"Every figure rendered anywhere on the slide … must already appear
   // in slide.content" 對編輯任務涵蓋了底圖上早就存在的數字，而那些數字經常不在 slide.content
@@ -479,6 +530,7 @@ const CONTRACT_RULES: ReadonlyArray<ContractRule> = [
     ["generate"],
     "If slide.imagePrompt or the style contract requests sparse copy, no readable text, or dominant decorative imagery in conflict with authoritative visible copy or density, preserve the content and density while following the rest of the style contract.",
   ),
+  deckFrameRule(),
   derivedRule(["generate", "edit", "text-removal"], (request, mode) =>
     request.references.length
       ? [
