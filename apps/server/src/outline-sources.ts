@@ -17,11 +17,12 @@ export const SLIDE_SOURCE_ID_LIMIT = 20;
  * 請求（Gemini 的硬上限是 8 張）。2026-07-29 線上那份 20 頁專案每頁被灌進 12 張內容圖，
  * 整份因 `GEMINI_IMAGE_REFERENCES_LIMIT` 全數失敗。
  *
- * **3 張不保證一定送得出去**：`stylePresetSchema.referenceImages` 的上限是 4，所以最壞情況
- * 是一般生成 3+4=7（進得去），而遮罩編輯／抽字再加上 base 與 mask 就是 9 > 8——`jobs.ts` 的
- * `limitReferences()` 會照優先序砍掉 1 張內容圖並留下 log。那是刻意的取捨（風格圖決定整頁
- * 長得像不像這份簡報，資料圖少一張只是少一份佐證），不是漏算：這裡的 3 是「大綱最多**要求**
- * 幾張」，能不能全部送出由 provider 的宣告上限決定。
+ * **3 張不保證一定送得出去**：`stylePresetSchema.referenceImages` 的上限是 4，而全新生成還會
+ * 多附一張「上一頁」當框架範本（`jobs.ts` 的 `deckFrameImagePath()`），所以最壞情況是一般
+ * 生成 3+4+1=8（正好等於上限，進得去），遮罩編輯／抽字沒有範本、卻要加上 base 與 mask，
+ * 就是 3+4+2=9 > 8——`jobs.ts` 的 `limitReferences()` 會照優先序砍掉 1 張內容圖並留下 log。
+ * 那是刻意的取捨（風格圖與範本決定整頁長得像不像這份簡報，資料圖少一張只是少一份佐證），
+ * 不是漏算：這裡的 3 是「大綱最多**要求**幾張」，能不能全部送出由 provider 的宣告上限決定。
  */
 export const OUTLINE_SLIDE_SOURCE_REF_LIMIT = 8;
 export const OUTLINE_SLIDE_IMAGE_REF_LIMIT = 3;

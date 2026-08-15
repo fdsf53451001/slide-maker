@@ -35,8 +35,15 @@ export interface ImageProviderCapabilities {
 export type ProviderAvailability =
   { status: "available"; warning?: string } | { status: "unavailable"; reason: string };
 
-/** 附加影像的角色。合約依此決定每張圖的說明文字與適用的規則。 */
-export type ImageReferenceRole = "style" | "content" | "direct-asset" | "base" | "mask";
+/**
+ * 附加影像的角色。合約依此決定每張圖的說明文字與適用的規則。
+ *
+ * `deck-frame` 是「同一份 deck 裡前一張已生成的投影片」：每頁都是單次無狀態生成，跨頁
+ * 一致性原本全靠文字描述重現，實測會長出兩種標頭。它是**範本**而不是要複製的目標，說明
+ * 文字必須自己講清楚這件事（見 image-contract.ts 的 REFERENCE_DESCRIPTIONS）。
+ */
+export type ImageReferenceRole =
+  "style" | "content" | "direct-asset" | "deck-frame" | "base" | "mask";
 
 export interface ImageGenerationRequest {
   projectId: string;

@@ -15,6 +15,7 @@ import {
 } from "@slide-maker/core";
 import { JobRunner, limitReferences } from "../src/jobs.js";
 import { FileProjectRepository } from "../src/repository.js";
+import { FileStyleRepository } from "../src/styles.js";
 
 /**
  * provider 宣告的參考圖上限是**第二層防護**：大綱那端的 schema 上限只是「請模型配合」
@@ -102,6 +103,27 @@ async function fixture(provider: ImageProvider) {
   await repository.saveProject(project);
   const providers = new ProviderRegistry<ImageProvider>().register(provider);
   return { root, repository, project, runner: new JobRunner(repository, providers) };
+}
+
+/** 帶風格庫的版本：只有它組得出真正的 `role: "style"` 參考圖（來源那條走的是 usage）。 */
+async function styledFixture(provider: ImageProvider) {
+  const root = await mkdtemp(join(tmpdir(), "slide-maker-deck-frame-"));
+  const repository = new FileProjectRepository(root);
+  const styles = new FileStyleRepository(join(root, "styles"));
+  await styles.initialize();
+  const project = createProject({ topic: "框架範本", now: "2026-08-15T00:00:00.000Z" });
+  project.styleSnapshot.referenceImages = [
+    {
+      id: "style-ref-1",
+      name: "Deck style A",
+      mediaType: "image/png",
+      assetPath: "assets/style-ref-1.png",
+      createdAt: "2026-08-15T00:00:00.000Z",
+    },
+  ];
+  await repository.saveProject(project);
+  const providers = new ProviderRegistry<ImageProvider>().register(provider);
+  return { root, repository, project, runner: new JobRunner(repository, providers, styles) };
 }
 
 const captureWarnings = (): { read: () => Record<string, unknown>[]; restore: () => void } => {
@@ -201,6 +223,23 @@ describe("limitReferences", () => {
     const limited = limitReferences(references, 1, [0, 1]);
     expect(limited.keptIndices).toEqual([0, 1]);
     expect(limited.droppedIndices).toEqual([2]);
+  });
+
+  it("框架範本與風格參考圖同一優先級，被砍的仍是內容圖的尾巴", () => {
+    // 少了範本這一頁會長得不像同一份簡報，與少了風格圖是同一類損失，所以同級。
+    const references = [ref("style"), ref("deck-frame"), ref("content"), ref("content")];
+    const limited = limitReferences(references, 3);
+    expect(limited.keptIndices).toEqual([0, 1, 2]);
+    expect(limited.droppedIndices).toEqual([3]);
+  });
+
+  it("同優先級維持原順序：風格圖仍排在範本前面", () => {
+    // 「同一優先級」不可退化成「範本插隊」——jobs.ts 組出的順序（style → deck-frame →
+    // content）就是合約裡 Image N 的順序，換位等於換了每張圖的說明。
+    const references = [ref("content"), ref("style"), ref("deck-frame")];
+    const limited = limitReferences(references, 2);
+    expect(limited.keptIndices).toEqual([1, 2]);
+    expect(limited.droppedIndices).toEqual([0]);
   });
 });
 
@@ -328,5 +367,222 @@ describe("生成時依 provider 宣告的上限截斷參考圖", () => {
       .read()
       .filter((entry) => entry.event === "image_references_truncated");
     expect(truncated[0]).toMatchObject({ requestedCount: 7, keptCount: 4, droppedCount: 3 });
+  });
+});
+
+/**
+ * 上一頁當作框架範本。
+ *
+ * 每頁都是單次無狀態生成，附給模型的圖原本只有風格庫參考圖與該頁自己的來源圖，跨頁一致性
+ * 全靠 designSystem 的文字描述重現——實測兩頁的標頭樣式因此不一致。這組測試釘的是「哪一張
+ * 圖會被挑成範本、放在哪個位置、什麼時候不附」。
+ *
+ * **不變量：沒有範本可附時，送出的合約字串與加這個功能前逐字元相同。** 那由
+ * `packages/core/test/contract-modes.test.ts` 的快照承擔（CASES 刻意沒有 deck-frame 情境）。
+ * 做法是先做完 deck chrome 那一半、更新快照，再加這個功能並確認快照**沒有第二次變動**；
+ * 這裡的「第一頁完全不含 deck-frame」則是同一件事在 jobs.ts 這一端的對照。
+ */
+describe("上一頁當作框架範本", () => {
+  const DECK_FRAME_NAME = "Previous slide in this deck";
+
+  /** 生成某一頁並回傳它落地的版本；`captured` 是那次呼叫真正送出的請求。 */
+  async function generateSlide(
+    context: Awaited<ReturnType<typeof styledFixture>>,
+    provider: LimitedProvider,
+    order: number,
+  ) {
+    const project = (await context.repository.loadProject(context.project.id))!;
+    const slide = project.slides.find((candidate) => candidate.order === order)!;
+    const queued = await context.runner.enqueue(project.id, slide.id, provider.id);
+    const { job } = await waitForTerminalJob(context.repository, project.id, queued.id);
+    expect(job.status).toBe("completed");
+    return { slideId: slide.id, versionId: job.resultVersionId!, jobId: job.id };
+  }
+
+  const roles = (provider: LimitedProvider) =>
+    provider.captured?.references.map((reference) => reference.role);
+
+  const deckFrame = (provider: LimitedProvider) =>
+    provider.captured?.references.find((reference) => reference.name === DECK_FRAME_NAME);
+
+  /** 那一頁目前版本的圖在磁碟上的絕對路徑——用來確認範本挑到的是哪一頁。 */
+  async function currentImagePath(
+    context: Awaited<ReturnType<typeof styledFixture>>,
+    slideId: string,
+  ) {
+    const project = (await context.repository.loadProject(context.project.id))!;
+    const slide = project.slides.find((candidate) => candidate.id === slideId)!;
+    const version = slide.versions.find((entry) => entry.id === slide.currentVersionId)!;
+    return context.repository.resolveAsset(project.id, version.imagePath);
+  }
+
+  it("上一頁已生成時附成 deck-frame，排在風格參考圖之後、內容參考圖之前", async () => {
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    const source = makeSource("frame-content", "visual-reference", "chart.png");
+    await context.repository.saveAsset(context.project.id, `${source.id}.png`, TINY_PNG);
+    await context.repository.updateProject(context.project.id, (project) => {
+      project.sources.push(source);
+      project.slides.find((slide) => slide.order === 1)!.sourceIds = [source.id];
+    });
+
+    const first = await generateSlide(context, provider, 0);
+    // 第一頁自己沒有範本可用（同一份 deck 前面沒有已生成的頁）。
+    expect(roles(provider)).toEqual(["style"]);
+
+    await generateSlide(context, provider, 1);
+    // 順序即合約裡 Image N 的順序：style → deck-frame → content。
+    expect(roles(provider)).toEqual(["style", "deck-frame", "content"]);
+    expect(deckFrame(provider)?.path).toBe(await currentImagePath(context, first.slideId));
+    expect(deckFrame(provider)?.mediaType).toBe("image/png");
+  });
+
+  it("第一頁完全不附範本", async () => {
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    await generateSlide(context, provider, 0);
+    expect(roles(provider)).toEqual(["style"]);
+    expect(deckFrame(provider)).toBeUndefined();
+  });
+
+  it("上一頁還沒生成時往前找，取到再上一頁那張", async () => {
+    // 前面幾頁還沒生成是正常狀態（使用者從中間開始生成），就地放棄等於整份 deck 都拿不到
+    // 範本。
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    const first = await generateSlide(context, provider, 0);
+    await generateSlide(context, provider, 2);
+    expect(roles(provider)).toEqual(["style", "deck-frame"]);
+    expect(deckFrame(provider)?.path).toBe(await currentImagePath(context, first.slideId));
+  });
+
+  it("隱藏頁照樣可以當範本", async () => {
+    // `hidden` 的語意是「這一頁不上場」，不是「這一頁不算數」——它的視覺框架仍然是這份
+    // deck 的，跳過它只會讓後面那一頁莫名其妙地少一張範本。
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    const first = await generateSlide(context, provider, 0);
+    await context.repository.updateProject(context.project.id, (project) => {
+      project.slides.find((slide) => slide.id === first.slideId)!.hidden = true;
+    });
+
+    await generateSlide(context, provider, 1);
+    expect(roles(provider)).toEqual(["style", "deck-frame"]);
+    expect(deckFrame(provider)?.path).toBe(await currentImagePath(context, first.slideId));
+  });
+
+  it("編輯與抹字任務都不附範本", async () => {
+    // 這兩種任務是在既有像素上動刀，一致性來自底圖本身；多附一張「別頁長這樣」只會變成
+    // 重排整張投影片的理由（916fa47 的形狀）。
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    await generateSlide(context, provider, 0);
+    const second = await generateSlide(context, provider, 1);
+    // 前置條件：這一頁在全新生成時**確實**拿得到範本，否則下面兩個斷言恆真。
+    expect(roles(provider)).toContain("deck-frame");
+
+    const edited = await context.runner.enqueue(context.project.id, second.slideId, provider.id, {
+      instruction: "把右側卡片換成藍色",
+      baseVersionId: second.versionId,
+    });
+    const editJob = await waitForTerminalJob(context.repository, context.project.id, edited.id);
+    expect(editJob.job.status).toBe("completed");
+    expect(roles(provider)).toEqual(["base", "style"]);
+
+    const extracted = await context.runner.enqueue(
+      context.project.id,
+      second.slideId,
+      provider.id,
+      {
+        instruction: "Remove text",
+        baseVersionId: second.versionId,
+        textExtraction: { originalVersionId: second.versionId, threshold: 0.75, boxes: [] },
+      },
+    );
+    const extractJob = await waitForTerminalJob(
+      context.repository,
+      context.project.id,
+      extracted.id,
+    );
+    expect(extractJob.job.status).toBe("completed");
+    expect(roles(provider)).toEqual(["base", "style"]);
+  });
+
+  it("provider 不吃參考圖時略過範本，生成照樣完成並留下一行原因", async () => {
+    // 範本是純加分項，**絕不可讓原本跑得動的生成變成失敗**。實測（jobs-security 的併發
+    // 測試）：無條件附上時，宣告 `referenceImages: false` 的 provider 第一頁照常完成、
+    // 第二頁起每一頁都 STYLE_REFERENCES_UNSUPPORTED——序列跑的第二頁正好拿得到範本。
+    const provider = new LimitedProvider();
+    Object.defineProperty(provider, "capabilities", {
+      value: { ...provider.capabilities, referenceImages: false, multipleReferenceImages: false },
+    });
+    const context = await styledFixture(provider);
+    await context.repository.updateProject(context.project.id, (project) => {
+      // 風格參考圖也一併拿掉：這個 provider 連一張補充參考圖都不吃。
+      project.styleSnapshot.referenceImages = [];
+    });
+    await generateSlide(context, provider, 0);
+    const warnings = captureWarnings();
+    try {
+      await generateSlide(context, provider, 1);
+    } finally {
+      warnings.restore();
+    }
+    expect(provider.captured?.references).toEqual([]);
+    // 略過是降級，不能靜默：跨頁樣式不一致回報進來時，這一行是唯一能分辨「沒附範本」與
+    // 「附了但模型沒理」的證據。
+    const skipped = warnings
+      .read()
+      .filter((entry) => entry.event === "deck_frame_reference_skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatchObject({
+      projectId: context.project.id,
+      providerId: provider.id,
+      reason: "REFERENCE_IMAGES_UNSUPPORTED",
+    });
+  });
+
+  it("上一頁不是 PNG／JPEG 時不附，也不猜一個 mediaType", async () => {
+    // 內建 mock provider 落地的是 `.svg`；把它標成 image/png 送給真的影像模型換來的是整頁
+    // 失敗。同一份專案先用 mock 跑、之後換成真模型是真實路徑（使用者換模型組合）。
+    const provider = new LimitedProvider();
+    const context = await styledFixture(provider);
+    const first = await generateSlide(context, provider, 0);
+    await context.repository.updateProject(context.project.id, (project) => {
+      const slide = project.slides.find((candidate) => candidate.id === first.slideId)!;
+      const version = slide.versions.find((entry) => entry.id === slide.currentVersionId)!;
+      version.imagePath = version.imagePath.replace(/\.png$/i, ".svg");
+    });
+    const warnings = captureWarnings();
+    try {
+      await generateSlide(context, provider, 1);
+    } finally {
+      warnings.restore();
+    }
+    expect(roles(provider)).toEqual(["style"]);
+    expect(
+      warnings.read().filter((entry) => entry.event === "deck_frame_reference_skipped")[0],
+    ).toMatchObject({ reason: "UNSUPPORTED_MEDIA_TYPE" });
+  });
+
+  it("provider 只吃一張參考圖時，風格圖優先，範本讓位並記下原因", async () => {
+    // 「只能一張」的名額已經被風格圖佔走：硬塞第二張會撞 MULTIPLE_REFERENCES_UNSUPPORTED，
+    // 整頁失敗換一張範本不是划算的交易。
+    const provider = new LimitedProvider();
+    Object.defineProperty(provider, "capabilities", {
+      value: { ...provider.capabilities, multipleReferenceImages: false },
+    });
+    const context = await styledFixture(provider);
+    await generateSlide(context, provider, 0);
+    const warnings = captureWarnings();
+    try {
+      await generateSlide(context, provider, 1);
+    } finally {
+      warnings.restore();
+    }
+    expect(roles(provider)).toEqual(["style"]);
+    expect(
+      warnings.read().filter((entry) => entry.event === "deck_frame_reference_skipped")[0],
+    ).toMatchObject({ reason: "MULTIPLE_REFERENCES_UNSUPPORTED" });
   });
 });

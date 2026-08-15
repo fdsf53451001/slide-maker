@@ -84,8 +84,9 @@ export interface JobImageReference {
  *  1. `protectedIndices`（編輯任務的 base／mask）**一張都不能砍**：它們是被 `edit.baseImageIndex`
  *     ／`maskImageIndex` 指到的位置，砍掉會讓索引指向別的角色——那是無聲的失敗（模型收到
  *     「Image 1 是你要編輯的投影片」與「Image 1: role=style」互相打架的兩句話）。
- *  2. 風格參考圖優先於內容參考圖：少一張資料圖只是少一份佐證，少了風格圖整頁會長得不像
- *     這份簡報。
+ *  2. 風格參考圖與框架範本（`deck-frame`，上一頁）優先於內容參考圖：少一張資料圖只是少
+ *     一份佐證，少了風格圖或範本整頁會長得不像這份簡報。兩者**同一優先級**——同優先級維持
+ *     原順序，所以風格圖仍排在範本之前、被砍的仍是內容圖的尾巴，既有行為完全不變。
  *  3. 同類之間依原順序砍尾，`sourceIds` 的排序因此就是保留的優先序。
  *
  * 回傳保留下來的原始索引，呼叫端據此重算 `edit` 的索引——雖然目前 base／mask 一定在最前
@@ -102,7 +103,10 @@ export function limitReferences<T extends { role: ImageReferenceRole }>(
   const isProtected = new Set(protectedIndices);
   const budget = Math.max(0, max - isProtected.size);
   const supplemental = all.filter((index) => !isProtected.has(index));
-  const priority = (index: number): number => (references[index]!.role === "style" ? 0 : 1);
+  const priority = (index: number): number => {
+    const role = references[index]!.role;
+    return role === "style" || role === "deck-frame" ? 0 : 1;
+  };
   const kept = new Set([
     ...isProtected,
     // 穩定排序：同一優先級維持原順序，砍的永遠是尾巴那幾張。
@@ -147,6 +151,34 @@ function editBaseImagePath(
 ): string {
   if (operation === "edit") return version.textLayer?.backgroundPath ?? version.imagePath;
   return unerasedImagePath(version);
+}
+
+/**
+ * 這一頁的「框架範本」：同一份 deck 裡**前一張已經生成好**的投影片。
+ *
+ * 每頁都是單次無狀態生成，附給模型的圖原本只有風格庫參考圖與該頁自己的來源圖——同一份
+ * 簡報已生成的其他頁一張都不會附上，跨頁一致性全靠 designSystem 的文字描述重現，實測兩頁
+ * 的標頭樣式因此長得不一樣。附上前一頁，模型才看得到自己上一次把這套系統實作成什麼樣子。
+ * 它是**範本不是要複製的目標**，那件事由合約的 `deck-frame` 說明承擔，這裡只負責挑圖。
+ *
+ * 三個決定：
+ *  - **隱藏頁照樣可以當範本**。`hidden` 的語意是「這一頁不上場」，不是「這一頁不算數」——
+ *    它的視覺框架仍然是這份 deck 的。跳過隱藏頁只會讓它後面那一頁莫名其妙地少一張範本。
+ *  - 往前找，取**第一張**有 `currentVersionId` 且該 version 真的還在的頁。相鄰是重點：
+ *    找不到就再往前，而不是就地放棄（前面幾頁還沒生成是正常狀態）。
+ *  - 用 version 的 `imagePath`（使用者現在看到的那張，含文字層的合成結果），因為那正是
+ *    「這份 deck 現在長什麼樣」。
+ */
+function deckFrameImagePath(slides: readonly SlideSpec[], slide: SlideSpec): string | undefined {
+  const earlier = slides
+    .filter((candidate) => candidate.order < slide.order)
+    .sort((left, right) => right.order - left.order);
+  for (const candidate of earlier) {
+    if (!candidate.currentVersionId) continue;
+    const version = candidate.versions.find((entry) => entry.id === candidate.currentVersionId);
+    if (version) return version.imagePath;
+  }
+  return undefined;
 }
 
 function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean {
@@ -839,7 +871,67 @@ export class JobRunner {
           name: source.name,
           sourceId: source.id,
         }));
-      const references: JobImageReference[] = [...styleReferences, ...contentReferences];
+      // 框架範本只在全新生成時附：編輯與抹字是在既有像素上動刀，它們的一致性來自底圖
+      // 本身，多附一張「別頁長這樣」只會變成重排的理由（916fa47 的形狀）。
+      //
+      // **它是純加分項，絕不可讓原本跑得動的生成變成失敗**，所以要先過 provider 的能力
+      // 宣告——下面那兩道檢查（`referenceImages`／`multipleReferenceImages`）是 throw，不是
+      // 截斷。實測：宣告 `referenceImages: false` 的 provider 在無條件附上範本之後，第一頁
+      // 照常完成、第二頁起每一頁都 `STYLE_REFERENCES_UNSUPPORTED`（jobs-security 那個併發
+      // 測試就是這樣變紅的：maxConcurrency=1 讓第二頁排在第一頁完成之後，於是真的拿得到
+      // 範本）。`multipleReferenceImages: false` 同理——只有在其餘參考圖是空的時候，範本才
+      // 塞得進那唯一的名額。
+      //
+      // 已知限制（刻意接受）：影像 provider 的 maxConcurrency 是 2，批次生成時最前面兩頁
+      // 同時開跑，兩頁都還沒有任何已完成的前頁可用，所以都拿不到範本。改成序列會讓批次
+      // 時間翻倍，先讓使用者實測效果再決定。
+      const deckFramePath =
+        job.operation === "generate" ? deckFrameImagePath(project.slides, slide) : undefined;
+      // 副檔名判 mediaType 與 `editBaseImagePath` 那段同源，但這裡**認不出來就不附**而不是
+      // 一律回退 png：底圖是編輯任務的必要輸入（猜錯也只能送），範本是可有可無的加分項，
+      // 而內建 mock provider 落地的是 `.svg`——把它標成 `image/png` 送給真的影像模型，換來
+      // 的是整頁失敗。同一份專案先用 mock 跑再換真模型是真實路徑（使用者換模型組合）。
+      const deckFrameMediaType = deckFramePath
+        ? /\.png$/i.test(deckFramePath)
+          ? "image/png"
+          : /\.jpe?g$/i.test(deckFramePath)
+            ? "image/jpeg"
+            : undefined
+        : undefined;
+      const deckFrameSkipReason = !provider.capabilities.referenceImages
+        ? "REFERENCE_IMAGES_UNSUPPORTED"
+        : !provider.capabilities.multipleReferenceImages &&
+            styleReferences.length + contentReferences.length > 0
+          ? "MULTIPLE_REFERENCES_UNSUPPORTED"
+          : deckFrameMediaType === undefined
+            ? "UNSUPPORTED_MEDIA_TYPE"
+            : undefined;
+      // 略過是降級，不能靜默：跨頁樣式不一致回報進來時，這一行是唯一能分辨「沒附範本」與
+      // 「附了但模型沒理」的證據。只記 id 與宣告值，檔名與正文一個字都不進 log。
+      if (deckFramePath && deckFrameSkipReason)
+        logWarn("deck_frame_reference_skipped", {
+          projectId,
+          jobId,
+          slideId: job.slideId,
+          providerId: job.providerId,
+          reason: deckFrameSkipReason,
+        });
+      const deckFrameReferences: JobImageReference[] =
+        deckFramePath && deckFrameMediaType && !deckFrameSkipReason
+          ? [
+              {
+                path: this.repository.resolveAsset(projectId, deckFramePath),
+                mediaType: deckFrameMediaType,
+                role: "deck-frame",
+                name: "Previous slide in this deck",
+              },
+            ]
+          : [];
+      const references: JobImageReference[] = [
+        ...styleReferences,
+        ...deckFrameReferences,
+        ...contentReferences,
+      ];
       let edit;
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);

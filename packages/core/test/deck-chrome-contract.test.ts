@@ -103,6 +103,42 @@ describe("頁碼是系統合成物，模型不得自己畫", () => {
     }
   });
 
+  it("凌駕 style contract：designSystem 寫了頁碼也不算繪製指示", () => {
+    // 實證（本機風格「玉山ithome」）：AI 風格分析把來源 deck 的頁碼當成設計規格寫進四個
+    // 欄位，而 designSystem 在同一份合約裡被宣告為 authoritative，權威高於上面那條禁令，
+    // 模型於是照畫——本專案的頁碼是事後合成的，畫面上因此出現第二個。
+    const prompt = buildImageGenerationContract(
+      request({
+        style: {
+          ...request().style,
+          designSystem: [
+            "## 色票",
+            "- #666666 — 頁尾註解說明文字、頁碼、次要數據時間區間標示",
+            "## 字型",
+            "頁尾備註與頁碼為 10pt-12pt Regular",
+            "## 版面系統",
+            "左下放註解，右下放頁碼",
+            "## 頁型規則",
+            "- 內頁：頁底有邊緣藍綠色線條、頁碼與備註說明",
+          ].join("\n"),
+        },
+      }),
+    );
+    const override = prompt
+      .split("\n")
+      .find((line) => line.includes("This rule outranks the style contract"));
+    expect(override, "缺了這句，designSystem 的權威會壓過頁碼禁令").toBeDefined();
+    // 兩個來源都要點名：只擋 designSystem 的話，風格參考圖上看得到的頁碼仍會被照抄。
+    expect(override).toContain("style.designSystem");
+    expect(override).toContain("STYLE reference image");
+    // 「不要畫」不等於「這一段別聽」：designSystem 其餘部分仍是權威，而 chrome 佔用的
+    // 邊距是真實的版面幾何，砍掉它會讓內頁整個長歪。
+    expect(override).toContain("Follow the rest of that system");
+    expect(override).toContain("reserved edge space");
+    // 標題仍只出現一次（新句子是同一條規則的後續行，不是第二條同名規則）。
+    expect(prompt.split(BAN).length - 1).toBe(1);
+  });
+
   it("禁令是無條件的，不依附在參考圖區塊上", () => {
     // 參考圖區塊裡另有一條「Add no ... page numbers ... of your own」，但它只在有參考圖
     // 時才送，而且只在 edit 之外。沒有參考圖的新生成必須仍有獨立的禁令。
