@@ -42,6 +42,11 @@ const archetypeLabels: Record<(typeof styleArchetypeKinds)[number], string> = {
  * 除 designRationale 與 palette 外全給 default：非嚴格 gateway（尤其 Gemini 系）不遵守
  * json_schema，缺一欄時寧可少排一段，也不要整份分析 parse 失敗。少寫核心欄位的情況由
  * renderDesignSystem 顯性報錯，不靜默產出空殼。
+ *
+ * **沒有 `avoid`**（見 STYLE_ANALYSIS_PROMPT 的 JSDoc）。物件 schema 預設會 strip 未宣告的
+ * 欄位，所以模型照舊多回一個 `avoid` 時 parse 仍然成功、結果裡沒有它——這是刻意的，不可改成
+ * `.strict()`：非嚴格 gateway 本來就不遵守 json_schema，多回一個欄位就整份分析失敗是拿使用者
+ * 的配額去換一個沒人要的欄位。
  */
 export const styleAnalysisSchema = z.object({
   designRationale: z.string().default(""),
@@ -56,7 +61,6 @@ export const styleAnalysisSchema = z.object({
     .array(z.object({ kind: z.enum(styleArchetypeKinds), rules: z.string().min(1).max(2_000) }))
     .max(3)
     .default([]),
-  avoid: z.array(z.string().min(1)).max(20).default([]),
 });
 
 export type StyleAnalysis = z.infer<typeof styleAnalysisSchema>;
@@ -71,7 +75,6 @@ export const styleAnalysisJsonSchema: Record<string, unknown> = {
     "layoutSystem",
     "components",
     "archetypes",
-    "avoid",
   ],
   properties: {
     designRationale: { type: "string" },
@@ -101,7 +104,6 @@ export const styleAnalysisJsonSchema: Record<string, unknown> = {
         },
       },
     },
-    avoid: { type: "array", items: { type: "string" }, maxItems: 20 },
   },
 };
 
@@ -126,26 +128,31 @@ export const styleAnalysisJsonSchema: Record<string, unknown> = {
  * 等於讓它自行決定要不要遵守。真正成立的理由只有一個——**本系統自己會事後合成頁碼**，記
  * 下來的 chrome 會被畫第二次。
  *
- * `avoid` **刻意不在禁止清單裡**：合約對它的處理是「Every entry in style.avoid is a
- * mandatory negative constraint」，`avoid: ["頁碼"]` 因此無害甚至有益。把它與其他欄位一起
- * 說成「會被讀回去當繪製指示」是錯的，而下一個人會據著這個理由推理。
- *
  * 兩件仍要照實記錄的事：**chrome 佔用的邊距與留白**（那條保留帶是真實的版面幾何，把它說成
  * 內容區會讓生成的內頁整個往下長、與來源 deck 的比例對不上）；以及**只用於 chrome 的顏色
  * 要整個不列進 palette**——沒有這句時，那個顏色沒有任何合法的描述方式，模型只能二選一：
  * 丟掉它，或編一個它其實沒有的用途。
  *
- * **`avoid` 必須自己有一條判準**：其他每個欄位都有逐欄說明，只有它從來沒被交代過該裝什麼，
- * 而 schema 又把它列進 `required`——模型於是自由發揮。實測那份「玉山ithome」產出 13 條，
- * 混了三類東西，沒有一類是「參考圖排除了什麼」：①模型自己的簡報審美（`避免使用寫實人物
- * 攝影`、`避免卡通、手繪或粗糙的插畫風格`、`禁止使用圓角卡片陰影浮空風格`——那三張圖裡沒有
- * 人物照片，不等於這套風格禁止照片）；②把正面規則改寫成否定句（`禁止遺漏頁底全寬藍綠色
- * 邊緣飾條`、`禁止將內頁主標題置中`——這些 layoutSystem 與 components 已經講過一次，等於
- * 第二份真相）；③句子本身壞掉（`禁止標題採用無襯線體以外的襯線字型` 自相矛盾）。代價不是
- * 「多幾句廢話」：合約把每一條都宣告成 `mandatory negative constraint` 並逐字送進生成
- * prompt，所以 `避免使用寫實人物攝影` 會擋掉某一頁真的需要照片的情況。判準因此要同時說出
- * 三件事——只收觀察得到的排除、不收其他欄位的否定式改寫、以及**空陣列是正確答案**（`avoid`
- * 有 `.default([])`，但沒人告訴模型可以留空時，必填欄位一定會被填滿）。
+ * **這份分析刻意不產出 `avoid`**，schema 與 prompt 都沒有它，整個欄位留給使用者手寫。這是
+ * 兩輪實測之後的產品決定，不是遺漏——「補一條 avoid 判準」看起來像顯然的改進，但那正是被
+ * 推翻的那一版（52de42e）：
+ *
+ * ① **判準擋不住重複**。上一版寫的是「只收參考圖看得出被排除的、不收其他欄位的否定式改寫、
+ *    寧可留空」，而新建的「極簡藍」（4 張參考圖）仍然產出 12 條，其中 **9 條是設計系統已經
+ *    寫過的正面規則的否定句**：`不要使用純黑、飽和藍、暖色或多色彩盤`（色票講過）、`不要改用
+ *    襯線體、手寫體、裝飾體`（字型講過）、`不要使用厚邊框；所有框線維持約 1.5–2 px`（元件
+ *    講過，連數值都一樣）、`不要使用置中正文`（版面系統講過）。漏洞在判準的措辭本身：
+ *    「a treatment this visual language does not use」授權了「參考圖裡沒有 X ⇒ X 被排除了」
+ *    這個推論，而**任何**沒出現過的東西都套得進去。要堵住它得逐類列舉禁止什麼，那已經等於
+ *    承認這個欄位沒有它自己的內容。
+ * ② **有兩條真的會傷害輸出**。`不要在內容頁加入未被參考呈現的照片、背景插畫或大型裝飾圖`
+ *    會擋掉某一頁內容真正需要的圖；`不要讓單頁資訊密度超過參考頁的寬鬆節奏` 與這個風格自己
+ *    的 `density: "high"`（合約要求 50-65% 畫布給可讀內容）正面衝突。avoid 的每一條都逐字
+ *    進生成 prompt 並被宣告為 `mandatory negative constraint`，兩條打架時模型只能挑一邊。
+ *
+ * 沒有跟著移除的東西，以及為什麼：`StylePreset.avoid` 這個欄位、影像合約對它的處理、既有
+ * 風格裡已經存下來的條目**全部原樣保留**——手寫的負面約束仍然有效，那正是它剩下的用途，而
+ * 已經存在的條目是使用者的資料，要刪由他自己刪。
  */
 export const STYLE_ANALYSIS_PROMPT = [
   "Analyze the attached images only as visual-style references for a presentation style library.",
@@ -155,7 +162,6 @@ export const STYLE_ANALYSIS_PROMPT = [
   "palette: give every colour as a hex value with the role and the concrete places it is used. Estimate the hex from the pixels; never substitute a colour name for a value.",
   "archetypes: emit an entry only for a page type the references actually show. For a page type you did not see, either omit it or say explicitly in its rules that the references do not cover it and the page must be derived from the invariants. Never invent a page type's look and present it as observed.",
   "Write typography, layoutSystem, and components as prose specific enough to reproduce the design — name the sizes, ratios, spacing, and geometry you can see. Generic wording such as 'modern and clean' is a failed analysis.",
-  "avoid: list only what these references visibly rule out — a treatment this visual language does not use, whose absence holds across the pages you were given. Every entry is enforced word for word as a mandatory negative constraint on every slide generated in this style, so an entry you inferred rather than observed will block a slide that legitimately needs that thing. Do not list generic presentation taste, such as photography, illustration, clip art, or drop shadows, unless these references actually show it being excluded. Do not restate a positive rule from typography, layoutSystem, components, or archetypes as a prohibition: those fields already carry it, and the copy here will contradict the original as soon as either is edited. When the references rule nothing out, return an empty list — that is a correct answer, not a gap to fill.",
   "Deck chrome is not part of the design system you are recovering: page numbers, slide numbers, a running header or footer carrying the deck or section name, a date line, a copyright line, and watermarks. The system that will consume this analysis composites page numbering onto every slide by itself, and it feeds these fields back to an image model as drawing instructions — so chrome recorded here gets drawn a second time, on top of the one the system already adds.",
   "Never describe deck chrome in designRationale, in a palette entry's usage, in typography, in layoutSystem, in components, or in an archetype's rules. If a colour appears only in chrome — a grey used for nothing but the page number — leave it out of palette rather than giving it a use it does not have.",
   "Do record the margins and whitespace that deck chrome occupies. The band it sits in is real layout geometry: state it as reserved edge space with its measurements, and describe what the content area may occupy, without naming what the source deck put in that band.",

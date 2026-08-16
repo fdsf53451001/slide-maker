@@ -403,13 +403,18 @@ function styleServer(options: { analysis?: unknown; patchStatus?: number } = {})
   return state;
 }
 
+/**
+ * 端點只回 designSystem——但這裡**刻意多塞一個 `avoid`**：非嚴格 gateway 與舊版伺服器都可能
+ * 回傳它，而前端必須完全不理。拿一份剛好沒有這個欄位的回應去測，「不小心又把 avoid 套上去」
+ * 的改動不會變紅，等於沒測。
+ */
 const analysisResult = {
   designSystem: "## 色票\n- #0B1F3A — 主色；封面滿版底",
-  avoid: ["漸層"],
+  avoid: ["不要在內容頁加入未被參考呈現的照片"],
 };
 
 describe("AI 分析的結果直接套用到草稿", () => {
-  it("不再問「確定取代嗎？」，設計系統與避免項目都換成這次的結果", async () => {
+  it("不再問「確定取代嗎？」，設計系統換成這次的結果", async () => {
     // 舊版按取消 → 什麼都不做、也不說：整份分析與已經花掉的配額一起消失，使用者以為
     // 重跑分析改不動既有內容。改成直接蓋上去是安全的——`draft` 只是草稿，按儲存才落地。
     styleServer({ analysis: analysisResult });
@@ -434,34 +439,43 @@ describe("AI 分析的結果直接套用到草稿", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
-  it("avoid 是覆寫不是聯集：舊條目不會被無限累積", async () => {
-    // 聯集只增不減，一旦某次分析寫出爛條目就永遠留著（實測那份風格帶著三週前的 13 條），
-    // 而 avoid 的每一條都會逐字進生成 prompt 並被宣告為 mandatory negative constraint。
+  it("避免項目一個字都不動，連端點多回的那份也不理", async () => {
+    // 產品決定：這一欄改成完全由使用者手寫，分析不再產出它。實測（新建的「極簡藍」）給了
+    // 判準之後仍有 12 條，9 條是設計系統已經寫過的正面規則的否定句，另兩條真的會傷害輸出
+    // （擋掉某頁真正需要的照片、與 density: "high" 正面衝突），而每一條都逐字進生成 prompt
+    // 並被宣告為 mandatory negative constraint。
     styleServer({ analysis: analysisResult });
+    const own = existingStyle().avoid.join("\n");
 
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
-    await waitFor(() =>
-      expect(screen.getByLabelText("避免項目（每行一項）")).toHaveProperty(
-        "value",
-        existingStyle().avoid.join("\n"),
-      ),
-    );
+    await waitFor(() => expect(screen.getByLabelText(/^避免項目/)).toHaveProperty("value", own));
 
     fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    // 等分析確實套用完（設計系統換掉了），再看避免項目——否則這個斷言在請求還沒回來時
+    // 就恆為真。
     await waitFor(() =>
-      expect(screen.getByLabelText("避免項目（每行一項）")).toHaveProperty("value", "漸層"),
-    );
-    // 正向對照：舊的兩條真的不見了，不是被排到後面。
-    for (const stale of existingStyle().avoid)
-      expect(screen.getByLabelText("避免項目（每行一項）")).not.toHaveProperty(
+      expect(screen.getByLabelText(/^設計系統/)).toHaveProperty(
         "value",
-        expect.stringContaining(stale),
-      );
+        analysisResult.designSystem,
+      ),
+    );
+    expect(screen.getByLabelText(/^避免項目/)).toHaveProperty("value", own);
+    // 端點多回的那條一個字都不得出現在畫面上。
+    expect(screen.queryByText(/未被參考呈現的照片/)).toBeNull();
   });
 
-  it("成功回饋講明換掉了哪兩塊、以及按儲存才會生效", async () => {
-    // 直接覆寫與這句回饋是同一件事的兩半：沒有它，使用者按完按鈕只看到欄位變了，不知道
-    // 換掉的是什麼（含他自己寫的 avoid），也不知道還沒進資料庫。
+  it("欄位旁邊講明這一欄不歸 AI 管", async () => {
+    // 使用者對這一欄的期待剛剛才被改變（以前分析會覆寫它）。沒有這句說明的話，下一次分析
+    // 完發現這裡沒動，看起來就像分析壞了。
+    styleServer({ analysis: analysisResult });
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const field = await screen.findByLabelText(/^避免項目/);
+    expect(field.closest("label")?.textContent).toMatch(/AI 分析風格不會更動/);
+  });
+
+  it("成功回饋只講設計系統，並說明其餘欄位沒被動過", async () => {
+    // 直接覆寫與這句回饋是同一件事的兩半。它也不能多說：宣稱「避免項目也被取代」會讓使用者
+    // 回頭檢查一個根本沒被動過的欄位。
     styleServer({ analysis: analysisResult });
 
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
@@ -471,7 +485,7 @@ describe("AI 分析的結果直接套用到草稿", () => {
     const notice = await screen.findByText(/AI 分析完成/);
     expect(notice.getAttribute("role")).toBe("status");
     expect(notice.textContent).toMatch(/設計系統/);
-    expect(notice.textContent).toMatch(/避免項目/);
+    expect(notice.textContent).toMatch(/避免項目[^。]*沒有更動/);
     // 指的是真的存在的那顆按鈕（既有風格是「儲存新版本」）。
     expect(notice.textContent).toMatch(/儲存新版本/);
     expect(screen.getByRole("button", { name: "儲存新版本" })).toBeTruthy();
@@ -489,7 +503,7 @@ describe("AI 分析的結果直接套用到草稿", () => {
       "value",
       existingStyle().designSystem,
     );
-    expect(screen.getByLabelText("避免項目（每行一項）")).toHaveProperty(
+    expect(screen.getByLabelText(/^避免項目/)).toHaveProperty(
       "value",
       existingStyle().avoid.join("\n"),
     );

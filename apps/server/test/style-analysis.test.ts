@@ -3,6 +3,7 @@ import {
   renderDesignSystem,
   STYLE_ANALYSIS_PROMPT,
   StyleAnalysisError,
+  styleAnalysisJsonSchema,
   styleAnalysisSchema,
 } from "../src/style-analysis.js";
 
@@ -50,7 +51,6 @@ describe("style analysis output", () => {
       palette: [{ hex: "#111111", usage: "全域底色" }],
     });
     expect(parsed.archetypes).toEqual([]);
-    expect(parsed.avoid).toEqual([]);
     expect(renderDesignSystem(parsed)).toContain("## 色票");
   });
 
@@ -139,12 +139,6 @@ describe("style analysis output", () => {
         expect(line, field).toContain(field);
     });
 
-    it("avoid 刻意不在禁止清單裡", () => {
-      // 合約對它的處理是「Every entry in style.avoid is a mandatory negative constraint」，
-      // 所以 `avoid: ["頁碼"]` 無害甚至有益。把它一起禁掉是寫錯理由，而理由會被拿去推理。
-      expect(lineWith("Never describe deck chrome")).not.toContain("avoid");
-    });
-
     it("只用於 chrome 的顏色整個不列進 palette", () => {
       // 沒有這句時那個顏色沒有合法的描述方式，模型只能丟掉它、或編一個它其實沒有的用途。
       expect(lineWith("Never describe deck chrome")).toContain("leave it out of palette");
@@ -158,45 +152,46 @@ describe("style analysis output", () => {
     });
   });
 
-  describe("avoid 有自己的判準", () => {
-    // 實測（本機風格「玉山ithome」）：這個欄位是唯一沒有逐欄說明、卻被 schema 列進
-    // `required` 的欄位，模型於是自由發揮，13 條裡沒有一條是「參考圖排除了什麼」——
-    // 混的是模型自己的簡報審美（`避免使用寫實人物攝影`）、把正面規則改寫成否定句
-    // （`禁止遺漏頁底全寬藍綠色邊緣飾條`，layoutSystem 已經講過一次）、以及自相矛盾的
-    // 句子（`禁止標題採用無襯線體以外的襯線字型`）。而合約把每一條都宣告成 mandatory
-    // negative constraint 逐字送進生成 prompt，所以第一類會擋掉真的需要照片的那一頁。
-    //
-    // 同樣逐行取出再斷言：`avoid` 這個字在別的規則行裡也有。
-    const avoidLine = () => {
-      const line = STYLE_ANALYSIS_PROMPT.split("\n").find((candidate) =>
-        candidate.startsWith("avoid:"),
-      );
-      expect(line, "找不到 avoid 的逐欄說明").toBeDefined();
-      return line!;
-    };
+  describe("分析不產出 avoid", () => {
+    /*
+      這一組原本是「avoid 有自己的判準」，被實測推翻：給了判準之後，新建的「極簡藍」仍然
+      產出 12 條，其中 9 條是設計系統已經寫過的正面規則的否定句（`不要使用厚邊框；所有框線
+      維持約 1.5–2 px` 連數值都與元件那欄一樣），另有兩條真的會傷害輸出——`不要在內容頁加入
+      未被參考呈現的照片` 會擋掉某一頁真正需要的圖，`不要讓單頁資訊密度超過參考頁的寬鬆節奏`
+      與這個風格自己的 density: "high" 正面衝突。判準的漏洞在措辭本身：「這套視覺語言不使用
+      的做法」授權了「參考圖裡沒有 X ⇒ X 被排除」，任何沒出現過的東西都套得進去。
 
-    it("只收觀察得到的排除，並說明每一條的強制力", () => {
-      const line = avoidLine();
-      expect(line).toContain("visibly rule out");
-      // 「為什麼要克制」比「請克制」有效：說出後果，模型才推得到沒列舉到的情況。
-      expect(line).toContain("mandatory negative constraint");
-      expect(line).toContain("block a slide that legitimately needs that thing");
+      所以整個欄位不再由分析產出，改由使用者手寫。下面三條釘的是**相反的不變量**：prompt
+      不再要求它、schema 不再宣告它、模型多回一個也不會壞事。
+    */
+    it("prompt 一個字都不再提 avoid", () => {
+      // 留著任何一句都會讓模型以為還要交這個欄位——而它交了也只會被 strip 掉，等於白花
+      // 那幾百個 token，還可能排擠掉真正要寫滿的欄位。
+      expect(STYLE_ANALYSIS_PROMPT).not.toMatch(/avoid/i);
+      // 正向對照：其他欄位的逐欄說明都還在，不是整段 prompt 被清空了。
+      expect(STYLE_ANALYSIS_PROMPT).toMatch(/^palette:/m);
+      expect(STYLE_ANALYSIS_PROMPT).toMatch(/^archetypes:/m);
     });
 
-    it("擋掉通用審美與正面規則的否定式改寫", () => {
-      const line = avoidLine();
-      expect(line).toContain("generic presentation taste");
-      expect(line).toContain("Do not restate a positive rule");
-      // 第二份真相的代價要講明，否則「重複一次也不會怎樣」看起來是安全的。
-      for (const field of ["typography", "layoutSystem", "components", "archetypes"])
-        expect(line, field).toContain(field);
+    it("schema 兩份都不宣告它", () => {
+      // json schema 是送給嚴格 gateway 的那一份，zod 是解析回來的那一份，漏掉任何一邊都會
+      // 讓這個欄位從另一條路活回來。
+      expect(Object.keys(styleAnalysisJsonSchema.properties as object)).not.toContain("avoid");
+      expect(styleAnalysisJsonSchema.required).not.toContain("avoid");
+      expect(Object.keys(styleAnalysisSchema.shape)).not.toContain("avoid");
     });
 
-    it("明講空陣列是正確答案", () => {
-      // schema 有 `.default([])`，但沒人告訴模型可以留空時，必填欄位一定會被填滿。
-      const line = avoidLine();
-      expect(line).toContain("return an empty list");
-      expect(line).toContain("not a gap to fill");
+    it("模型照舊多回一個 avoid 時仍然 parse 成功，而且結果裡沒有它", () => {
+      // 非嚴格 gateway（Gemini 系）不遵守 json_schema，多回欄位是常態。`.strict()` 會把
+      // 這種回應變成整份分析失敗——拿使用者的配額去換一個沒人要的欄位。
+      const parsed = styleAnalysisSchema.parse({
+        ...complete,
+        avoid: ["不要在內容頁加入未被參考呈現的照片"],
+      });
+      expect(parsed).not.toHaveProperty("avoid");
+      expect(renderDesignSystem(parsed)).toContain("## 色票");
+      // 那份 markdown 也不得夾帶模型硬塞的條目（`renderDesignSystem` 從來不排它，這是釘住）。
+      expect(renderDesignSystem(parsed)).not.toContain("未被參考呈現的照片");
     });
   });
 });

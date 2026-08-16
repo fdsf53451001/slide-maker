@@ -28,11 +28,16 @@ export function registerStyleAnalysisRoutes(app: Express, ctx: AppContext): void
   const { repository, styles, runtime, usageLedger, usageModelFields } = ctx;
   const { saveVersionStyleReference, writeProjectStyleSnapshot } = ctx;
 
-  /** 跑一次參考圖風格分析，輸出可直接寫進 StylePreset 的 designSystem。 */
+  /**
+   * 跑一次參考圖風格分析，輸出可直接寫進 StylePreset 的 designSystem。
+   *
+   * **只回 designSystem**：`avoid` 不再由分析產出（理由見 `style-analysis.ts` 的 JSDoc），
+   * 那個欄位留給使用者手寫，所以兩條寫入路徑都不得順手把它一起覆寫掉。
+   */
   async function analyzeStyleReferences(
     referenceIds: readonly string[],
     combinationId: string | undefined,
-  ): Promise<{ designSystem: string; avoid: string[] }> {
+  ): Promise<{ designSystem: string }> {
     // 風格分析無專案脈絡：由呼叫端指定組合，未指定時退回模型庫預設組合。
     const structuredText = runtime.resolveTextProvider(combinationId);
     if (structuredText.availability.status !== "available")
@@ -63,8 +68,10 @@ export function registerStyleAnalysisRoutes(app: Express, ctx: AppContext): void
       throw error;
     }
     void usageLedger.recordGlobal({ ...usageFields, ok: true, ...usageCallFields(outcome) });
+    // schema 沒有宣告 avoid，模型多回一個也會在這裡被 strip 掉（zod 物件預設行為），
+    // 不是 parse 失敗——非嚴格 gateway 本來就不遵守 json_schema。
     const result = styleAnalysisSchema.parse(outcome.value);
-    return { designSystem: renderDesignSystem(result), avoid: result.avoid };
+    return { designSystem: renderDesignSystem(result) };
   }
 
   app.post("/api/style-analysis", async (request, response) => {
@@ -104,9 +111,10 @@ export function registerStyleAnalysisRoutes(app: Express, ctx: AppContext): void
           created.map((image) => image.id),
           input.combinationId,
         );
+        // 不帶 avoid：`writeProjectStyleSnapshot` 只在 patch 真的有這個欄位時才覆寫，
+        // 所以專案 snapshot 裡使用者已經寫下的避免項目原樣留著。
         return await writeProjectStyleSnapshot(projectId, {
           designSystem: analysis.designSystem,
-          avoid: analysis.avoid,
           ...(input.name ? { name: input.name } : {}),
           referenceImages: created,
         });

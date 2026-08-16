@@ -416,6 +416,16 @@ export function StyleEditor({
                   })
                 }
               />
+              {/*
+                這一欄的行為剛剛才改變（AI 分析以前會覆寫它，現在完全不碰），而欄位旁邊沒有
+                任何說明的話，下一次分析完發現這裡沒動，看起來就像分析壞了。順帶講清楚每一條
+                的份量：它們會逐字進生成 prompt 並被當成硬性禁止，多寫一條「不要用照片」就會
+                擋掉某一頁真的需要照片的情況。
+              */}
+              <small>
+                這裡只由你自己維護，AI 分析風格不會更動它。每一條都會成為生成時的硬性禁止，
+                寫得越多、模型能用的做法越少——只列真的不想看到的東西。
+              </small>
             </label>
             <div className="style-actions">
               {/*
@@ -620,22 +630,15 @@ export function StyleEditor({
                           不滿意就不要存，離開時還有 `dirty` 攔一次。代價是使用者必須知道剛才發生
                           了什麼，所以下面那句 `notice` 與這個決定是同一件事的兩半，不可只做一半。
 
-                          `avoid` 從聯集改成覆寫：聯集只增不減，某一次分析寫出爛條目就永遠留著
-                          （實測那份風格帶著三週前的 13 條，之後每次分析都被原樣保留），而 avoid
-                          的每一條都會逐字進生成 prompt、還被宣告為 mandatory negative constraint。
-                          整份分析既然是「蓋上去、滿意再存」，avoid 沒有理由是唯一累積的欄位。它
-                          會一併沖掉使用者手寫的條目，所以回饋句必須明講被換掉的是哪兩塊。
-
-                          `imageDirection`／`promptTemplate` 仍然不碰：那是使用者手寫的補充，
-                          分析也不產出它們。
+                          **被換掉的只有設計系統這一塊**。`avoid` 現在完全不碰——分析根本不再
+                          產出它（見 `style-analysis.ts` 的 JSDoc：兩輪實測後改成由使用者手寫），
+                          `imageDirection`／`promptTemplate` 同理，那些是使用者自己的補充。回饋
+                          句必須跟著只講設計系統：多說一句「避免項目也被取代」，使用者就會回去
+                          檢查一個根本沒被動過的欄位。
                         */
-                        setDraft((value) => ({
-                          ...value,
-                          designSystem: suggestion.designSystem,
-                          avoid: [...suggestion.avoid],
-                        }));
+                        setDraft((value) => ({ ...value, designSystem: suggestion.designSystem }));
                         setNotice(
-                          `AI 分析完成：設計系統與避免項目都已換成這次的分析結果，原本的內容（包含你自己加的避免項目）已被取代。這是草稿，按「${saveLabel}」才會生效；不滿意就不要儲存。`,
+                          `AI 分析完成：設計系統已換成這次的分析結果，原本的內容被取代（避免項目、圖片方向與提示詞模板都沒有更動）。這是草稿，按「${saveLabel}」才會生效；不滿意就不要儲存。`,
                         );
                       })
                       .catch((reason: unknown) => setError(failureText(reason, "AI 分析失敗")))
