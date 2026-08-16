@@ -473,9 +473,11 @@ describe("AI 分析的結果直接套用到草稿", () => {
     expect(field.closest("label")?.textContent).toMatch(/AI 分析風格不會更動/);
   });
 
-  it("回饋標在被改的那一格上：設計系統掛橘框，其餘欄位不掛", async () => {
-    // 上一版把整段說明放在分析按鈕下方，離設計系統那個 textarea 隔了半個表單，實測回報是
-    // 「這陀不顯示」——它其實有渲染，只是沒人會在那裡找。橘框沿用 .outline-dirty 那組樣式。
+  it("被換掉的那一格掛橘框，其餘欄位不掛", async () => {
+    // 回饋**只有橘框**，不配文字說明。前兩版各試過一次文字：先是分析按鈕下方的一整段
+    // （實測「這陀不顯示」——有渲染，但離這一格隔了半個表單），再是這一格底下的一句短提示
+    // （實測回應是「不要再給我加奇怪的說明了」）。橘框沿用 .outline-dirty／.field-needs-input
+    // 那組樣式，是編輯器裡既有的「這一格被動過」語言，本來就不需要一句話解釋自己。
     styleServer({ analysis: analysisResult });
 
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
@@ -490,14 +492,8 @@ describe("AI 分析的結果直接套用到草稿", () => {
     expect(screen.getByLabelText(/^避免項目/).closest("label")?.className).not.toMatch(
       /field-analysis-applied/,
     );
-
-    const hint = await screen.findByText(/剛換成 AI 分析的結果/);
-    expect(hint.getAttribute("role")).toBe("status");
-    // 提示要指著真的存在的那顆按鈕（既有風格是「儲存新版本」）。
-    expect(hint.textContent).toMatch(/儲存新版本/);
-    expect(screen.getByRole("button", { name: "儲存新版本" })).toBeTruthy();
-    // 這一格與那顆按鈕在同一個 label 裡，不是隔著半個表單的另一塊。
-    expect(hint.closest("label")).toBe(design.closest("label"));
+    // 這一格底下不得又長出一句說明。斷言的是整個 label 的文字，所以任何位置的新增都會被抓到。
+    expect(design.closest("label")?.textContent).not.toMatch(/分析|儲存|不滿意/);
   });
 
   it("使用者自己改這一格之後，橘框就撤掉", async () => {
@@ -513,7 +509,6 @@ describe("AI 分析的結果直接套用到草稿", () => {
 
     fireEvent.change(design, { target: { value: "## 色票\n- #000000 — 我自己寫的" } });
     expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
-    expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull();
   });
 
   it("分析失敗時走既有的錯誤路徑，一個字都不動草稿", async () => {
@@ -532,7 +527,9 @@ describe("AI 分析的結果直接套用到草稿", () => {
       "value",
       existingStyle().avoid.join("\n"),
     );
-    expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull();
+    expect(
+      screen.getByLabelText(/^設計系統/).closest("label")?.className,
+    ).not.toMatch(/field-analysis-applied/);
   });
 
   it("儲存成功後撤掉橘框——「按儲存才會生效」已經不成立了", async () => {
@@ -541,11 +538,14 @@ describe("AI 分析的結果直接套用到草稿", () => {
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
     const design = await screen.findByLabelText(/^設計系統/);
     fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
-    await screen.findByText(/剛換成 AI 分析的結果/);
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "儲存新版本" }));
-    await waitFor(() => expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull());
-    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
+    await waitFor(() =>
+      expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/),
+    );
   });
 });
 

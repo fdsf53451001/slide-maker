@@ -136,10 +136,6 @@ export function StyleEditor({
   const [analysisCombinationId, setAnalysisCombinationId] = useState("");
   const dirty = JSON.stringify(draft) !== baseline;
   const readOnly = !!historicalVersion || !!style?.system;
-  /**
-   * 儲存鈕的文案。分析的成功回饋要叫使用者去按它，兩處各寫一份字面值的話，改了按鈕文案
-   * 就會得到一句指著不存在的按鈕的說明。
-   */
   const saveLabel = styleId ? "儲存新版本" : "建立風格";
 
   useEffect(() => {
@@ -389,12 +385,6 @@ export function StyleEditor({
                 }}
                 placeholder="按下方「AI 分析風格」由參考圖產生；也可自行撰寫。色票、字型、版面與頁型規則以此為準。"
               />
-              {analysisApplied && !readOnly && (
-                <small className="field-analysis-hint" role="status">
-                  這一格剛換成 AI 分析的結果。按「{saveLabel}」才會生效，不滿意就不要儲存；避免
-                  項目不會被分析更動。
-                </small>
-              )}
               <small>
                 生成時，底色、色票、字級、網格、頁型規則以這裡為準；質感、圖片處理、陰影與收邊則以參考圖為準。
               </small>

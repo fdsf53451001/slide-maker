@@ -717,12 +717,6 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18);
 }
-.style-form .field-analysis-hint {
-  display: block;
-  margin-top: 7px;
-  color: var(--warning);
-  font-size: 12px;
-}
 .style-actions {
   display: flex;
   justify-content: flex-end;
