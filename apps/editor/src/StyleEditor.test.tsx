@@ -473,22 +473,47 @@ describe("AI 分析的結果直接套用到草稿", () => {
     expect(field.closest("label")?.textContent).toMatch(/AI 分析風格不會更動/);
   });
 
-  it("成功回饋只講設計系統，並說明其餘欄位沒被動過", async () => {
-    // 直接覆寫與這句回饋是同一件事的兩半。它也不能多說：宣稱「避免項目也被取代」會讓使用者
-    // 回頭檢查一個根本沒被動過的欄位。
+  it("回饋標在被改的那一格上：設計系統掛橘框，其餘欄位不掛", async () => {
+    // 上一版把整段說明放在分析按鈕下方，離設計系統那個 textarea 隔了半個表單，實測回報是
+    // 「這陀不顯示」——它其實有渲染，只是沒人會在那裡找。橘框沿用 .outline-dirty 那組樣式。
     styleServer({ analysis: analysisResult });
 
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
-    await screen.findByLabelText(/^設計系統/);
+    const design = await screen.findByLabelText(/^設計系統/);
+    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
     fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
 
-    const notice = await screen.findByText(/AI 分析完成/);
-    expect(notice.getAttribute("role")).toBe("status");
-    expect(notice.textContent).toMatch(/設計系統/);
-    expect(notice.textContent).toMatch(/避免項目[^。]*沒有更動/);
-    // 指的是真的存在的那顆按鈕（既有風格是「儲存新版本」）。
-    expect(notice.textContent).toMatch(/儲存新版本/);
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
+    // 沒被動過的欄位不得跟著亮：那正是使用者回頭檢查一個沒被改的欄位的原因。
+    expect(screen.getByLabelText(/^避免項目/).closest("label")?.className).not.toMatch(
+      /field-analysis-applied/,
+    );
+
+    const hint = await screen.findByText(/剛換成 AI 分析的結果/);
+    expect(hint.getAttribute("role")).toBe("status");
+    // 提示要指著真的存在的那顆按鈕（既有風格是「儲存新版本」）。
+    expect(hint.textContent).toMatch(/儲存新版本/);
     expect(screen.getByRole("button", { name: "儲存新版本" })).toBeTruthy();
+    // 這一格與那顆按鈕在同一個 label 裡，不是隔著半個表單的另一塊。
+    expect(hint.closest("label")).toBe(design.closest("label"));
+  });
+
+  it("使用者自己改這一格之後，橘框就撤掉", async () => {
+    // 他已經知道自己在動什麼，繼續標記等於一個永遠關不掉的提示。
+    styleServer({ analysis: analysisResult });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const design = await screen.findByLabelText(/^設計系統/);
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
+
+    fireEvent.change(design, { target: { value: "## 色票\n- #000000 — 我自己寫的" } });
+    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
+    expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull();
   });
 
   it("分析失敗時走既有的錯誤路徑，一個字都不動草稿", async () => {
@@ -507,19 +532,20 @@ describe("AI 分析的結果直接套用到草稿", () => {
       "value",
       existingStyle().avoid.join("\n"),
     );
-    expect(screen.queryByText(/AI 分析完成/)).toBeNull();
+    expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull();
   });
 
-  it("儲存成功後清掉回饋——「按儲存才會生效」已經不成立了", async () => {
+  it("儲存成功後撤掉橘框——「按儲存才會生效」已經不成立了", async () => {
     styleServer({ analysis: analysisResult });
 
     render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
-    await screen.findByLabelText(/^設計系統/);
+    const design = await screen.findByLabelText(/^設計系統/);
     fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
-    await screen.findByText(/AI 分析完成/);
+    await screen.findByText(/剛換成 AI 分析的結果/);
 
     fireEvent.click(screen.getByRole("button", { name: "儲存新版本" }));
-    await waitFor(() => expect(screen.queryByText(/AI 分析完成/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/剛換成 AI 分析的結果/)).toBeNull());
+    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
   });
 });
 

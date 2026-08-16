@@ -709,6 +709,20 @@
   color: var(--text-bright);
   resize: vertical;
 }
+/* 剛被 AI 分析換掉的欄位：沿用 `.outline-dirty`／`.field-needs-input` 那組橘框（同一個
+   accent、同一個光暈強度），讓「這一格被動過、你要決定要不要留」在整個編輯器裡長得一樣。
+   `:not(:focus)` 的理由與 `.field-needs-input` 那條相同：聚焦樣式把 outline 關掉了，這裡
+   的 1px 光暈若蓋過焦點的 3px，鍵盤使用者就失去唯一的焦點指示。 */
+.style-form .field-analysis-applied textarea:not(:focus) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18);
+}
+.style-form .field-analysis-hint {
+  display: block;
+  margin-top: 7px;
+  color: var(--warning);
+  font-size: 12px;
+}
 .style-actions {
   display: flex;
   justify-content: flex-end;

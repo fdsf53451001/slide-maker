@@ -107,15 +107,18 @@ export function StyleEditor({
   const finish = () => setBusyAction(undefined);
   const [error, setError] = useState<string>();
   /**
-   * 非錯誤的狀態列（目前只有 AI 分析的成功回饋）。與 `error` 的 toast 分開：這不是失敗，
-   * 而且它必須留在畫面上直到使用者處置——分析會**直接改寫**草稿裡的設計系統與避免清單，
-   * 沒有這一行的話，使用者按完按鈕只看到欄位內容換了，無從得知換掉的是什麼、也不知道
-   * 還沒進資料庫（`draft` 只是草稿，按儲存才會建立新版本）。
+   * 設計系統這一欄剛被 AI 分析換掉。分析會**直接改寫**草稿，使用者必須知道動到的是哪一格、
+   * 而且還沒進資料庫（`draft` 只是草稿，按儲存才會建立新版本）。
    *
-   * 清掉的時機有三個，都是「這句話已經不再成立」：下一次分析開始（要講的是新的那一次）、
-   * 儲存成功（已經生效，再說「按儲存才會生效」是錯的）、切換版本重新載入（草稿整份被換掉）。
+   * **回饋掛在被改的那一格上，不是掛在按鈕旁邊**：上一版把整段說明放在分析按鈕下方，離
+   * 設計系統那個 textarea 隔了半個表單，實測回報是「這陀不顯示」——它其實有渲染，只是
+   * 沒人會在那裡找。改成沿用編輯器既有的橘框語言（`.outline-dirty`／`.field-needs-input`
+   * 同一個 accent 與光暈），配一句短提示，讓「這一格被動過」在整個產品裡長得一樣。
+   *
+   * 清掉的時機都是「這件事已經不再成立」：下一次分析開始、使用者自己改了這一欄（他已經
+   * 知道自己在動什麼）、儲存成功（已經生效）、切換版本重新載入（草稿整份被換掉）。
    */
-  const [notice, setNotice] = useState<string>();
+  const [analysisApplied, setAnalysisApplied] = useState(false);
   /**
    * 載入這份風格失敗。與 `error`（toast）分開：toast 是可關掉的通知，而載入失敗之後畫面
    * 上只剩一份空表單配著標題「載入中…」，關掉 toast 等於什麼線索都不剩，使用者只能按
@@ -160,7 +163,7 @@ export function StyleEditor({
         setBaseline(JSON.stringify(fromStyle(selected)));
         setLoadError(undefined);
         // 草稿整份被換掉了，上一份草稿的分析回饋不再指向畫面上的內容。
-        setNotice(undefined);
+        setAnalysisApplied(false);
       }
     };
     void load().catch((reason: unknown) => {
@@ -252,7 +255,7 @@ export function StyleEditor({
         ),
       );
       // 這份草稿已經落地，「按儲存才會生效」不再成立。
-      setNotice(undefined);
+      setAnalysisApplied(false);
       onSaved(saved);
     } catch (reason) {
       setError(failureText(reason, "儲存失敗"));
@@ -368,15 +371,30 @@ export function StyleEditor({
                 高密度會要求更多可讀資訊區塊，並降低裝飾圖片占比。
               </small>
             </label>
-            <label>
+            {/*
+              AI 分析換掉這一格之後標上橘框。class 掛在 `<label>` 而不是 `<textarea>`：整組
+              欄位樣式（`.outline-dirty`／`.field-needs-input`）都是「容器 class + 內部控制項」
+              的形狀，掛在控制項上會與那兩條規則的特異度打架。
+            */}
+            <label className={analysisApplied && !readOnly ? "field-analysis-applied" : undefined}>
               設計系統
               <textarea
                 disabled={readOnly}
                 rows={12}
                 value={draft.designSystem}
-                onChange={(event) => setDraft({ ...draft, designSystem: event.target.value })}
+                onChange={(event) => {
+                  setDraft({ ...draft, designSystem: event.target.value });
+                  // 他自己動手改了，就不必再提醒「這一格被換掉了」。
+                  setAnalysisApplied(false);
+                }}
                 placeholder="按下方「AI 分析風格」由參考圖產生；也可自行撰寫。色票、字型、版面與頁型規則以此為準。"
               />
+              {analysisApplied && !readOnly && (
+                <small className="field-analysis-hint" role="status">
+                  這一格剛換成 AI 分析的結果。按「{saveLabel}」才會生效，不滿意就不要儲存；避免
+                  項目不會被分析更動。
+                </small>
+              )}
               <small>
                 生成時，底色、色票、字級、網格、頁型規則以這裡為準；質感、圖片處理、陰影與收邊則以參考圖為準。
               </small>
@@ -610,7 +628,7 @@ export function StyleEditor({
                   onClick={() => {
                     begin("analyze", "AI 正在分析參考圖的風格");
                     setError(undefined);
-                    setNotice(undefined);
+                    setAnalysisApplied(false);
                     void api
                       .analyzeStyle(
                         draft.referenceImages.map((item) => item.id),
@@ -628,18 +646,17 @@ export function StyleEditor({
 
                           直接覆寫之所以安全，是因為改的是 `draft`：**按下儲存才會建立新版本**，
                           不滿意就不要存，離開時還有 `dirty` 攔一次。代價是使用者必須知道剛才發生
-                          了什麼，所以下面那句 `notice` 與這個決定是同一件事的兩半，不可只做一半。
+                          了什麼，所以 `analysisApplied` 的橘框與這個決定是同一件事的兩半，不可
+                          只做一半。
 
                           **被換掉的只有設計系統這一塊**。`avoid` 現在完全不碰——分析根本不再
                           產出它（見 `style-analysis.ts` 的 JSDoc：兩輪實測後改成由使用者手寫），
                           `imageDirection`／`promptTemplate` 同理，那些是使用者自己的補充。回饋
-                          句必須跟著只講設計系統：多說一句「避免項目也被取代」，使用者就會回去
-                          檢查一個根本沒被動過的欄位。
+                          因此只標記設計系統那一格：把回饋做成一段列舉三個欄位的長文字，使用者
+                          會回去檢查兩個根本沒被動過的欄位（實測就發生了：「為啥還有避免項目」）。
                         */
                         setDraft((value) => ({ ...value, designSystem: suggestion.designSystem }));
-                        setNotice(
-                          `AI 分析完成：設計系統已換成這次的分析結果，原本的內容被取代（避免項目、圖片方向與提示詞模板都沒有更動）。這是草稿，按「${saveLabel}」才會生效；不滿意就不要儲存。`,
-                        );
+                        setAnalysisApplied(true);
                       })
                       .catch((reason: unknown) => setError(failureText(reason, "AI 分析失敗")))
                       .finally(finish);
@@ -667,15 +684,6 @@ export function StyleEditor({
                     </option>
                   ))}
                 </select>
-              </div>
-            )}
-            {/*
-              成功回饋緊接在剛按下的那顆按鈕下面（被改寫的兩個欄位在左欄，但使用者的視線在
-              這裡）。`role="status"` 而不是 `alert`：這不是錯誤，不該打斷讀屏的當下朗讀。
-            */}
-            {notice && !readOnly && (
-              <div className="provider-note" role="status">
-                {notice}
               </div>
             )}
             {styleId && (
