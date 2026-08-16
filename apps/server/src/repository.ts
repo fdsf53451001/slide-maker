@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { parseProject, type PresentationProject, type StorageAdapter } from "@slide-maker/core";
+import {
+  parseProject,
+  sortProjectsByUpdatedAt,
+  type PresentationProject,
+  type StorageAdapter,
+} from "@slide-maker/core";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -61,9 +66,9 @@ export class FileProjectRepository implements StorageAdapter {
     const projects = await Promise.all(
       entries.filter((entry) => entry.isDirectory()).map((entry) => this.loadProject(entry.name)),
     );
-    return projects
-      .filter((project): project is PresentationProject => project !== undefined)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return sortProjectsByUpdatedAt(
+      projects.filter((project): project is PresentationProject => project !== undefined),
+    );
   }
 
   async loadProject(id: string): Promise<PresentationProject | undefined> {

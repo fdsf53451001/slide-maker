@@ -240,7 +240,9 @@ export async function createApp(
     if (latest && latest.version !== project.styleSnapshot.version) {
       await repository.updateProject(projectId, (current) => {
         current.styleSnapshot = structuredClone(latest);
-        current.updatedAt = new Date().toISOString();
+        // 同 `provider-resolution.ts` 的 lazy 綁定：把專案的風格快照追上風格庫是生成前的
+        // **系統同步**，使用者沒有改這份專案；而且這裡之後還會因為能力不符而 throw，
+        // 那時他拿到的是一則錯誤、零張圖，不該換到主畫面最上面。
       });
     }
     const effective = latest ?? project.styleSnapshot;
