@@ -134,6 +134,18 @@ export const styleAnalysisJsonSchema: Record<string, unknown> = {
  * 內容區會讓生成的內頁整個往下長、與來源 deck 的比例對不上）；以及**只用於 chrome 的顏色
  * 要整個不列進 palette**——沒有這句時，那個顏色沒有任何合法的描述方式，模型只能二選一：
  * 丟掉它，或編一個它其實沒有的用途。
+ *
+ * **`avoid` 必須自己有一條判準**：其他每個欄位都有逐欄說明，只有它從來沒被交代過該裝什麼，
+ * 而 schema 又把它列進 `required`——模型於是自由發揮。實測那份「玉山ithome」產出 13 條，
+ * 混了三類東西，沒有一類是「參考圖排除了什麼」：①模型自己的簡報審美（`避免使用寫實人物
+ * 攝影`、`避免卡通、手繪或粗糙的插畫風格`、`禁止使用圓角卡片陰影浮空風格`——那三張圖裡沒有
+ * 人物照片，不等於這套風格禁止照片）；②把正面規則改寫成否定句（`禁止遺漏頁底全寬藍綠色
+ * 邊緣飾條`、`禁止將內頁主標題置中`——這些 layoutSystem 與 components 已經講過一次，等於
+ * 第二份真相）；③句子本身壞掉（`禁止標題採用無襯線體以外的襯線字型` 自相矛盾）。代價不是
+ * 「多幾句廢話」：合約把每一條都宣告成 `mandatory negative constraint` 並逐字送進生成
+ * prompt，所以 `避免使用寫實人物攝影` 會擋掉某一頁真的需要照片的情況。判準因此要同時說出
+ * 三件事——只收觀察得到的排除、不收其他欄位的否定式改寫、以及**空陣列是正確答案**（`avoid`
+ * 有 `.default([])`，但沒人告訴模型可以留空時，必填欄位一定會被填滿）。
  */
 export const STYLE_ANALYSIS_PROMPT = [
   "Analyze the attached images only as visual-style references for a presentation style library.",
@@ -143,6 +155,7 @@ export const STYLE_ANALYSIS_PROMPT = [
   "palette: give every colour as a hex value with the role and the concrete places it is used. Estimate the hex from the pixels; never substitute a colour name for a value.",
   "archetypes: emit an entry only for a page type the references actually show. For a page type you did not see, either omit it or say explicitly in its rules that the references do not cover it and the page must be derived from the invariants. Never invent a page type's look and present it as observed.",
   "Write typography, layoutSystem, and components as prose specific enough to reproduce the design — name the sizes, ratios, spacing, and geometry you can see. Generic wording such as 'modern and clean' is a failed analysis.",
+  "avoid: list only what these references visibly rule out — a treatment this visual language does not use, whose absence holds across the pages you were given. Every entry is enforced word for word as a mandatory negative constraint on every slide generated in this style, so an entry you inferred rather than observed will block a slide that legitimately needs that thing. Do not list generic presentation taste, such as photography, illustration, clip art, or drop shadows, unless these references actually show it being excluded. Do not restate a positive rule from typography, layoutSystem, components, or archetypes as a prohibition: those fields already carry it, and the copy here will contradict the original as soon as either is edited. When the references rule nothing out, return an empty list — that is a correct answer, not a gap to fill.",
   "Deck chrome is not part of the design system you are recovering: page numbers, slide numbers, a running header or footer carrying the deck or section name, a date line, a copyright line, and watermarks. The system that will consume this analysis composites page numbering onto every slide by itself, and it feeds these fields back to an image model as drawing instructions — so chrome recorded here gets drawn a second time, on top of the one the system already adds.",
   "Never describe deck chrome in designRationale, in a palette entry's usage, in typography, in layoutSystem, in components, or in an archetype's rules. If a colour appears only in chrome — a grey used for nothing but the page number — leave it out of palette rather than giving it a use it does not have.",
   "Do record the margins and whitespace that deck chrome occupies. The band it sits in is real layout geometry: state it as reserved edge space with its measurements, and describe what the content area may occupy, without naming what the source deck put in that band.",

@@ -157,4 +157,46 @@ describe("style analysis output", () => {
       expect(line).toContain("without naming what the source deck put in that band");
     });
   });
+
+  describe("avoid 有自己的判準", () => {
+    // 實測（本機風格「玉山ithome」）：這個欄位是唯一沒有逐欄說明、卻被 schema 列進
+    // `required` 的欄位，模型於是自由發揮，13 條裡沒有一條是「參考圖排除了什麼」——
+    // 混的是模型自己的簡報審美（`避免使用寫實人物攝影`）、把正面規則改寫成否定句
+    // （`禁止遺漏頁底全寬藍綠色邊緣飾條`，layoutSystem 已經講過一次）、以及自相矛盾的
+    // 句子（`禁止標題採用無襯線體以外的襯線字型`）。而合約把每一條都宣告成 mandatory
+    // negative constraint 逐字送進生成 prompt，所以第一類會擋掉真的需要照片的那一頁。
+    //
+    // 同樣逐行取出再斷言：`avoid` 這個字在別的規則行裡也有。
+    const avoidLine = () => {
+      const line = STYLE_ANALYSIS_PROMPT.split("\n").find((candidate) =>
+        candidate.startsWith("avoid:"),
+      );
+      expect(line, "找不到 avoid 的逐欄說明").toBeDefined();
+      return line!;
+    };
+
+    it("只收觀察得到的排除，並說明每一條的強制力", () => {
+      const line = avoidLine();
+      expect(line).toContain("visibly rule out");
+      // 「為什麼要克制」比「請克制」有效：說出後果，模型才推得到沒列舉到的情況。
+      expect(line).toContain("mandatory negative constraint");
+      expect(line).toContain("block a slide that legitimately needs that thing");
+    });
+
+    it("擋掉通用審美與正面規則的否定式改寫", () => {
+      const line = avoidLine();
+      expect(line).toContain("generic presentation taste");
+      expect(line).toContain("Do not restate a positive rule");
+      // 第二份真相的代價要講明，否則「重複一次也不會怎樣」看起來是安全的。
+      for (const field of ["typography", "layoutSystem", "components", "archetypes"])
+        expect(line, field).toContain(field);
+    });
+
+    it("明講空陣列是正確答案", () => {
+      // schema 有 `.default([])`，但沒人告訴模型可以留空時，必填欄位一定會被填滿。
+      const line = avoidLine();
+      expect(line).toContain("return an empty list");
+      expect(line).toContain("not a gap to fill");
+    });
+  });
 });
