@@ -107,6 +107,16 @@ export function StyleEditor({
   const finish = () => setBusyAction(undefined);
   const [error, setError] = useState<string>();
   /**
+   * 非錯誤的狀態列（目前只有 AI 分析的成功回饋）。與 `error` 的 toast 分開：這不是失敗，
+   * 而且它必須留在畫面上直到使用者處置——分析會**直接改寫**草稿裡的設計系統與避免清單，
+   * 沒有這一行的話，使用者按完按鈕只看到欄位內容換了，無從得知換掉的是什麼、也不知道
+   * 還沒進資料庫（`draft` 只是草稿，按儲存才會建立新版本）。
+   *
+   * 清掉的時機有三個，都是「這句話已經不再成立」：下一次分析開始（要講的是新的那一次）、
+   * 儲存成功（已經生效，再說「按儲存才會生效」是錯的）、切換版本重新載入（草稿整份被換掉）。
+   */
+  const [notice, setNotice] = useState<string>();
+  /**
    * 載入這份風格失敗。與 `error`（toast）分開：toast 是可關掉的通知，而載入失敗之後畫面
    * 上只剩一份空表單配著標題「載入中…」，關掉 toast 等於什麼線索都不剩，使用者只能按
    * 瀏覽器上一頁。這個狀態換掉整塊表單，並給出重試與離開兩條路。
@@ -123,6 +133,11 @@ export function StyleEditor({
   const [analysisCombinationId, setAnalysisCombinationId] = useState("");
   const dirty = JSON.stringify(draft) !== baseline;
   const readOnly = !!historicalVersion || !!style?.system;
+  /**
+   * 儲存鈕的文案。分析的成功回饋要叫使用者去按它，兩處各寫一份字面值的話，改了按鈕文案
+   * 就會得到一句指著不存在的按鈕的說明。
+   */
+  const saveLabel = styleId ? "儲存新版本" : "建立風格";
 
   useEffect(() => {
     let current = true;
@@ -144,6 +159,8 @@ export function StyleEditor({
         setDraft(fromStyle(selected));
         setBaseline(JSON.stringify(fromStyle(selected)));
         setLoadError(undefined);
+        // 草稿整份被換掉了，上一份草稿的分析回饋不再指向畫面上的內容。
+        setNotice(undefined);
       }
     };
     void load().catch((reason: unknown) => {
@@ -222,6 +239,20 @@ export function StyleEditor({
       setStyle(saved);
       setDraft(fromStyle(saved));
       setBaseline(JSON.stringify(fromStyle(saved)));
+      // **版本清單也要跟著走**：它只由上面那個 effect 填，而 effect 的相依是
+      // `[styleId, historicalVersion, loadAttempt]`——儲存既有風格時三個都沒變（`onSaved`
+      // 導向的 `/styles/<id>` 就是現在這一頁），effect 不會重跑，於是剛建立的版本要等到
+      // 使用者手動重新整理才出現在「版本歷史」裡。修在這裡而不是外面補一次 refetch：
+      // 回應本身就是那個新版本，再打一支 API 只是把同一份資料要第二次。
+      // 依 version 排序與 `listVersions()` 一致（遞增）；用 filter 是為了讓「同一版本號被
+      // 寫第二次」不會在清單裡留下兩筆。
+      setVersions((all) =>
+        [...all.filter((item) => item.version !== saved.version), saved].sort(
+          (left, right) => left.version - right.version,
+        ),
+      );
+      // 這份草稿已經落地，「按儲存才會生效」不再成立。
+      setNotice(undefined);
       onSaved(saved);
     } catch (reason) {
       setError(failureText(reason, "儲存失敗"));
@@ -428,7 +459,7 @@ export function StyleEditor({
                   disabled={busy || !draft.name.trim()}
                   onClick={() => void save()}
                 >
-                  {running("save") ? "儲存中…" : styleId ? "儲存新版本" : "建立風格"}
+                  {running("save") ? "儲存中…" : saveLabel}
                 </button>
               )}
               {/*
@@ -569,23 +600,43 @@ export function StyleEditor({
                   onClick={() => {
                     begin("analyze", "AI 正在分析參考圖的風格");
                     setError(undefined);
+                    setNotice(undefined);
                     void api
                       .analyzeStyle(
                         draft.referenceImages.map((item) => item.id),
                         analysisCombinationId || undefined,
                       )
                       .then((suggestion) => {
-                        // 設計系統整包覆寫（兩份疊加會讓模型讀到兩組矛盾色票）；avoid 取聯集；
-                        // imageDirection／promptTemplate 是使用者手寫的補充，分析一律不碰。
-                        const shouldApply =
-                          !draft.designSystem.trim() ||
-                          confirm("AI 分析完成。將取代目前的設計系統內容，確定套用嗎？");
-                        if (shouldApply)
-                          setDraft((value) => ({
-                            ...value,
-                            designSystem: suggestion.designSystem,
-                            avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
-                          }));
+                        /*
+                          分析結果**直接蓋上去**，不再先問一句「確定取代嗎？」。
+
+                          那個 confirm 按取消時什麼都不做：設計系統不套用、avoid 也不合併，整份
+                          結果連同已經花掉的模型配額一起丟掉，而畫面上沒有任何訊息說明剛才那次
+                          分析去哪了。實測後果是使用者以為「重跑分析不會改到原來的東西」——他存
+                          出來的新版本與三週前那一版逐字相同，包含正要修掉的那幾處頁碼。而那句
+                          問話本身就在勸退（「將取代目前的設計系統內容」），卻沒說這件事可逆。
+
+                          直接覆寫之所以安全，是因為改的是 `draft`：**按下儲存才會建立新版本**，
+                          不滿意就不要存，離開時還有 `dirty` 攔一次。代價是使用者必須知道剛才發生
+                          了什麼，所以下面那句 `notice` 與這個決定是同一件事的兩半，不可只做一半。
+
+                          `avoid` 從聯集改成覆寫：聯集只增不減，某一次分析寫出爛條目就永遠留著
+                          （實測那份風格帶著三週前的 13 條，之後每次分析都被原樣保留），而 avoid
+                          的每一條都會逐字進生成 prompt、還被宣告為 mandatory negative constraint。
+                          整份分析既然是「蓋上去、滿意再存」，avoid 沒有理由是唯一累積的欄位。它
+                          會一併沖掉使用者手寫的條目，所以回饋句必須明講被換掉的是哪兩塊。
+
+                          `imageDirection`／`promptTemplate` 仍然不碰：那是使用者手寫的補充，
+                          分析也不產出它們。
+                        */
+                        setDraft((value) => ({
+                          ...value,
+                          designSystem: suggestion.designSystem,
+                          avoid: [...suggestion.avoid],
+                        }));
+                        setNotice(
+                          `AI 分析完成：設計系統與避免項目都已換成這次的分析結果，原本的內容（包含你自己加的避免項目）已被取代。這是草稿，按「${saveLabel}」才會生效；不滿意就不要儲存。`,
+                        );
                       })
                       .catch((reason: unknown) => setError(failureText(reason, "AI 分析失敗")))
                       .finally(finish);
@@ -613,6 +664,15 @@ export function StyleEditor({
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
+            {/*
+              成功回饋緊接在剛按下的那顆按鈕下面（被改寫的兩個欄位在左欄，但使用者的視線在
+              這裡）。`role="status"` 而不是 `alert`：這不是錯誤，不該打斷讀屏的當下朗讀。
+            */}
+            {notice && !readOnly && (
+              <div className="provider-note" role="status">
+                {notice}
               </div>
             )}
             {styleId && (
