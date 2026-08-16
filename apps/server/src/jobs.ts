@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import sharp from "sharp";
 import {
   SafeProviderError,
@@ -84,8 +84,11 @@ export interface JobImageReference {
  *  1. `protectedIndices`（編輯任務的 base／mask）**一張都不能砍**：它們是被 `edit.baseImageIndex`
  *     ／`maskImageIndex` 指到的位置，砍掉會讓索引指向別的角色——那是無聲的失敗（模型收到
  *     「Image 1 是你要編輯的投影片」與「Image 1: role=style」互相打架的兩句話）。
- *  2. 風格參考圖優先於內容參考圖：少一張資料圖只是少一份佐證，少了風格圖整頁會長得不像
- *     這份簡報。
+ *  2. 風格參考圖 → 內容參考圖 → 框架範本（`deck-frame`，上一頁）。風格圖優於內容圖的理由
+ *     不變：少一張資料圖只是少一份佐證，少了風格圖整頁會長得不像這份簡報。**範本排在最後**
+ *     是因為內容圖是使用者透過 `sourceIds`／`pinnedSourceIds` 明確選中的東西——少一張範本是
+ *     「鄰頁略不一致」，少一張圖表是「使用者要的佐證沒出現」，不是同一量級。塞得下時三者
+ *     行為完全相同（函式在額度夠時提早返回），只有真的超額才分得出來。
  *  3. 同類之間依原順序砍尾，`sourceIds` 的排序因此就是保留的優先序。
  *
  * 回傳保留下來的原始索引，呼叫端據此重算 `edit` 的索引——雖然目前 base／mask 一定在最前
@@ -102,7 +105,11 @@ export function limitReferences<T extends { role: ImageReferenceRole }>(
   const isProtected = new Set(protectedIndices);
   const budget = Math.max(0, max - isProtected.size);
   const supplemental = all.filter((index) => !isProtected.has(index));
-  const priority = (index: number): number => (references[index]!.role === "style" ? 0 : 1);
+  const priority = (index: number): number => {
+    const role = references[index]!.role;
+    if (role === "style") return 0;
+    return role === "deck-frame" ? 2 : 1;
+  };
   const kept = new Set([
     ...isProtected,
     // 穩定排序：同一優先級維持原順序，砍的永遠是尾巴那幾張。
@@ -147,6 +154,111 @@ function editBaseImagePath(
 ): string {
   if (operation === "edit") return version.textLayer?.backgroundPath ?? version.imagePath;
   return unerasedImagePath(version);
+}
+
+/**
+ * 沒附上框架範本的原因。**每一種都要記得下來**：使用者回報「相鄰兩頁還是不一致」時，
+ * 「這一頁根本沒收到範本」與「收到了但模型沒理它」要採取的行動完全相反，而伺服器上唯一
+ * 分得出來的東西就是這一行。
+ */
+type DeckFrameSkipReason =
+  | "REFERENCE_IMAGES_UNSUPPORTED"
+  | "MULTIPLE_REFERENCES_UNSUPPORTED"
+  | "NO_PREVIOUS_GENERATED_SLIDE"
+  | "STYLE_VERSION_STALE"
+  | "UNSUPPORTED_MEDIA_TYPE"
+  | "FRAME_ASSET_MISSING"
+  | "REFERENCE_BUDGET_EXCEEDED";
+
+/**
+ * 副檔名 → mediaType。與 `editBaseImagePath` 那段同源，但這裡**認不出來就不附**而不是一律
+ * 回退 png：底圖是編輯任務的必要輸入（猜錯也只能送），範本是可有可無的加分項，而內建 mock
+ * provider 落地的是 `.svg`——把它標成 `image/png` 送給真的影像模型換來的是整頁失敗。同一份
+ * 專案先用 mock 跑再換真模型是真實路徑（使用者換模型組合）。
+ */
+function deckFrameMediaType(path: string): string | undefined {
+  if (/\.png$/i.test(path)) return "image/png";
+  if (/\.jpe?g$/i.test(path)) return "image/jpeg";
+  return undefined;
+}
+
+interface DeckFrameChoice {
+  readonly reference?: { path: string; mediaType: string };
+  /** 兩個欄位都沒有＝這是第一頁，沒有「找不到」可言，不必記 log。 */
+  readonly skipReason?: DeckFrameSkipReason;
+}
+
+/**
+ * 這一頁的「框架範本」：同一份 deck 裡**前一張已經生成好、而且真的用得上**的投影片。
+ *
+ * 每頁都是單次無狀態生成，附給模型的圖原本只有風格庫參考圖與該頁自己的來源圖——同一份
+ * 簡報已生成的其他頁一張都不會附上，跨頁一致性全靠 designSystem 的文字描述重現，實測兩頁
+ * 的標頭樣式因此長得不一樣。附上前一頁，模型才看得到自己上一次把這套系統實作成什麼樣子。
+ * 它是**範本不是要複製的目標**，那件事由合約的 DECK FRAME REFERENCE 規則承擔，這裡只負責挑圖。
+ *
+ * **每一道檢查都在迴圈裡，不合格就繼續往前找**，不是選定第一張有 version 物件的頁就 commit：
+ * 那樣第 N 頁的一個壞掉的指標／不見的檔案會讓第 N+1 頁永遠碰不到更前面那張完好的圖。
+ * 四道檢查：
+ *  - **version 物件還在**（`currentVersionId` 指到不存在的 id 是手改過的 project.json、或
+ *    未來某個抽掉 version 卻忘了改指標的路徑）。
+ *  - **`styleVersion` 與專案現行風格相同**。改了風格只重生第 12 頁時，第 11 頁還是舊風格，
+ *    附上去等於把新的 designSystem 往回拉。副作用正好是對的：改完風格重生整份時第一頁沒有
+ *    範本，之後每一頁從新生成的頁接續。
+ *  - **副檔名認得出來**（見 `deckFrameMediaType`）。
+ *  - **檔案真的在磁碟上**。四條真實 transport 都會無條件把每一張參考圖讀進來，少一個檔案
+ *    就是整頁 `failed`——而且 ENOENT 訊息帶著 `.png` 會命中 `safeFailure` 的 PNG 分支，使用者
+ *    被告知「生成圖片未通過安全或格式驗證」，真正的原因卻是**另一頁**的檔案不見了。
+ *    `parseProjectBundle()` 不比對每個 `version.imagePath` 是否真的在 zip 裡，所以這條可達。
+ *
+ * 另外兩個決定：
+ *  - **隱藏頁照樣可以當範本**。`hidden` 的語意是「這一頁不上場」，不是「這一頁不算數」——
+ *    它的視覺框架仍然是這份 deck 的。跳過隱藏頁只會讓它後面那一頁莫名其妙地少一張範本。
+ *  - 用 version 的 `imagePath`（使用者現在看到的那張，含文字層的合成結果），因為那正是
+ *    「這份 deck 現在長什麼樣」。已知取捨：抽字後的合成圖上，文字是用**系統字型**重繪的
+ *    （內嵌字型在伺服器與瀏覽器都不存在），所以拿它當範本時「字級與顏色處理」對齊到的是
+ *    近似值——不要日後把這條路當成字型一致性的依據。
+ *
+ * 回報的原因是**最近的那一次拒絕**（不是最遠的）：使用者想知道的是「我前面那一頁怎麼了」。
+ */
+async function chooseDeckFrame(
+  slides: readonly SlideSpec[],
+  slide: SlideSpec,
+  styleVersion: number,
+  resolve: (storedPath: string) => string,
+): Promise<DeckFrameChoice> {
+  const earlier = slides
+    .filter((candidate) => candidate.order < slide.order)
+    // 穩定排序：order 沒有唯一性約束，同分時維持 slides 陣列的原順序，同一份專案兩次生成
+    // 才會挑到同一張範本。
+    .sort((left, right) => right.order - left.order);
+  let nearestRejection: DeckFrameSkipReason | undefined;
+  for (const candidate of earlier) {
+    if (!candidate.currentVersionId) continue;
+    const version = candidate.versions.find((entry) => entry.id === candidate.currentVersionId);
+    if (!version) continue;
+    if (version.styleVersion !== styleVersion) {
+      nearestRejection ??= "STYLE_VERSION_STALE";
+      continue;
+    }
+    const mediaType = deckFrameMediaType(version.imagePath);
+    if (!mediaType) {
+      nearestRejection ??= "UNSUPPORTED_MEDIA_TYPE";
+      continue;
+    }
+    const path = resolve(version.imagePath);
+    const readable = await access(path).then(
+      () => true,
+      () => false,
+    );
+    if (!readable) {
+      nearestRejection ??= "FRAME_ASSET_MISSING";
+      continue;
+    }
+    return { reference: { path, mediaType } };
+  }
+  if (nearestRejection) return { skipReason: nearestRejection };
+  // 第一頁（前面根本沒有頁）不記 log——那不是降級，是這個功能本來就不適用。
+  return earlier.length ? { skipReason: "NO_PREVIOUS_GENERATED_SLIDE" } : {};
 }
 
 function sameOutline(slide: SlideSpec, snapshot: SlideOutlineSnapshot): boolean {
@@ -864,7 +976,58 @@ export class JobRunner {
           name: source.name,
           sourceId: source.id,
         }));
-      const references: JobImageReference[] = [...styleReferences, ...contentReferences];
+      // 框架範本只在全新生成時附：編輯與抹字是在既有像素上動刀，它們的一致性來自底圖
+      // 本身，多附一張「別頁長這樣」只會變成重排的理由（916fa47 的形狀）。挑圖的四道檢查
+      // 在 `chooseDeckFrame()` 裡，這裡只處理「provider 吃不吃得下」與留下證據。
+      //
+      // **它是純加分項，絕不可讓原本跑得動的生成變成失敗**，所以要先過 provider 的能力
+      // 宣告——下面那兩道檢查（`referenceImages`／`multipleReferenceImages`）是 throw，不是
+      // 截斷。實測：宣告 `referenceImages: false` 的 provider 在無條件附上範本之後，第一頁
+      // 照常完成、第二頁起每一頁都 `STYLE_REFERENCES_UNSUPPORTED`（jobs-security 那個併發
+      // 測試就是這樣變紅的：maxConcurrency=1 讓第二頁排在第一頁完成之後，於是真的拿得到
+      // 範本）。`multipleReferenceImages: false` 同理——只有在其餘參考圖是空的時候，範本才
+      // 塞得進那唯一的名額。
+      //
+      // 已知限制（刻意接受）：影像 provider 的 maxConcurrency 是 2，批次生成時最前面**兩**頁
+      // 同時開跑，兩頁都還沒有任何已完成的前頁可用，所以都拿不到範本。要讓每一頁都有範本，
+      // 只需要序列化**第一個** job（之後照樣兩兩併行），代價是整批多等一頁的時間、而不是
+      // 翻倍——實作先不動，等使用者實測效果再決定值不值得。
+      const deckFrame: DeckFrameChoice =
+        job.operation === "generate"
+          ? await chooseDeckFrame(
+              project.slides,
+              slide,
+              project.styleSnapshot.version,
+              (storedPath) => this.repository.resolveAsset(projectId, storedPath),
+            )
+          : {};
+      const capabilitySkipReason: DeckFrameSkipReason | undefined = !provider.capabilities
+        .referenceImages
+        ? "REFERENCE_IMAGES_UNSUPPORTED"
+        : !provider.capabilities.multipleReferenceImages &&
+            styleReferences.length + contentReferences.length > 0
+          ? "MULTIPLE_REFERENCES_UNSUPPORTED"
+          : undefined;
+      // 找到範本卻附不上去 → 記能力的原因；一張都找不到 → 記挑圖那端的原因（第一頁是
+      // undefined，不記）。只記 id 與宣告值，檔名與正文一個字都不進 log。
+      const deckFrameSkipReason = deckFrame.reference ? capabilitySkipReason : deckFrame.skipReason;
+      if (deckFrameSkipReason)
+        logWarn("deck_frame_reference_skipped", {
+          projectId,
+          jobId,
+          slideId: job.slideId,
+          providerId: job.providerId,
+          reason: deckFrameSkipReason,
+        });
+      const deckFrameReferences: JobImageReference[] =
+        deckFrame.reference && !capabilitySkipReason
+          ? [{ ...deckFrame.reference, role: "deck-frame", name: "Previous slide in this deck" }]
+          : [];
+      const references: JobImageReference[] = [
+        ...styleReferences,
+        ...deckFrameReferences,
+        ...contentReferences,
+      ];
       let edit;
       if (job.operation === "edit" || job.operation === "extract-text") {
         const baseVersion = slide.versions.find((version) => version.id === job.baseVersionId);
@@ -941,6 +1104,17 @@ export class JobRunner {
             return sourceId ? [sourceId] : [];
           }),
         });
+        // 範本被額度砍掉時要記**它自己那一行**，不能只靠上面那條通用截斷：`maxReferenceImages`
+        // 被風格圖填滿的通道（宣告 1 張，或風格庫塞滿 4 張而上限是 4）會讓範本每一頁都被丟掉，
+        // 整個功能靜默變成 no-op，而使用者只看得到「這個功能沒有效果」。
+        if (limited.droppedIndices.some((index) => references[index]!.role === "deck-frame"))
+          logWarn("deck_frame_reference_skipped", {
+            projectId,
+            jobId,
+            slideId: job.slideId,
+            providerId: job.providerId,
+            reason: "REFERENCE_BUDGET_EXCEEDED" satisfies DeckFrameSkipReason,
+          });
         const keptPosition = new Map(
           limited.keptIndices.map((index, position) => [index, position]),
         );

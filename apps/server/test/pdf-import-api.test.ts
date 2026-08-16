@@ -275,9 +275,14 @@ describe("PDF deck import API", () => {
       const stub = stubTextProvider(async () => analysis);
       try {
         const before = await styleAssets();
+        const untouchedAvoid = [...body.project.styleSnapshot.avoid];
         const first = (await (await analyse(body.project)).json()) as PresentationProject;
         expect(first.styleSnapshot.designSystem).toContain("#0B1F3A");
-        expect(first.styleSnapshot.avoid).toEqual(["漸層"]);
+        // 分析不再產出 avoid，模型硬回一個（上面的 `analysis` fixture 就有）也不得寫進
+        // snapshot：那一欄是使用者手寫的，原本的內容必須一個字都沒變。
+        expect(untouchedAvoid.length).toBeGreaterThan(0);
+        expect(first.styleSnapshot.avoid).toEqual(untouchedAvoid);
+        expect(first.styleSnapshot.avoid).not.toContain("漸層");
         expect(first.styleSnapshot.id).toBe(`pdf-style-${body.project.id}`);
         expect(first.styleSnapshot.referenceImages).toHaveLength(2);
         // 重新分析：上一批沒有引用了，必須被掃掉，資產數量不隨重試累積。

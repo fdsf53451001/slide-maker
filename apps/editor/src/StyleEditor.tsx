@@ -107,6 +107,19 @@ export function StyleEditor({
   const finish = () => setBusyAction(undefined);
   const [error, setError] = useState<string>();
   /**
+   * 設計系統這一欄剛被 AI 分析換掉。分析會**直接改寫**草稿，使用者必須知道動到的是哪一格、
+   * 而且還沒進資料庫（`draft` 只是草稿，按儲存才會建立新版本）。
+   *
+   * **回饋掛在被改的那一格上，不是掛在按鈕旁邊**：上一版把整段說明放在分析按鈕下方，離
+   * 設計系統那個 textarea 隔了半個表單，實測回報是「這陀不顯示」——它其實有渲染，只是
+   * 沒人會在那裡找。改成沿用編輯器既有的橘框語言（`.outline-dirty`／`.field-needs-input`
+   * 同一個 accent 與光暈），配一句短提示，讓「這一格被動過」在整個產品裡長得一樣。
+   *
+   * 清掉的時機都是「這件事已經不再成立」：下一次分析開始、使用者自己改了這一欄（他已經
+   * 知道自己在動什麼）、儲存成功（已經生效）、切換版本重新載入（草稿整份被換掉）。
+   */
+  const [analysisApplied, setAnalysisApplied] = useState(false);
+  /**
    * 載入這份風格失敗。與 `error`（toast）分開：toast 是可關掉的通知，而載入失敗之後畫面
    * 上只剩一份空表單配著標題「載入中…」，關掉 toast 等於什麼線索都不剩，使用者只能按
    * 瀏覽器上一頁。這個狀態換掉整塊表單，並給出重試與離開兩條路。
@@ -123,6 +136,7 @@ export function StyleEditor({
   const [analysisCombinationId, setAnalysisCombinationId] = useState("");
   const dirty = JSON.stringify(draft) !== baseline;
   const readOnly = !!historicalVersion || !!style?.system;
+  const saveLabel = styleId ? "儲存新版本" : "建立風格";
 
   useEffect(() => {
     let current = true;
@@ -144,6 +158,8 @@ export function StyleEditor({
         setDraft(fromStyle(selected));
         setBaseline(JSON.stringify(fromStyle(selected)));
         setLoadError(undefined);
+        // 草稿整份被換掉了，上一份草稿的分析回饋不再指向畫面上的內容。
+        setAnalysisApplied(false);
       }
     };
     void load().catch((reason: unknown) => {
@@ -222,6 +238,20 @@ export function StyleEditor({
       setStyle(saved);
       setDraft(fromStyle(saved));
       setBaseline(JSON.stringify(fromStyle(saved)));
+      // **版本清單也要跟著走**：它只由上面那個 effect 填，而 effect 的相依是
+      // `[styleId, historicalVersion, loadAttempt]`——儲存既有風格時三個都沒變（`onSaved`
+      // 導向的 `/styles/<id>` 就是現在這一頁），effect 不會重跑，於是剛建立的版本要等到
+      // 使用者手動重新整理才出現在「版本歷史」裡。修在這裡而不是外面補一次 refetch：
+      // 回應本身就是那個新版本，再打一支 API 只是把同一份資料要第二次。
+      // 依 version 排序與 `listVersions()` 一致（遞增）；用 filter 是為了讓「同一版本號被
+      // 寫第二次」不會在清單裡留下兩筆。
+      setVersions((all) =>
+        [...all.filter((item) => item.version !== saved.version), saved].sort(
+          (left, right) => left.version - right.version,
+        ),
+      );
+      // 這份草稿已經落地，「按儲存才會生效」不再成立。
+      setAnalysisApplied(false);
       onSaved(saved);
     } catch (reason) {
       setError(failureText(reason, "儲存失敗"));
@@ -337,13 +367,22 @@ export function StyleEditor({
                 高密度會要求更多可讀資訊區塊，並降低裝飾圖片占比。
               </small>
             </label>
-            <label>
+            {/*
+              AI 分析換掉這一格之後標上橘框。class 掛在 `<label>` 而不是 `<textarea>`：整組
+              欄位樣式（`.outline-dirty`／`.field-needs-input`）都是「容器 class + 內部控制項」
+              的形狀，掛在控制項上會與那兩條規則的特異度打架。
+            */}
+            <label className={analysisApplied && !readOnly ? "field-analysis-applied" : undefined}>
               設計系統
               <textarea
                 disabled={readOnly}
                 rows={12}
                 value={draft.designSystem}
-                onChange={(event) => setDraft({ ...draft, designSystem: event.target.value })}
+                onChange={(event) => {
+                  setDraft({ ...draft, designSystem: event.target.value });
+                  // 他自己動手改了，就不必再提醒「這一格被換掉了」。
+                  setAnalysisApplied(false);
+                }}
                 placeholder="按下方「AI 分析風格」由參考圖產生；也可自行撰寫。色票、字型、版面與頁型規則以此為準。"
               />
               <small>
@@ -385,6 +424,16 @@ export function StyleEditor({
                   })
                 }
               />
+              {/*
+                這一欄的行為剛剛才改變（AI 分析以前會覆寫它，現在完全不碰），而欄位旁邊沒有
+                任何說明的話，下一次分析完發現這裡沒動，看起來就像分析壞了。順帶講清楚每一條
+                的份量：它們會逐字進生成 prompt 並被當成硬性禁止，多寫一條「不要用照片」就會
+                擋掉某一頁真的需要照片的情況。
+              */}
+              <small>
+                這裡只由你自己維護，AI 分析風格不會更動它。每一條都會成為生成時的硬性禁止，
+                寫得越多、模型能用的做法越少——只列真的不想看到的東西。
+              </small>
             </label>
             <div className="style-actions">
               {/*
@@ -428,7 +477,7 @@ export function StyleEditor({
                   disabled={busy || !draft.name.trim()}
                   onClick={() => void save()}
                 >
-                  {running("save") ? "儲存中…" : styleId ? "儲存新版本" : "建立風格"}
+                  {running("save") ? "儲存中…" : saveLabel}
                 </button>
               )}
               {/*
@@ -569,23 +618,35 @@ export function StyleEditor({
                   onClick={() => {
                     begin("analyze", "AI 正在分析參考圖的風格");
                     setError(undefined);
+                    setAnalysisApplied(false);
                     void api
                       .analyzeStyle(
                         draft.referenceImages.map((item) => item.id),
                         analysisCombinationId || undefined,
                       )
                       .then((suggestion) => {
-                        // 設計系統整包覆寫（兩份疊加會讓模型讀到兩組矛盾色票）；avoid 取聯集；
-                        // imageDirection／promptTemplate 是使用者手寫的補充，分析一律不碰。
-                        const shouldApply =
-                          !draft.designSystem.trim() ||
-                          confirm("AI 分析完成。將取代目前的設計系統內容，確定套用嗎？");
-                        if (shouldApply)
-                          setDraft((value) => ({
-                            ...value,
-                            designSystem: suggestion.designSystem,
-                            avoid: [...new Set([...value.avoid, ...suggestion.avoid])],
-                          }));
+                        /*
+                          分析結果**直接蓋上去**，不再先問一句「確定取代嗎？」。
+
+                          那個 confirm 按取消時什麼都不做：設計系統不套用、avoid 也不合併，整份
+                          結果連同已經花掉的模型配額一起丟掉，而畫面上沒有任何訊息說明剛才那次
+                          分析去哪了。實測後果是使用者以為「重跑分析不會改到原來的東西」——他存
+                          出來的新版本與三週前那一版逐字相同，包含正要修掉的那幾處頁碼。而那句
+                          問話本身就在勸退（「將取代目前的設計系統內容」），卻沒說這件事可逆。
+
+                          直接覆寫之所以安全，是因為改的是 `draft`：**按下儲存才會建立新版本**，
+                          不滿意就不要存，離開時還有 `dirty` 攔一次。代價是使用者必須知道剛才發生
+                          了什麼，所以 `analysisApplied` 的橘框與這個決定是同一件事的兩半，不可
+                          只做一半。
+
+                          **被換掉的只有設計系統這一塊**。`avoid` 現在完全不碰——分析根本不再
+                          產出它（見 `style-analysis.ts` 的 JSDoc：兩輪實測後改成由使用者手寫），
+                          `imageDirection`／`promptTemplate` 同理，那些是使用者自己的補充。回饋
+                          因此只標記設計系統那一格：把回饋做成一段列舉三個欄位的長文字，使用者
+                          會回去檢查兩個根本沒被動過的欄位（實測就發生了：「為啥還有避免項目」）。
+                        */
+                        setDraft((value) => ({ ...value, designSystem: suggestion.designSystem }));
+                        setAnalysisApplied(true);
                       })
                       .catch((reason: unknown) => setError(failureText(reason, "AI 分析失敗")))
                       .finally(finish);

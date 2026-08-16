@@ -345,3 +345,250 @@ describe("StyleEditor 載入失敗", () => {
     await waitFor(() => expect(screen.getByLabelText("名稱")).toHaveProperty("value", "既有風格"));
   });
 });
+
+/**
+ * AI 分析的套用路徑與儲存後的版本清單。
+ *
+ * 這兩件事是同一次實測回報的：使用者對既有風格重跑分析、存檔，得到的 v3 與三週前的 v2
+ * **逐字相同**（designSystem／avoid／referenceImages 全部一樣，只有版本號與時間不同），
+ * 而且按下儲存後要手動重新整理才看得到新版本。他的結論是「好像不會改動到原來的，這樣
+ * 等於沒反應」。
+ */
+const existingStyle = (overrides: Partial<StylePreset> = {}): StylePreset => ({
+  ...createDefaultStyle("2026-07-20T00:00:00.000Z"),
+  id: "style-1",
+  version: 2,
+  name: "玉山ithome",
+  system: false,
+  designSystem: "## 色票\n- #666666 — 頁尾註解說明文字、頁碼",
+  avoid: ["避免使用寫實人物攝影", "禁止將內頁主標題置中"],
+  referenceImages: [
+    {
+      id: "ref-1",
+      name: "cover.png",
+      mediaType: "image/png",
+      assetPath: "assets/ref-1.png",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    },
+  ],
+  ...overrides,
+});
+
+/** 版本清單 → 分析 → PATCH 的完整假伺服器；`patched` 收下真正送出去的那份草稿。 */
+function styleServer(options: { analysis?: unknown; patchStatus?: number } = {}) {
+  const state = { patched: undefined as Record<string, unknown> | undefined, analyses: 0 };
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const path = typeof input === "string" ? input : new URL(String(input)).pathname;
+    if (path === "/api/styles/style-1/versions") return Response.json([existingStyle()]);
+    if (path === "/api/style-analysis") {
+      state.analyses += 1;
+      return options.analysis === undefined
+        ? Response.json({ error: "STYLE_ANALYSIS_INCOMPLETE" }, { status: 502 })
+        : Response.json(options.analysis);
+    }
+    if (path === "/api/styles/style-1" && init?.method === "PATCH") {
+      state.patched = JSON.parse(String(init.body)) as Record<string, unknown>;
+      if (options.patchStatus && options.patchStatus >= 400)
+        return Response.json({ error: "STYLE_WRITE_FAILED" }, { status: options.patchStatus });
+      return Response.json({
+        ...existingStyle(),
+        ...state.patched,
+        version: 3,
+        updatedAt: "2026-08-16T00:00:00.000Z",
+      } satisfies StylePreset);
+    }
+    return Response.json({ error: "not found" }, { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return state;
+}
+
+/**
+ * 端點只回 designSystem——但這裡**刻意多塞一個 `avoid`**：非嚴格 gateway 與舊版伺服器都可能
+ * 回傳它，而前端必須完全不理。拿一份剛好沒有這個欄位的回應去測，「不小心又把 avoid 套上去」
+ * 的改動不會變紅，等於沒測。
+ */
+const analysisResult = {
+  designSystem: "## 色票\n- #0B1F3A — 主色；封面滿版底",
+  avoid: ["不要在內容頁加入未被參考呈現的照片"],
+};
+
+describe("AI 分析的結果直接套用到草稿", () => {
+  it("不再問「確定取代嗎？」，設計系統換成這次的結果", async () => {
+    // 舊版按取消 → 什麼都不做、也不說：整份分析與已經花掉的配額一起消失，使用者以為
+    // 重跑分析改不動既有內容。改成直接蓋上去是安全的——`draft` 只是草稿，按儲存才落地。
+    styleServer({ analysis: analysisResult });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^設計系統/)).toHaveProperty(
+        "value",
+        existingStyle().designSystem,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^設計系統/)).toHaveProperty(
+        "value",
+        analysisResult.designSystem,
+      ),
+    );
+    // 一次都不問——舊版連「按取消」這條路都不該存在了。
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("避免項目一個字都不動，連端點多回的那份也不理", async () => {
+    // 產品決定：這一欄改成完全由使用者手寫，分析不再產出它。實測（新建的「極簡藍」）給了
+    // 判準之後仍有 12 條，9 條是設計系統已經寫過的正面規則的否定句，另兩條真的會傷害輸出
+    // （擋掉某頁真正需要的照片、與 density: "high" 正面衝突），而每一條都逐字進生成 prompt
+    // 並被宣告為 mandatory negative constraint。
+    styleServer({ analysis: analysisResult });
+    const own = existingStyle().avoid.join("\n");
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText(/^避免項目/)).toHaveProperty("value", own));
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    // 等分析確實套用完（設計系統換掉了），再看避免項目——否則這個斷言在請求還沒回來時
+    // 就恆為真。
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^設計系統/)).toHaveProperty(
+        "value",
+        analysisResult.designSystem,
+      ),
+    );
+    expect(screen.getByLabelText(/^避免項目/)).toHaveProperty("value", own);
+    // 端點多回的那條一個字都不得出現在畫面上。
+    expect(screen.queryByText(/未被參考呈現的照片/)).toBeNull();
+  });
+
+  it("欄位旁邊講明這一欄不歸 AI 管", async () => {
+    // 使用者對這一欄的期待剛剛才被改變（以前分析會覆寫它）。沒有這句說明的話，下一次分析
+    // 完發現這裡沒動，看起來就像分析壞了。
+    styleServer({ analysis: analysisResult });
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const field = await screen.findByLabelText(/^避免項目/);
+    expect(field.closest("label")?.textContent).toMatch(/AI 分析風格不會更動/);
+  });
+
+  it("被換掉的那一格掛橘框，其餘欄位不掛", async () => {
+    // 回饋**只有橘框**，不配文字說明。前兩版各試過一次文字：先是分析按鈕下方的一整段
+    // （實測「這陀不顯示」——有渲染，但離這一格隔了半個表單），再是這一格底下的一句短提示
+    // （實測回應是「不要再給我加奇怪的說明了」）。橘框沿用 .outline-dirty／.field-needs-input
+    // 那組樣式，是編輯器裡既有的「這一格被動過」語言，本來就不需要一句話解釋自己。
+    styleServer({ analysis: analysisResult });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const design = await screen.findByLabelText(/^設計系統/);
+    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
+    // 沒被動過的欄位不得跟著亮：那正是使用者回頭檢查一個沒被改的欄位的原因。
+    expect(screen.getByLabelText(/^避免項目/).closest("label")?.className).not.toMatch(
+      /field-analysis-applied/,
+    );
+    // 這一格底下不得又長出一句說明。斷言的是整個 label 的文字，所以任何位置的新增都會被抓到。
+    expect(design.closest("label")?.textContent).not.toMatch(/分析|儲存|不滿意/);
+  });
+
+  it("使用者自己改這一格之後，橘框就撤掉", async () => {
+    // 他已經知道自己在動什麼，繼續標記等於一個永遠關不掉的提示。
+    styleServer({ analysis: analysisResult });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const design = await screen.findByLabelText(/^設計系統/);
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
+
+    fireEvent.change(design, { target: { value: "## 色票\n- #000000 — 我自己寫的" } });
+    expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/);
+  });
+
+  it("分析失敗時走既有的錯誤路徑，一個字都不動草稿", async () => {
+    styleServer({});
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    await screen.findByLabelText(/^設計系統/);
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+
+    await waitFor(() => expect(document.querySelector(".toast.error")).toBeTruthy());
+    expect(screen.getByLabelText(/^設計系統/)).toHaveProperty(
+      "value",
+      existingStyle().designSystem,
+    );
+    expect(screen.getByLabelText(/^避免項目/)).toHaveProperty(
+      "value",
+      existingStyle().avoid.join("\n"),
+    );
+    expect(
+      screen.getByLabelText(/^設計系統/).closest("label")?.className,
+    ).not.toMatch(/field-analysis-applied/);
+  });
+
+  it("儲存成功後撤掉橘框——「按儲存才會生效」已經不成立了", async () => {
+    styleServer({ analysis: analysisResult });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const design = await screen.findByLabelText(/^設計系統/);
+    fireEvent.click(screen.getByRole("button", { name: "AI 分析風格" }));
+    await waitFor(() =>
+      expect(design.closest("label")?.className).toMatch(/field-analysis-applied/),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "儲存新版本" }));
+    await waitFor(() =>
+      expect(design.closest("label")?.className).not.toMatch(/field-analysis-applied/),
+    );
+  });
+});
+
+describe("儲存後的版本歷史", () => {
+  it("新版本立刻出現，不必重新整理", async () => {
+    // 斷點在 `save()`：它更新了 style／draft／baseline 卻沒碰 `versions`，而 `versions` 只由
+    // 載入 effect 填，那個 effect 的相依是 [styleId, historicalVersion, loadAttempt]——儲存
+    // 既有風格時三個都沒變（`onSaved` 導向的就是現在這一頁），所以清單停在存檔前的樣子。
+    const state = styleServer({ analysis: analysisResult });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    const history = await waitFor(() => {
+      const node = document.querySelector<HTMLElement>(".version-links");
+      if (!node) throw new Error("no version list");
+      return node;
+    });
+    expect(within(history).getByRole("link", { name: /v2/ })).toBeTruthy();
+    expect(within(history).queryByRole("link", { name: /v3/ })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("描述"), { target: { value: "改一行" } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存新版本" }));
+
+    // 不重新掛載、不改 props：新版本必須自己出現在清單裡。
+    await waitFor(() => expect(within(history).getByRole("link", { name: /v3/ })).toBeTruthy());
+    expect(within(history).getByRole("link", { name: /v2/ })).toBeTruthy();
+    expect(state.patched?.description).toBe("改一行");
+    // 版本清單只抓過一次：修法是把回應接進 state，不是在外面補一次 refetch。
+    const versionCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input]) => String(input).includes("/versions"));
+    expect(versionCalls).toHaveLength(1);
+  });
+
+  it("儲存失敗時不會把沒建立成功的版本加進清單", async () => {
+    styleServer({ patchStatus: 500 });
+
+    render(<StyleEditor styleId="style-1" onSaved={vi.fn()} onExit={vi.fn()} />);
+    await screen.findByLabelText("名稱");
+    fireEvent.change(screen.getByLabelText("描述"), { target: { value: "存不起來" } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存新版本" }));
+
+    await waitFor(() => expect(document.querySelector(".toast.error")).toBeTruthy());
+    const history = document.querySelector<HTMLElement>(".version-links")!;
+    expect(within(history).queryByRole("link", { name: /v3/ })).toBeNull();
+  });
+});

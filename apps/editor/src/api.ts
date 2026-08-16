@@ -663,8 +663,9 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/versions/${encodeURIComponent(versionId)}/style-reference`,
       { method: "POST" },
     ),
+  /** 只回 designSystem：避免項目不由分析產出，那一欄由使用者自己維護。 */
   analyzeStyle: (referenceIds: string[], combinationId?: string) =>
-    request<{ designSystem: string; avoid: string[] }>("/api/style-analysis", {
+    request<{ designSystem: string }>("/api/style-analysis", {
       method: "POST",
       body: JSON.stringify({ referenceIds, ...(combinationId ? { combinationId } : {}) }),
     }),
