@@ -110,6 +110,26 @@ export function createProject(input: {
   return presentationProjectSchema.parse(project);
 }
 
+/**
+ * 專案列表的排序規則：最後修改（`updatedAt`）由新到舊。
+ *
+ * 住在 core 是因為**前後端都要排**：伺服器 `listProjects()` 排一次；主畫面的清單只在開頁時
+ * 抓那一次，之後都靠編輯器的本機狀態維護，所以專案物件更新時它得自己重排。兩邊各寫一份的
+ * 下場已經看過——編輯器原本是「只要 `project` 這個狀態變過，就把它插到最前面」，於是**點進
+ * 去看一眼**（甚至只是輪詢回了一份一模一樣的專案）也會把它推到最上面，而同一張卡片上印的
+ * 「最後修改時間」還是舊的，重新整理後順序又跳回去＝看起來像排序壞掉。
+ *
+ * 判準只有 `updatedAt` 一個：真的有寫入的操作才會讓伺服器換掉它，也才該換位置。
+ *
+ * 回傳新陣列（不就地改動輸入）；`updatedAt` 相同者維持輸入順序（`Array#sort` 是穩定的），
+ * 這樣同一毫秒內落地的兩份專案不會每次重排都互相跳動。
+ */
+export function sortProjectsByUpdatedAt<T extends { updatedAt: string }>(
+  projects: readonly T[],
+): T[] {
+  return [...projects].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
 export function parseProject(value: unknown): PresentationProject {
   const migrated = structuredClone(value) as {
     workflowStage?: unknown;
