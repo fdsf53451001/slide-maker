@@ -13,6 +13,7 @@ import {
   type SlideSpec,
   type StylePreset,
   SOURCE_COUNT_LIMIT,
+  sortProjectsByUpdatedAt,
 } from "@slide-maker/core";
 import {
   api,
@@ -251,12 +252,22 @@ export function Editor() {
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "載入失敗"));
   }, []);
+  /*
+   * 專案狀態一有新版本就同步回主畫面的清單，順序交給 `sortProjectsByUpdatedAt()`（與伺服器
+   * `listProjects()` 同一份規則）。**就地換掉那一筆、再整份重排**，不是把它插到最前面：
+   * 開啟／輪詢都會讓 `project` 換一個物件，插到最前面等於「看過就算修改」，卡片上的最後修改
+   * 時間還是舊的，一重新整理順序又跳回去。清單裡還沒有這一筆（剛建立、剛匯入）才補進去，
+   * 那種專案的 `updatedAt` 本來就是現在，排完自然在最上面。
+   */
   useEffect(() => {
     if (!project) return;
-    setProjects((current) => [
-      project,
-      ...current.filter((candidate) => candidate.id !== project.id),
-    ]);
+    setProjects((current) =>
+      sortProjectsByUpdatedAt(
+        current.some((candidate) => candidate.id === project.id)
+          ? current.map((candidate) => (candidate.id === project.id ? project : candidate))
+          : [project, ...current],
+      ),
+    );
   }, [project]);
   useEffect(() => {
     const match = /^\/projects\/([a-zA-Z0-9_-]+)$/.exec(route);

@@ -465,6 +465,10 @@ export class JobRunner {
 
   async recoverInterruptedJobs(): Promise<void> {
     for (const project of await this.repository.listProjects()) {
+      // 與 performShutdown 同一條：沒有中斷或排隊中的工作就整份跳過，不要每次開機都把所有
+      // project.json 重寫一遍（`updateProject` 一定會寫回）。
+      if (!project.jobs.some((job) => job.status === "queued" || job.status === "running"))
+        continue;
       const queued = await this.repository.updateProject(project.id, (current) => {
         const queued: Array<{ jobId: string; providerId: string }> = [];
         for (const job of current.jobs) {
@@ -481,7 +485,9 @@ export class JobRunner {
               job.childLifecycle.recoveredAt = job.updatedAt;
               delete job.childLifecycle.exitClass;
             }
-            current.updatedAt = job.updatedAt;
+            // 刻意不動 current.updatedAt：把中斷的 job 標成失敗是**開機修復**，不是使用者
+            // 改了這份專案。動了它，一份三週沒碰的簡報會因為當初死在 OCR 途中，在今天早上
+            // 重啟後跳到主畫面最上面、還印著今天的時間。同 image-description-scheduler.ts。
           } else if (job.status === "queued")
             queued.push({ jobId: job.id, providerId: job.providerId });
         }
@@ -669,6 +675,25 @@ export class JobRunner {
   private async performShutdown(graceMs: number, now: string): Promise<void> {
     this.#pendingByProvider.clear();
     for (const project of await this.repository.listProjects()) {
+      /*
+       * 沒有排隊／進行中工作的專案整份跳過——這個迴圈唯一的作用就是終止那些工作。
+       *
+       * 舊版對**每一份**專案都跑一次 `updateProject`，而 `updateProject` 一定會寫回檔案，
+       * 所以每次 SIGTERM 都在關機寬限期內把全部 `project.json` 讀進來、驗證、重寫一遍；
+       * 更糟的是回呼結尾還無條件寫 `current.updatedAt = now`，於是**每重啟一次，所有專案的
+       * 「最後修改時間」就被抹平成同一個關機戳記**。實測本機 21 份專案的 `updatedAt` 全等於
+       * `2026-08-16T06:31:52.975Z`（`createdAt` 從 07-14 橫跨到 08-16），主畫面因此完全沒有
+       * 排序信號、每張卡片都印同一個時間——那正是「排序很奇怪」的來源。
+       *
+       * 有進行中工作的專案也一樣不動 `updatedAt`：終止 job 是**系統動作而非使用者修改**，
+       * 與 `image-description-scheduler.ts` 的修復路徑同一條慣例（那裡也刻意不動它）。
+       *
+       * 快照過濾的已知競態：`listProjects()` 之後才被寫進來的 queued job 不會在這裡被標成
+       * 失敗（`#accepting` 已是 false，所以不會有新的 running job）。後果只是它留在 queued，
+       * 下次啟動由 `recoverInterruptedJobs()` 重新排程——比標成失敗更接近使用者要的結果。
+       */
+      if (!project.jobs.some((job) => job.status === "queued" || job.status === "running"))
+        continue;
       await this.repository.updateProject(project.id, (current) => {
         for (const job of current.jobs) {
           if (job.status !== "queued" && job.status !== "running") continue;
@@ -688,7 +713,7 @@ export class JobRunner {
           }
           queueMicrotask(() => this.logPhase(structuredClone(job)));
         }
-        current.updatedAt = now;
+        // 刻意不動 current.updatedAt：見上方註解（關機終止是系統動作，不是使用者的修改）。
       });
     }
     const deadline = Date.now() + graceMs;

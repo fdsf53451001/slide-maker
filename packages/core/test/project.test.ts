@@ -3,6 +3,7 @@ import {
   createProject,
   parseProject,
   ProviderRegistry,
+  sortProjectsByUpdatedAt,
   UNTITLED_PROJECT_NAME,
 } from "../src/index.js";
 
@@ -95,6 +96,58 @@ describe("project contract", () => {
     );
     // 只有空白的名稱等同沒給，不能讓專案叫做「   」。
     expect(createProject({ topic: "", name: "   " }).name).toBe(UNTITLED_PROJECT_NAME);
+  });
+
+  /*
+   * 排序規則住在 core 是因為**前後端都要排**（伺服器 `listProjects()`、編輯器主畫面的本機
+   * 清單）。這一組把三條性質釘在它真正的家：任何一端改成自己排，只要行為不同就會在
+   * 那一端的測試紅，而這裡永遠是「規則本身長什麼樣」的唯一定義。
+   */
+  it("最近簡報照 updatedAt 由新到舊排，判準只有 updatedAt 一個", () => {
+    const listed = sortProjectsByUpdatedAt([
+      { id: "middle", updatedAt: "2026-08-15T09:00:00.000Z" },
+      { id: "oldest", updatedAt: "2026-01-02T03:04:05.000Z" },
+      { id: "newest", updatedAt: "2026-08-16T10:00:00.000Z" },
+    ]);
+    expect(listed.map((project) => project.id)).toEqual(["newest", "middle", "oldest"]);
+  });
+
+  it("updatedAt 相同的專案維持輸入順序，不會每次重排都互相跳動", () => {
+    // 同一毫秒落地的專案沒有先後可言，比較器一旦不穩定，使用者每按一次輪詢就會看到
+    // 這幾張卡片自己換位置。三筆以上才分得出「穩定」與「碰巧沒動」。
+    const sameMoment = "2026-08-16T10:00:00.000Z";
+    const input = [
+      { id: "first", updatedAt: sameMoment },
+      { id: "second", updatedAt: sameMoment },
+      { id: "third", updatedAt: sameMoment },
+    ];
+    expect(sortProjectsByUpdatedAt(input).map((project) => project.id)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    // 夾在較新／較舊之間時，同分的那一段仍照輸入順序。
+    const mixed = sortProjectsByUpdatedAt([
+      { id: "tie-a", updatedAt: sameMoment },
+      { id: "older", updatedAt: "2026-08-01T00:00:00.000Z" },
+      { id: "tie-b", updatedAt: sameMoment },
+      { id: "newer", updatedAt: "2026-08-17T00:00:00.000Z" },
+    ]);
+    expect(mixed.map((project) => project.id)).toEqual(["newer", "tie-a", "tie-b", "older"]);
+  });
+
+  it("回傳新陣列，不就地改動呼叫端傳進來的那一份", () => {
+    // 編輯器把 React 狀態直接餵進來（`setProjects((current) => sort(current))`）。
+    // 就地排序等於改到還在渲染中的那個陣列，React 看不出參考換過、畫面不一定會更新。
+    const input = [
+      { id: "oldest", updatedAt: "2026-01-01T00:00:00.000Z" },
+      { id: "newest", updatedAt: "2026-08-16T10:00:00.000Z" },
+    ];
+    const sorted = sortProjectsByUpdatedAt(input);
+    expect(sorted).not.toBe(input);
+    expect(input.map((project) => project.id)).toEqual(["oldest", "newest"]);
+    // 元素本身是原封不動搬過去的，不是複本——卡片上的資料不該在排序途中被換掉。
+    expect(sorted[0]).toBe(input[1]);
   });
 
   it("derives the workflow stage for projects saved before the two-step flow", () => {
