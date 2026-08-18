@@ -328,9 +328,14 @@ describe("抽字的樣式精修失敗契約", () => {
     expect(response.status).toBe(202);
     const job = response.body as unknown as GenerationJob;
     expect(job.textExtraction?.styleRefinement).toEqual({ applied: true });
-    // 樣式真的套上去了：不是預設的白字 Arial。
-    expect(job.textExtraction?.boxes[0]?.color).toBe("#111111");
+    // 樣式真的套上去了：不是預設的白字 Arial。字型與字重是模型判定的，直接比對；
+    // **顏色不比對模型給的值**——它現在一律從原圖量（見 `measureRunColors`），
+    // 模型的 `color` 只在量不到字墨時當退路。這裡的底圖是 mock provider 畫的圖，
+    // 所以量到的會是圖上的顏色而不是 stub 回的 `#111111`；能斷言的是「不再是
+    // `boxesFromOcr` 的預設白字」。
+    expect(job.textExtraction?.boxes[0]?.color).not.toBe("#ffffff");
     expect(job.textExtraction?.boxes[0]?.fontFamily).toBe("Noto Sans TC");
+    expect(job.textExtraction?.boxes[0]?.fontWeight).toBe(700);
   }, 120_000);
 
   it("模型不可用：照常產出文字層，applied:false＋TEXT_MODEL_UNAVAILABLE，且有 logWarn", async () => {

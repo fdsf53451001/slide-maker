@@ -1,5 +1,10 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { textStroke, type EditableTextBox } from "@slide-maker/core";
+import {
+  remapTextRuns,
+  resolveTextRuns,
+  textStroke,
+  type EditableTextBox,
+} from "@slide-maker/core";
 import { strokeCssColor, textBoxBackground, RESIZE_DIRECTIONS } from "./textBoxModel.js";
 
 export function TextLayerCanvas({
@@ -159,6 +164,47 @@ export function TextLayerCanvas({
                 : 0;
           const editing = editingId === box.id && selectedId === box.id;
           const boxStroke = textStroke(box);
+          const runs = resolveTextRuns(box);
+          /*
+           * `<textarea>` 畫不出多色文字——它沒有子節點，整個控制項只有一個 `color`。
+           * 所以多色框在非編輯狀態改由一層 `<div>` 疊上去畫（每段一個 `<span>`），
+           * textarea 本身的字設成透明但留在原位：它仍然負責雙擊進入編輯、鍵盤操作與
+           * 焦點，換掉它會連帶動到那些行為。
+           *
+           * 兩層的字型、字級、行高、字距、對齊、內距與 400% 放大**必須逐一相同**，
+           * 疊起來才會嚴絲合縫，所以樣式抽成同一個物件共用，不是各寫一份。
+           * 編輯中不疊 overlay：那時使用者看到的是單色的真文字，退出編輯就恢復多色。
+           */
+          const showRunOverlay = runs.length > 1 && !editing;
+          const overflowStyle = editing
+            ? {}
+            : {
+                width: "400%",
+                height: "400%",
+                ...(box.align === "center"
+                  ? { left: "-150%" }
+                  : box.align === "right"
+                    ? ({ left: "auto", right: 0 } as const)
+                    : {}),
+              };
+          const textStyle = {
+            fontFamily: box.fontFamily,
+            fontSize: `${(box.fontSize / canvasHeight) * 100}cqh`,
+            fontWeight: box.fontWeight,
+            opacity: box.opacity,
+            lineHeight: box.lineHeight,
+            letterSpacing: `${box.letterSpacing}px`,
+            textAlign: box.align,
+            ...(boxStroke
+              ? {
+                  WebkitTextStrokeWidth: `${(boxStroke.widthPx / canvasHeight) * 100}cqh`,
+                  WebkitTextStrokeColor: strokeCssColor(boxStroke),
+                  paintOrder: "stroke" as const,
+                }
+              : {}),
+            paddingTop: `${(verticalOffset / canvasHeight) * 100}cqh`,
+            ...overflowStyle,
+          };
           return (
             <div
               key={box.id}
@@ -199,23 +245,31 @@ export function TextLayerCanvas({
                 }}
                 onChange={(event) =>
                   onChange(
-                    boxes.map((candidate) =>
-                      candidate.id === box.id
-                        ? { ...candidate, text: event.target.value }
-                        : candidate,
-                    ),
+                    boxes.map((candidate) => {
+                      if (candidate.id !== box.id) return candidate;
+                      const text = event.target.value;
+                      /*
+                       * 改字時把顏色分段跟著搬過去。少了這一步，改一個錯字就會讓
+                       * 這一行的強調色錯位（`resolveTextRuns` 會把沒被蓋到的尾巴退回
+                       * 框的預設色），使用者於是不敢碰抽出來的字。
+                       * 全部刪光或分段塌成一段時 `remapTextRuns` 回 undefined，
+                       * 這裡就把欄位整個移除（`exactOptionalPropertyTypes`）。
+                       */
+                      const runs = remapTextRuns(candidate.text, text, candidate.runs);
+                      if (!runs) {
+                        const { runs: _dropped, ...rest } = candidate;
+                        return { ...rest, text };
+                      }
+                      return { ...candidate, text, runs };
+                    }),
                   )
                 }
                 style={{
-                  fontFamily: box.fontFamily,
-                  fontSize: `${(box.fontSize / canvasHeight) * 100}cqh`,
-                  fontWeight: box.fontWeight,
-                  color: box.color,
+                  ...textStyle,
+                  // 多色框在非編輯狀態把 textarea 的字藏起來，由下面的 overlay 畫彩色文字；
+                  // 進入編輯時換回單色的真字（textarea 畫不出多色，見 overlay 的註解）。
+                  color: showRunOverlay ? "transparent" : box.color,
                   caretColor: box.color,
-                  opacity: box.opacity,
-                  lineHeight: box.lineHeight,
-                  letterSpacing: `${box.letterSpacing}px`,
-                  textAlign: box.align,
                   /*
                    * 描邊。長度一律走 `cqh`（與 fontSize、paddingTop 同一套），不可寫裸 px：
                    * 畫布沒有用 `transform: scale`，尺寸全靠容器查詢單位算出來，絕對 px 不會
@@ -228,30 +282,17 @@ export function TextLayerCanvas({
                    * 壓在 0.04em 的另一個理由：即使某個瀏覽器忽略 paint-order，那個寬度下字
                    * 只是變粗，不會變成黑塊。
                    */
-                  ...(boxStroke
-                    ? {
-                        WebkitTextStrokeWidth: `${(boxStroke.widthPx / canvasHeight) * 100}cqh`,
-                        WebkitTextStrokeColor: strokeCssColor(boxStroke),
-                        paintOrder: "stroke" as const,
-                      }
-                    : {}),
-                  paddingTop: `${(verticalOffset / canvasHeight) * 100}cqh`,
-                  // 伺服器 SVG 匯出不會在框邊裁字；非編輯狀態放大顯示區，
-                  // 讓超出框的文字照樣顯示，與最終合成結果一致。
-                  // 編輯中維持框尺寸，避免放大的透明區攔截畫布點擊。
-                  ...(editing
-                    ? {}
-                    : {
-                        width: "400%",
-                        height: "400%",
-                        ...(box.align === "center"
-                          ? { left: "-150%" }
-                          : box.align === "right"
-                            ? { left: "auto", right: 0 }
-                            : {}),
-                      }),
                 }}
               />
+              {showRunOverlay && (
+                <div className="text-run-overlay" aria-hidden="true" style={textStyle}>
+                  {runs.map((run, index) => (
+                    <span key={index} style={{ color: run.color }}>
+                      {run.text}
+                    </span>
+                  ))}
+                </div>
+              )}
               {selectedId === box.id &&
                 !editing &&
                 RESIZE_DIRECTIONS.map((direction) => (

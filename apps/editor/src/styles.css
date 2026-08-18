@@ -4159,6 +4159,24 @@ header {
   white-space: pre;
   pointer-events: none;
 }
+/*
+ * 多色文字的疊層：`<textarea>` 只有一個 `color`，畫不出框內分段的顏色，所以非編輯狀態
+ * 由這一層畫（每段一個 span），textarea 的字設成透明留在下面繼續負責互動與焦點。
+ * 這裡的每一條都是為了與 textarea 的排版逐點對齊（`white-space: pre` 與 padding 尤其
+ * 關鍵），字型、字級、行高、字距、對齊、內距與 400% 放大則由 inline style 共用同一個物件。
+ */
+.editable-text-box .text-run-overlay {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  white-space: pre;
+  pointer-events: none;
+}
 .editable-text-box textarea::-webkit-scrollbar {
   display: none;
 }

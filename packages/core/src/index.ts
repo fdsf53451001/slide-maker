@@ -4,6 +4,7 @@ export * from "./provider-retry.js";
 export * from "./project.js";
 export * from "./page-number.js";
 export * from "./text-stroke.js";
+export * from "./text-runs.js";
 export * from "./slide-content.js";
 export * from "./download-filename.js";
 export * from "./outline-markdown.js";

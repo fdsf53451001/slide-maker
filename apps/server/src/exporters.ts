@@ -6,6 +6,7 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { Resvg } from "@resvg/resvg-js";
 import sharp, { type Sharp } from "sharp";
 import {
+  resolveTextRuns,
   outlineMarkdown,
   outlineMarkdownFilename,
   pageNumberLayout,
@@ -263,7 +264,22 @@ async function exportPptx(
             },
           });
         }
-        slide.addText(box.text, {
+        /*
+         * 框內多色走 pptxgenjs 的 run 陣列（每個 run 一個 `<a:r>`，各自帶 `<a:solidFill>`），
+         * 單色框仍然傳字串——輸出的 XML 與這個功能加入之前逐位元相同。
+         *
+         * 每個 run 都要顯式 `breakLine: false`：pptxgenjs 對陣列中的項目是逐項判斷的，
+         * shape 層的那一顆管不到它們，漏掉就會變成一段一行。
+         */
+        const runs = resolveTextRuns(box);
+        const runText =
+          runs.length <= 1
+            ? box.text
+            : runs.map((run) => ({
+                text: run.text,
+                options: { color: run.color.slice(1), breakLine: false },
+              }));
+        slide.addText(runText, {
           // 不夾到 0：貼著畫布左緣的 center／right 框，往左補回的餘裕會被夾掉，
           // 錨點整個右移（實測 60px 字級的框偏 41px）。OOXML 的 a:off 允許負值，
           // 框超出投影片左緣不影響文字落點。

@@ -364,7 +364,24 @@ export function useTextLayerEditing({
   const patchSelectedText = (patch: Partial<EditableTextBox>) => {
     if (!selectedTextId) return;
     changeTextBoxes(
-      textBoxes.map((box) => (box.id === selectedTextId ? { ...box, ...patch } : box)),
+      textBoxes.map((box) => {
+        if (box.id !== selectedTextId) return box;
+        const next = { ...box, ...patch };
+        /*
+         * 直接指定整框顏色時把框內的分段**整個移除**——面板上那顆色票是「這一框是什麼
+         * 顏色」，使用者按下去的意思就是整框都要這個顏色；留著 `runs` 會讓畫面上只有
+         * 沒被分段蓋到的字變色，看起來像色票壞了。
+         *
+         * 用解構刪除而不是設 undefined：`{ ...box, ...patch }` 只覆寫得了既有的 key，
+         * 而 schema 開著 `exactOptionalPropertyTypes`，顯式的 undefined 連型別都不會過
+         *（與 `clearSelectedTextBackground` 同一條理由）。
+         */
+        if (patch.color !== undefined && next.runs) {
+          const { runs: _runs, ...rest } = next;
+          return rest;
+        }
+        return next;
+      }),
     );
   };
   /**

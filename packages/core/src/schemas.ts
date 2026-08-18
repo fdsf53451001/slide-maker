@@ -221,6 +221,18 @@ export const TEXT_STROKE_DEFAULT_OPACITY = 0.7;
 /** 中文字腔開始被填滿的實測起點是 0.14em；留一點餘裕給「刻意的粗描邊」但不給荒謬值。 */
 export const TEXT_STROKE_MAX_WIDTH_EM = 0.2;
 
+/**
+ * 一個文字框最多幾段顏色。程式碼片段的語法高亮是段數最多的實例（一行十幾段很常見），
+ * 上限訂在遠高於它的地方；真正的用途是擋住模型把每個字元切成一段這種退化輸出。
+ */
+export const TEXT_RUN_LIMIT = 64;
+
+/** 顏色分段：`length` 是這一段涵蓋幾個字（UTF-16 長度，與 `String.slice` 同一套）。 */
+export const textRunSchema = z.object({
+  length: z.number().int().positive(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+});
+
 export const editableTextBoxSchema = z.object({
   id: z.string().min(1),
   text: z.string(),
@@ -236,6 +248,22 @@ export const editableTextBoxSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .default("#ffffff"),
   opacity: z.number().min(0).max(1).default(1),
+  /**
+   * 框內的顏色分段（同一行裡某幾個字是強調色）。沒有這個欄位＝整框一色，也就是加入
+   * 這個功能之前的行為，所以單色簡報的 `project.json` 逐位元不變。
+   *
+   * 存的是**長度序列**而不是 `{start, end}`：長度序列天然不可能重疊、也不可能有洞，
+   * 而區間版本的兩種失效（越界、蓋不滿）正是實測中文字模型最常犯的錯——要模型數
+   * Unicode 位置，`gemini-3-flash-agent` 在同一個框上連三次都回 `(0,18)`／實際長度 17。
+   * 長度序列讓那類錯誤在轉檔時就被吸收掉，存進來的一定是可渲染的東西。
+   *
+   * 與 `text` 的一致性**刻意不用 superRefine 綁**：`text` 會被使用者編輯，而 `runs` 住在
+   * `project.json` 裡；一旦要求兩者永遠一致，任何一次沒同步更新 `runs` 的編輯都會讓整個
+   * 專案讀不進來。讀取端一律走 `resolveTextRuns()`，它對蓋不滿與超長都是寬容的。
+   *
+   * `color` 仍然是框的主色（佔字數最多的那一段），沒有 `runs` 時就是全框的顏色。
+   */
+  runs: z.array(textRunSchema).min(1).max(TEXT_RUN_LIMIT).optional(),
   /**
    * 文字框的填滿底色；沒有這個欄位就代表「無底色」＝加入這個功能之前的行為。
    * 底色矩形的幾何就是文字框矩形本身（x/y/width/height，旋轉時跟著 rotation 轉），
@@ -534,6 +562,7 @@ export type StyleReferenceImage = z.infer<typeof styleReferenceImageSchema>;
 export type SlideSpec = z.infer<typeof slideSpecSchema>;
 export type SlideOutlineSnapshot = z.infer<typeof slideOutlineSnapshotSchema>;
 export type SlideVersion = z.infer<typeof slideVersionSchema>;
+export type TextRun = z.infer<typeof textRunSchema>;
 export type EditableTextBox = z.infer<typeof editableTextBoxSchema>;
 export type EditableTextLayer = z.infer<typeof editableTextLayerSchema>;
 export type GenerationJob = z.infer<typeof generationJobSchema>;

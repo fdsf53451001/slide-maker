@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
-import { textStroke } from "@slide-maker/core";
+import { resolveTextRuns, textRunLines, textStroke } from "@slide-maker/core";
 import type {
   EditableTextBox,
   EditableTextLayer,
@@ -78,11 +78,37 @@ export function textElements(boxes: readonly EditableTextBox[]): string {
             : box.y;
       const halfLeading = (lineBox - box.fontSize * (FONT_ASCENT + FONT_DESCENT)) / 2;
       const firstBaseline = top + halfLeading + box.fontSize * FONT_ASCENT;
-      const tspans = lines
-        .map(
-          (line, index) => `<tspan x="${x}" dy="${index === 0 ? 0 : lineBox}">${xml(line)}</tspan>`,
-        )
-        .join("");
+      /*
+       * 換行與換色是兩個維度：每一行是一個 text chunk（帶 `x` 的 tspan 起頭，`text-anchor`
+       * 才作用在整行上），行內再依顏色切成數個不帶 `x` 的 tspan 自然接續。
+       *
+       * 單色框走的仍是原本那一行 map，輸出逐字元不變——這個功能加進來之前的所有合成圖、
+       * PPTX 與快照因此完全不受影響。
+       */
+      const runs = resolveTextRuns(box);
+      const tspans =
+        runs.length <= 1
+          ? lines
+              .map(
+                (line, index) =>
+                  `<tspan x="${x}" dy="${index === 0 ? 0 : lineBox}">${xml(line)}</tspan>`,
+              )
+              .join("")
+          : textRunLines(runs)
+              .map((lineRuns, index) => {
+                const dy = index === 0 ? 0 : lineBox;
+                if (!lineRuns.length) return `<tspan x="${x}" dy="${dy}"></tspan>`;
+                return lineRuns
+                  .map(
+                    (run, runIndex) =>
+                      // `xml:space="preserve"` 只出現在分段路徑：SVG 預設會把 tspan 邊緣的
+                      // 空白吃掉，而分段的切點常常正好落在空格上（` 的未來`、`Latency `），
+                      // 少了它整行會往左縮一格。
+                      `<tspan${runIndex === 0 ? ` x="${x}" dy="${dy}"` : ""} fill="${run.color}" xml:space="preserve">${xml(run.text)}</tspan>`,
+                  )
+                  .join("");
+              })
+              .join("");
       const transform = box.rotation
         ? ` transform="rotate(${box.rotation} ${box.x + box.width / 2} ${box.y + box.height / 2})"`
         : "";
