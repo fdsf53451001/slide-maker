@@ -1,4 +1,5 @@
 # Slide Maker
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fdsf53451001/slide-maker)
 
 **Local-first, image-based presentation generation.** Slide Maker turns a brief, your own
 source documents and a reusable visual style into a full slide deck — one image per page,
