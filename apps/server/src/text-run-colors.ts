@@ -34,8 +34,23 @@ const SHORT_RUN_CHARS = 2;
 /** 字墨判定：與背景的 Lab 距離門檻，取「離背景最遠者」的比例與絕對下限兩者取大。 */
 const INK_RATIO = 0.55;
 const INK_FLOOR = 18;
-/** 每一欄只取離背景最遠的這個比例的像素參與取色，其餘是抗鋸齒邊緣。 */
-const CORE_RATIO = 0.6;
+/**
+ * 段內取色的核心比例，採「相對這一段自己峰值的距離」而不是「排名前 N%」，
+ * 而且由嚴到寬依序嘗試，取第一個樣本數還夠的門檻——能拿多準就拿多準，樣本不夠才讓步。
+ *
+ * 實測（2026-08-22，`r19` 投影片的程式碼截圖行 `import { serve } from './server';`，
+ * VS Code 語法高亮小字，字級僅 17px）抓出這條路的真實 bug：舊版「排名前 60%」是**依樣本
+ * 總數**取窗，樣本一多（一個 40px 寬的字墨區塊有 300 個像素）窗口就跟著撐大，深入到
+ * `distance≈18`（幾乎等於背景）的抗鋸齒邊緣像素，中位數被拉向背景——量到 `serve`（真值
+ * `#9cdcfe`）變成 `#7094ba`，整條線八段顏色全部偏濁、偏暗，跟「字大時逐位元命中真值」
+ * 的 fixture 結果差了一大截。改成相對峰值的比例：同一批像素，門檻抓緊到峰值的 80%
+ * 就只剩 10 個樣本（太少，中位數不穩），退到 70% 有 40 個樣本、量到 `rgb(113,153,193)`
+ * （ΔE 明顯縮小），這正是階梯式門檻要抓的平衡點——小字通常沒有真正「未被抗鋸齒污染」的
+ * 純色像素（筆劃寬度本身只有幾個像素、鋸齒核心比例就佔掉大半），逼近但抓不到完美值是
+ * 解析度限制，階梯的目的是在「準」與「樣本夠不夠穩」之間，每一段各自找最接近的平衡，
+ * 而不是全部套同一個對長文字系統性太寬鬆的比例。
+ */
+const SPAN_CORE_RATIO_LADDER = [0.8, 0.7, 0.6, 0.5];
 /**
  * 取色時每一段左右各內縮的比例。
  *
@@ -199,17 +214,74 @@ function fallbackColor(image: RasterImage, rect: Rect): string | undefined {
   );
 }
 
+/**
+ * 每軸粗量化成 16 階（`>> 4`）的格子數。太粗（例如 32 階）會把深淺相近的不同色系
+ * 併成一格，太細（例如 4 階）會讓抗鋸齒噪訊各自佔一格、找不出真正的眾數。
+ */
+const MODE_BUCKET_SHIFT = 4;
+
+/**
+ * 眾數色：把像素粗量化成小格子，取「像素數最多的那一格」的中位數。
+ *
+ * 只在**模型宣稱這一框整段同色**（`modelRuns.length === 1`）時使用——這個宣稱可能是
+ * 錯的（模型沒偵測到框內其實混著至少兩種顏色），而這種情況下中位數與「相對峰值階梯」
+ * 兩種既有取色法都會系統性選錯：
+ *
+ * 實機根因（2026-08-22，`d56f8f92` 專案「公開產出提供交流入口，讓專業」這一行）——
+ * 這行有 10 個黑字＋4 個紫字（「交流入口」），模型這次判成整行一段。逐像素查證：
+ * 純中位數（每軸各自取中位）量到 `#34263a`（黑紫混出來的第三種顏色，兩邊都不是，
+ * 逐軸獨立取中位數對雙峰分布本來就會失真）；「相對峰值階梯」量到 `#3f0c95`（紫），
+ * 因為紫字對白底的 Lab 距離**剛好比黑字更大**（紫色的 a／b 色度差是黑色沒有的額外
+ * 貢獻），階梯門檻既然是「相對這個池子自己的峰值」，門檻就被紫字定住，佔像素數
+ * 79% 的黑字反而大多數過不了門檻。眾數色量到 `#161618`，正確對到黑——它問的是
+ * 「哪一種顏色的像素最多」，不是「哪一種顏色離背景最遠」，兩個問題只有在**真的同色**
+ * 時答案才一樣。
+ *
+ * 多段時**不**用這個：那時每一段的 x 範圍已經是模型切過的、理應同色的範圍，
+ * `measureSpan` 的階梯法在那裡解的是另一個問題（小字抗鋸齒把顏色拉向背景），
+ * 眾數色在樣本更少的窄範圍裡反而不穩。
+ */
+function modeColor(pixels: readonly InkPixel[]): string | undefined {
+  if (!pixels.length) return undefined;
+  const buckets = new Map<string, { n: number; r: number[]; g: number[]; b: number[] }>();
+  for (const pixel of pixels) {
+    const key = `${pixel.r >> MODE_BUCKET_SHIFT},${pixel.g >> MODE_BUCKET_SHIFT},${pixel.b >> MODE_BUCKET_SHIFT}`;
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.n += 1;
+      bucket.r.push(pixel.r);
+      bucket.g.push(pixel.g);
+      bucket.b.push(pixel.b);
+    } else buckets.set(key, { n: 1, r: [pixel.r], g: [pixel.g], b: [pixel.b] });
+  }
+  let top: { n: number; r: number[]; g: number[]; b: number[] } | undefined;
+  for (const bucket of buckets.values()) if (!top || bucket.n > top.n) top = bucket;
+  if (!top) return undefined;
+  return hex(median(top.r), median(top.g), median(top.b));
+}
+
 /** 一段 x 範圍內的字墨顏色（中位數）；樣本不足時回 undefined。 */
 function measureSpan(pixels: readonly InkPixel[], from: number, to: number): string | undefined {
   const inside = pixels.filter((pixel) => pixel.x >= from && pixel.x <= to);
   if (inside.length < MIN_SAMPLE) return undefined;
-  // 只用離背景最遠的那批像素取色，抗鋸齒邊緣會把顏色往背景拉。
-  const sorted = [...inside].sort((a, b) => b.distance - a.distance);
-  const core = sorted.slice(0, Math.max(MIN_SAMPLE, Math.ceil(sorted.length * CORE_RATIO)));
+  // 峰值取這一段**自己的**最遠距離，不沿用別段或整框的——不同 token 天生對比不同
+  // （深色背景上淺藍字 vs 深紫字，峰值可以差一倍），門檻要跟著各自的峰值走才公平。
+  const maxDistance = Math.max(...inside.map((pixel) => pixel.distance));
+  for (const ratio of SPAN_CORE_RATIO_LADDER) {
+    const core = inside.filter((pixel) => pixel.distance >= maxDistance * ratio);
+    if (core.length >= MIN_SAMPLE)
+      return hex(
+        median(core.map((pixel) => pixel.r)),
+        median(core.map((pixel) => pixel.g)),
+        median(core.map((pixel) => pixel.b)),
+      );
+  }
+  // 連最寬的門檻都湊不滿：這段字墨本來就稀薄（極小字、極細筆劃），用全部樣本，
+  // 好過直接放棄整段量測（回 undefined 會讓呼叫端退回模型憑記憶猜的色票）。
   return hex(
-    median(core.map((pixel) => pixel.r)),
-    median(core.map((pixel) => pixel.g)),
-    median(core.map((pixel) => pixel.b)),
+    median(inside.map((pixel) => pixel.r)),
+    median(inside.map((pixel) => pixel.g)),
+    median(inside.map((pixel) => pixel.b)),
   );
 }
 
@@ -268,12 +340,28 @@ export function measureRunColors(
   const totalChars = modelRuns.reduce((sum, run) => sum + run.text.length, 0);
   if (!totalChars) return { runs: fallback, verdict: "no-ink" };
   let consumed = 0;
+  /*
+   * 內縮只在「有鄰段」時才做——它的目的是不讓取樣混進鄰段的顏色，只有一段時沒有鄰居，
+   * 內縮反而是白白把整行的取樣範圍往中間縮。
+   *
+   * 這不是理論推演：實機（2026-08-22，`d56f8f92` 專案「公開產出提供交流入口，讓專業」
+   * 這一行）踩到的真實 bug——模型這次只回了一段（沒偵測到「交流入口」該是紫色），
+   * 於是 `modelRuns.length===1`、`from=left`、`to=right`（整行 14 字的字墨範圍），
+   * 但仍套用 18% 內縮，把頭尾各裁掉約 2.5 個字——而「交流入口」剛好落在整行正中間，
+   * 頭尾被裁掉的恰好都是純黑字。中間留下的取樣池黑紫混雜，紫色對比度天生比黑色對白底
+   * 更高，`measureSpan` 的階梯門檻(`SPAN_CORE_RATIO_LADDER`) 因此收斂到紫色——整行 14
+   * 個字因此全部染成紫色 `#420f99`，只有中間 4 個字真的是紫的。不內縮、對整行取中位數
+   * 則正確量到黑色 `#1a1a1c`（多數像素本來就是黑的）。
+   */
   const measured = modelRuns.map((run) => {
     const from = left + (consumed / totalChars) * span;
     const to = left + ((consumed + run.text.length) / totalChars) * span;
     consumed += run.text.length;
-    const inset = (to - from) * INSET_RATIO;
+    const inset = modelRuns.length > 1 ? (to - from) * INSET_RATIO : 0;
     const color =
+      // 模型宣稱整框只有一段時，這個宣稱本身可能是錯的（見 `modeColor()` 的長註解），
+      // 用眾數色而不是階梯法——階梯法在那種情況下會選中對比較強的少數顏色。
+      (modelRuns.length === 1 ? modeColor(pixels) : undefined) ??
       measureSpan(pixels, from + inset, to - inset) ??
       // 內縮之後樣本太少（很短的段，例如一個 `%`）就退回不內縮的範圍。
       measureSpan(pixels, from, to) ??

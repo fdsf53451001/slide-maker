@@ -41,7 +41,9 @@ function run(imagePath: string): Promise<RawOcrResult> {
       try {
         resolvePromise(JSON.parse(stdout.trim()) as RawOcrResult);
       } catch (error) {
-        reject(new Error(`paddle_ocr.py stdout not JSON: ${stdout.slice(0, 200)}: ${String(error)}`));
+        reject(
+          new Error(`paddle_ocr.py stdout not JSON: ${stdout.slice(0, 200)}: ${String(error)}`),
+        );
       }
     });
   });
@@ -58,54 +60,49 @@ describe.skipIf(!HAS_OCR_VENV)("paddle_ocr.py：return_word_box", () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  it(
-    "直書標籤的偵測框帶回逐字的 words",
-    { timeout: 60_000 },
-    async () => {
-      // 一個字一行、由上往下——與實機根因案例（「活動核心」）同一種版面。
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="500">
+  it("直書標籤的偵測框帶回逐字的 words", { timeout: 60_000 }, async () => {
+    // 一個字一行、由上往下——與實機根因案例（「活動核心」）同一種版面。
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="500">
         <rect width="400" height="500" fill="#1e3a8a"/>
         <text x="200" y="100" font-family="PingFang TC, Helvetica" font-size="60" fill="#ffffff" text-anchor="middle">活</text>
         <text x="200" y="180" font-family="PingFang TC, Helvetica" font-size="60" fill="#ffffff" text-anchor="middle">動</text>
         <text x="200" y="260" font-family="PingFang TC, Helvetica" font-size="60" fill="#ffffff" text-anchor="middle">核</text>
         <text x="200" y="340" font-family="PingFang TC, Helvetica" font-size="60" fill="#ffffff" text-anchor="middle">心</text>
       </svg>`;
-      const imagePath = join(dir, "vertical.png");
-      await writeFile(imagePath, await sharp(Buffer.from(svg)).png().toBuffer());
+    const imagePath = join(dir, "vertical.png");
+    await writeFile(imagePath, await sharp(Buffer.from(svg)).png().toBuffer());
 
-      const result = await run(imagePath);
-      const box = result.boxes.find((candidate) => candidate.text.includes("活"));
-      expect(box, `没找到「活」所在的框，實際辨識結果：${JSON.stringify(result.boxes.map((b) => b.text))}`).toBeDefined();
-      expect(box!.words).toBeDefined();
-      expect(box!.words!.map((word) => word.text).join("")).toBe(box!.text);
-      expect(box!.words!.length).toBeGreaterThanOrEqual(2);
-      // 逐字框由上往下依序排列，且共用同一段 x 範圍（同一欄）。
-      const ys = box!.words!.map((word) => word.box[1]);
-      expect(ys).toEqual([...ys].sort((a, b) => a - b));
-      const xs = box!.words!.map((word) => word.box[0]);
-      expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(20);
-    },
-  );
+    const result = await run(imagePath);
+    const box = result.boxes.find((candidate) => candidate.text.includes("活"));
+    expect(
+      box,
+      `没找到「活」所在的框，實際辨識結果：${JSON.stringify(result.boxes.map((b) => b.text))}`,
+    ).toBeDefined();
+    expect(box!.words).toBeDefined();
+    expect(box!.words!.map((word) => word.text).join("")).toBe(box!.text);
+    expect(box!.words!.length).toBeGreaterThanOrEqual(2);
+    // 逐字框由上往下依序排列，且共用同一段 x 範圍（同一欄）。
+    const ys = box!.words!.map((word) => word.box[1]);
+    expect(ys).toEqual([...ys].sort((a, b) => a - b));
+    const xs = box!.words!.map((word) => word.box[0]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(20);
+  });
 
-  it(
-    "一般橫排文字的既有欄位不受影響",
-    { timeout: 60_000 },
-    async () => {
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="200">
+  it("一般橫排文字的既有欄位不受影響", { timeout: 60_000 }, async () => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="200">
         <rect width="800" height="200" fill="#ffffff"/>
         <text x="40" y="120" font-family="PingFang TC, Helvetica" font-size="60" fill="#111111">打造未來</text>
       </svg>`;
-      const imagePath = join(dir, "horizontal.png");
-      await writeFile(imagePath, await sharp(Buffer.from(svg)).png().toBuffer());
+    const imagePath = join(dir, "horizontal.png");
+    await writeFile(imagePath, await sharp(Buffer.from(svg)).png().toBuffer());
 
-      const result = await run(imagePath);
-      expect(result.width).toBe(800);
-      expect(result.height).toBe(200);
-      const box = result.boxes.find((candidate) => candidate.text.includes("打造"));
-      expect(box).toBeDefined();
-      expect(box!.text).toContain("打造未來");
-      expect(box!.confidence).toBeGreaterThan(0.5);
-      expect(box!.polygon.length).toBeGreaterThanOrEqual(4);
-    },
-  );
+    const result = await run(imagePath);
+    expect(result.width).toBe(800);
+    expect(result.height).toBe(200);
+    const box = result.boxes.find((candidate) => candidate.text.includes("打造"));
+    expect(box).toBeDefined();
+    expect(box!.text).toContain("打造未來");
+    expect(box!.confidence).toBeGreaterThan(0.5);
+    expect(box!.polygon.length).toBeGreaterThanOrEqual(4);
+  });
 });
