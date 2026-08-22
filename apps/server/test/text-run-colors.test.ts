@@ -110,33 +110,30 @@ describe("measureRunColors：顏色從原圖量，不信模型", () => {
     near(measured.runs[1]!.color, "#facc15");
   });
 
-  it(
-    "模型漏判分段時（宣稱整行同色，其實混著兩種顏色）取眾數色，不取對比較強的少數色",
-    async () => {
-      /*
-       * 實機根因（2026-08-22，`d56f8f92` 專案「公開產出提供交流入口，讓專業」這一行）：
-       * 這行 10 個黑字＋4 個紫字，模型這次判成整行一段（沒偵測到「交流入口」該是紫色）。
-       * 舊版對「宣稱整段同色」照樣套用「相對峰值階梯」，而紫字對白底的 Lab 距離**剛好
-       * 比黑字更大**（紫色的 a／b 色度差是黑色沒有的額外貢獻），門檻被紫字定住，佔多數
-       * 的黑字反而大多過不了門檻——整行 14 個字因此全部染成紫色，只有中間 4 個字真的是
-       * 紫的。純中位數也解不了：黑紫兩群逐軸獨立取中位數會混出第三種、兩邊都不是的顏色。
-       * 眾數色（`modeColor`）問的是「哪一種顏色的像素最多」，才會正確落在黑色。
-       */
-      const image = await renderLine([
-        { text: "公開產出提供", color: "#1a1a1a" },
-        { text: "交流入口", color: "#5c2096" },
-        { text: "，讓專業", color: "#1a1a1a" },
-      ]);
-      const measured = measureRunColors(image, LINE_BOX, [
-        // 模型宣稱整行只有一段——這正是漏判的那次真實輸出的形狀。
-        { text: "公開產出提供交流入口，讓專業", color: "#333333" },
-      ]);
-      expect(measured.verdict).toBe("single");
-      expect(measured.runs).toHaveLength(1);
-      // 佔多數的黑字才是正確答案；不能是紫色（模型完全沒說錯的那個少數色）。
-      near(measured.runs[0]!.color, "#1a1a1a", 15);
-    },
-  );
+  it("模型漏判分段時（宣稱整行同色，其實混著兩種顏色）取眾數色，不取對比較強的少數色", async () => {
+    /*
+     * 實機根因（2026-08-22，`d56f8f92` 專案「公開產出提供交流入口，讓專業」這一行）：
+     * 這行 10 個黑字＋4 個紫字，模型這次判成整行一段（沒偵測到「交流入口」該是紫色）。
+     * 舊版對「宣稱整段同色」照樣套用「相對峰值階梯」，而紫字對白底的 Lab 距離**剛好
+     * 比黑字更大**（紫色的 a／b 色度差是黑色沒有的額外貢獻），門檻被紫字定住，佔多數
+     * 的黑字反而大多過不了門檻——整行 14 個字因此全部染成紫色，只有中間 4 個字真的是
+     * 紫的。純中位數也解不了：黑紫兩群逐軸獨立取中位數會混出第三種、兩邊都不是的顏色。
+     * 眾數色（`modeColor`）問的是「哪一種顏色的像素最多」，才會正確落在黑色。
+     */
+    const image = await renderLine([
+      { text: "公開產出提供", color: "#1a1a1a" },
+      { text: "交流入口", color: "#5c2096" },
+      { text: "，讓專業", color: "#1a1a1a" },
+    ]);
+    const measured = measureRunColors(image, LINE_BOX, [
+      // 模型宣稱整行只有一段——這正是漏判的那次真實輸出的形狀。
+      { text: "公開產出提供交流入口，讓專業", color: "#333333" },
+    ]);
+    expect(measured.verdict).toBe("single");
+    expect(measured.runs).toHaveLength(1);
+    // 佔多數的黑字才是正確答案；不能是紫色（模型完全沒說錯的那個少數色）。
+    near(measured.runs[0]!.color, "#1a1a1a", 15);
+  });
 
   it("模型憑空把單色行切成兩段時，像素量到同色就合併回去", async () => {
     // 這是對抗模型幻覺的防線：實測模型偶爾真的會這樣切。
@@ -168,45 +165,42 @@ describe("measureRunColors：顏色從原圖量，不信模型", () => {
     expect(measured.runs[0]!.color).toBe(measured.runs[0]!.color.toLowerCase());
   });
 
-  it(
-    "小字多段時（像程式碼語法高亮）顏色仍要落在真值附近，不能被抗鋸齒邊緣拉向背景",
-    async () => {
-      /*
-       * 實機根因（2026-08-22，`r19` 投影片的 `import { serve } from './server';` 這行，
-       * 17px 小字）：舊版 `measureSpan` 用「排名前 60%」取樣——這是**依樣本總數**取窗，
-       * 樣本一多，窗口就跟著撐大，深入到幾乎等於背景的抗鋸齒邊緣像素，中位數被拉向
-       * 背景。真實資料量出來的 `serve`（真值 `#9ec7ec`）只有 `#7094ba`，用真實 VS Code
-       * 色票量的 ΔE 高達 20+。這裡用同樣字級、同樣「短段夾在長段之間」的形狀重現，
-       * 只是換一組容易斷言的顏色。
-       */
-      const image = await renderLine(
-        [
-          { text: "import", color: "#d4d4d4" },
-          { text: " { ", color: "#d4d4d4" },
-          { text: "serve", color: "#4fc3f7" },
-          { text: " } ", color: "#d4d4d4" },
-        ],
-        { background: "#0a0e14", fontSize: 17 },
-      );
-      const measured = measureRunColors(
-        image,
-        // renderLine() 的文字基準線固定在 y=120，字級 17px 時字墨大約落在 y=100–130；
-        // x 從 20 開始（比文字起點 40 早），留出左邊界供背景色取樣。
-        { x: 20, y: 95, width: 300, height: 40, fontSize: 17 },
-        [
-          { text: "import", color: "#c586c0" },
-          { text: " { ", color: "#d4d4d4" },
-          { text: "serve", color: "#9cdcfe" },
-          { text: " } ", color: "#d4d4d4" },
-        ],
-      );
-      const serve = measured.runs.find((run) => run.text.includes("serve"));
-      expect(serve).toBeDefined();
-      // 容差比大字的測試寬（17px 小字先天有解析度限制，量不到 ΔE 0），
-      // 但必須落在「藍」這個顏色家族，不能被拉成大字測試裡那種灰黑色。
-      near(serve!.color, "#4fc3f7", 40);
-    },
-  );
+  it("小字多段時（像程式碼語法高亮）顏色仍要落在真值附近，不能被抗鋸齒邊緣拉向背景", async () => {
+    /*
+     * 實機根因（2026-08-22，`r19` 投影片的 `import { serve } from './server';` 這行，
+     * 17px 小字）：舊版 `measureSpan` 用「排名前 60%」取樣——這是**依樣本總數**取窗，
+     * 樣本一多，窗口就跟著撐大，深入到幾乎等於背景的抗鋸齒邊緣像素，中位數被拉向
+     * 背景。真實資料量出來的 `serve`（真值 `#9ec7ec`）只有 `#7094ba`，用真實 VS Code
+     * 色票量的 ΔE 高達 20+。這裡用同樣字級、同樣「短段夾在長段之間」的形狀重現，
+     * 只是換一組容易斷言的顏色。
+     */
+    const image = await renderLine(
+      [
+        { text: "import", color: "#d4d4d4" },
+        { text: " { ", color: "#d4d4d4" },
+        { text: "serve", color: "#4fc3f7" },
+        { text: " } ", color: "#d4d4d4" },
+      ],
+      { background: "#0a0e14", fontSize: 17 },
+    );
+    const measured = measureRunColors(
+      image,
+      // renderLine() 的文字基準線固定在 y=120，字級 17px 時字墨大約落在 y=100–130；
+      // x 從 20 開始（比文字起點 40 早），留出左邊界供背景色取樣。
+      { x: 20, y: 95, width: 300, height: 40, fontSize: 17 },
+      [
+        { text: "import", color: "#c586c0" },
+        { text: " { ", color: "#d4d4d4" },
+        { text: "serve", color: "#9cdcfe" },
+        { text: " } ", color: "#d4d4d4" },
+      ],
+    );
+    const serve = measured.runs.find((run) => run.text.includes("serve"));
+    expect(serve).toBeDefined();
+    // 容差比大字的測試寬（17px 小字先天有解析度限制，量不到 ΔE 0），
+    // 但必須落在「藍」這個顏色家族，不能被拉成大字測試裡那種灰黑色。
+    near(serve!.color, "#4fc3f7", 40);
+  });
 
   it("多行框不做逐段定位（x 軸不是單調的），沿用模型的顏色", async () => {
     const image = await renderLine([{ text: "任意", color: "#111111" }]);
