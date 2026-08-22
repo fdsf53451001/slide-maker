@@ -15,7 +15,6 @@ dist-lib/
 # 直譯器會就地留下 bytecode 快取，內容依 Python 版本而異，不入版控。
 __pycache__/
 artifacts/
-# 滲透測試報告：內容含實測發現的細節，不入版控。
 docs/pentest/
 coverage/
 playwright-report/
