@@ -143,6 +143,134 @@ export function textOverlaySvg(
   );
 }
 
+// 與 ocr-refine.ts 的 BOLD_FONT_SIZE 共用同一個換算基準：fontSize ≈ 框高 × 0.78。
+// 該檔的註解直接引用這兩個數字，兩處改動時要一起改。
+const FONT_HEIGHT_RATIO = 0.78;
+const BOLD_HEIGHT_THRESHOLD = 52;
+
+/**
+ * 這一框是不是直書（縱向排列的 CJK 文字，例如一個字一行、由上往下的標籤）。
+ *
+ * 門檻與判準**逐字複製** PaddleOCR 自己 `cal_ocr_word_box.is_vertical_text()` 的邏輯
+ * （框高 ÷ 框寬 > 1.5，用同一份 polygon bbox）——不是憑空選的數字，是為了讓這裡的
+ * 判斷與 Python 端算逐字框時用的判斷**保證一致**：兩邊只要有一邊判斷不同，逐字框的
+ * 座標語意就會被誤讀（Python 沿 Y 軸切出來的框，被 TS 當成沿 X 軸切的框去用）。
+ * `words` 存在且 ≥2 個字是必要條件（見 `ocr.ts` 的 schema，單字或無資料時不會有這欄）。
+ */
+function isVerticalRun(box: RawOcrResult["boxes"][number]): boolean {
+  if (!box.words || box.words.length < 2) return false;
+  const xs = box.polygon.map((point) => point[0]);
+  const ys = box.polygon.map((point) => point[1]);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  return width > 0 && height / width > 1.5;
+}
+
+/** 一般橫排框：既有邏輯，逐位元不變。 */
+function buildHorizontalBox(
+  box: RawOcrResult["boxes"][number],
+  canvas: { width: number; height: number },
+  scaleX: number,
+  scaleY: number,
+): EditableTextBox {
+  const xs = box.polygon.map((point) => point[0] * scaleX);
+  const ys = box.polygon.map((point) => point[1] * scaleY);
+  const x = Math.max(0, Math.min(...xs));
+  const y = Math.max(0, Math.min(...ys));
+  const width = Math.max(8, Math.min(canvas.width - x, Math.max(...xs) - x));
+  const height = Math.max(8, Math.min(canvas.height - y, Math.max(...ys) - y));
+  const fontSize = Math.max(10, Math.min(180, height * FONT_HEIGHT_RATIO));
+  return {
+    id: randomUUID(),
+    text: box.text.trim(),
+    x,
+    y,
+    width,
+    height,
+    fontFamily: "Arial",
+    fontSize,
+    fontWeight: height >= BOLD_HEIGHT_THRESHOLD ? 700 : 400,
+    color: "#ffffff",
+    opacity: 1,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    align: "left" as const,
+    verticalAlign: "top" as const,
+    rotation: 0,
+    confidence: box.confidence,
+    role: "presentation" as const,
+  };
+}
+
+/**
+ * 直書框：以 PaddleOCR 逐字量到的**真實**位置組框，不透過 `measureInk`／
+ * `solveBoxGeometry` 那套只懂橫排的字級反推（這正是 2026-08-22 實機踩到的根因——
+ * 那套邏輯把直書的窄高偵測框誤判成「污染的高度證據」，硬塞成一行小字橫排）。
+ *
+ * 落地成**一個框、字元間用 `\n` 分行**，不是四個獨立框：`textElements()`
+ * （`box.text.split("\n")` 逐行縱向排列）與 `refineOcrBoxes` 對含 `\n` 的框會整段
+ * 跳過字墨貼合（`ocr-refine.ts:900`，`!box.text.includes("\n")` 那道守衛），
+ * 剛好讓這裡算出來的幾何原樣落地，不會被誤套橫排的字墨量測再弄壞一次。
+ * 拆成獨立框雖然多一個框就能各自套字墨精修，但會讓使用者要逐字分開選取、上色，
+ * 也會讓樣式精修的 prompt 把一個標籤拆成四個不相干的條目，直觀性都更差。
+ *
+ * 座標與 `words[].box` 全部沿用**原始 OCR 影像座標**，跟 `polygon` 同一套，
+ * 這裡才統一乘 `scaleX`／`scaleY`。
+ */
+function buildVerticalBox(
+  box: RawOcrResult["boxes"][number],
+  canvas: { width: number; height: number },
+  scaleX: number,
+  scaleY: number,
+): EditableTextBox | undefined {
+  const words = box.words;
+  if (!words || words.length < 2) return undefined;
+  const scaled = words.map((word) => ({
+    text: word.text,
+    x0: word.box[0] * scaleX,
+    y0: word.box[1] * scaleY,
+    x1: word.box[2] * scaleX,
+    y1: word.box[3] * scaleY,
+  }));
+  const x = Math.max(0, Math.min(...scaled.map((word) => word.x0)));
+  const y = Math.max(0, Math.min(...scaled.map((word) => word.y0)));
+  const right = Math.max(...scaled.map((word) => word.x1));
+  const bottom = Math.max(...scaled.map((word) => word.y1));
+  const width = Math.max(8, Math.min(canvas.width - x, right - x));
+  const height = Math.max(8, Math.min(canvas.height - y, bottom - y));
+  // 逐字框理應等高（PaddleOCR 把整框高度均分），取平均值抵銷量測抖動；
+  // 用它換算字級才對得上「一個字＝一行」的視覺大小，而不是四個字疊起來的總高。
+  const avgCharHeight = height / scaled.length;
+  const fontSize = Math.max(10, Math.min(180, avgCharHeight * FONT_HEIGHT_RATIO));
+  // 反推 lineHeight，讓渲染時「一行的步進高度」（fontSize × lineHeight）精確等於
+  // 原圖量到的逐字間距，字元落點才會貼齊被抹掉的原始位置，不會越疊越密或越疊越開。
+  const lineHeight = avgCharHeight / fontSize;
+  if (!Number.isFinite(fontSize) || !Number.isFinite(lineHeight) || lineHeight <= 0)
+    return undefined;
+  return {
+    id: randomUUID(),
+    text: scaled.map((word) => word.text).join("\n"),
+    x,
+    y,
+    width,
+    height,
+    fontFamily: "Arial",
+    fontSize,
+    fontWeight: avgCharHeight >= BOLD_HEIGHT_THRESHOLD ? 700 : 400,
+    color: "#ffffff",
+    opacity: 1,
+    lineHeight,
+    letterSpacing: 0,
+    // 橫排預設靠左，這裡改置中：每一行只有一個字，字寬本來就會因標點、字形略有
+    // 出入，置中才會讓整串字沿著同一條中線疊，貼近原圖上直書標籤本來的樣子。
+    align: "center" as const,
+    verticalAlign: "top" as const,
+    rotation: 0,
+    confidence: box.confidence,
+    role: "presentation" as const,
+  };
+}
+
 export function boxesFromOcr(
   result: RawOcrResult,
   canvas: { width: number; height: number },
@@ -153,33 +281,11 @@ export function boxesFromOcr(
   return result.boxes
     .filter((box) => box.confidence >= threshold && box.text.trim())
     .map((box) => {
-      const xs = box.polygon.map((point) => point[0] * scaleX);
-      const ys = box.polygon.map((point) => point[1] * scaleY);
-      const x = Math.max(0, Math.min(...xs));
-      const y = Math.max(0, Math.min(...ys));
-      const width = Math.max(8, Math.min(canvas.width - x, Math.max(...xs) - x));
-      const height = Math.max(8, Math.min(canvas.height - y, Math.max(...ys) - y));
-      const fontSize = Math.max(10, Math.min(180, height * 0.78));
-      return {
-        id: randomUUID(),
-        text: box.text.trim(),
-        x,
-        y,
-        width,
-        height,
-        fontFamily: "Arial",
-        fontSize,
-        fontWeight: height >= 52 ? 700 : 400,
-        color: "#ffffff",
-        opacity: 1,
-        lineHeight: 1.2,
-        letterSpacing: 0,
-        align: "left" as const,
-        verticalAlign: "top" as const,
-        rotation: 0,
-        confidence: box.confidence,
-        role: "presentation" as const,
-      };
+      if (isVerticalRun(box)) {
+        const vertical = buildVerticalBox(box, canvas, scaleX, scaleY);
+        if (vertical) return vertical;
+      }
+      return buildHorizontalBox(box, canvas, scaleX, scaleY);
     });
 }
 

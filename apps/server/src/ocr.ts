@@ -8,10 +8,23 @@ import { DEFAULT_SIGKILL_GRACE_MS, runReapableChild } from "./subprocess.js";
 const DEFAULT_OCR_TIMEOUT_MS = 5 * 60_000;
 
 const pointSchema = z.tuple([z.number(), z.number()]);
+/**
+ * 直書（縱向排列的 CJK 文字）的逐字框，來自 PaddleOCR `return_word_box=True`。
+ *
+ * 只有 `text-layers.ts` 判定這一框是直書時才用得到（見 `isVerticalRun()`）；橫排文字
+ * 一律忽略這批資料——PaddleOCR 的逐字框只是把偵測框寬度均分給每個字，沒有真正量測
+ * 字墨，精度遠不如既有 `measureInk`／`solveBoxGeometry` 那套，用在橫排上是倒退。
+ */
+const rawWordSchema = z.object({
+  text: z.string(),
+  /** `[x0, y0, x1, y1]`，與 `polygon` 同一份原始（未縮放）OCR 影像座標系。 */
+  box: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+});
 const rawBoxSchema = z.object({
   text: z.string(),
   confidence: z.number().min(0).max(1),
   polygon: z.array(pointSchema).min(4),
+  words: z.array(rawWordSchema).min(2).optional(),
 });
 const outputSchema = z.object({
   width: z.number().positive(),

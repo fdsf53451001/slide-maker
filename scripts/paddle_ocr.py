@@ -67,9 +67,31 @@ def normalize_prediction(prediction):
         texts = data.get("rec_texts", [])
         scores = data.get("rec_scores", [])
         polygons = data.get("rec_polys", data.get("dt_polys", []))
-        for text, score, polygon in zip(texts, scores, polygons):
-            boxes.append({"text": str(text), "confidence": float(score),
-                          "polygon": [[float(point[0]), float(point[1])] for point in polygon]})
+        # `return_word_box=True`（見 main() 的 predict 呼叫）讓 PaddleOCR 額外算出
+        # 逐字的框位置，藏在 text_word／text_word_boxes。這是公開文件記載的參數
+        # （不是伸手進內部模組），純粹是把辨識器本來就算過的字元對位資訊多吐出來，
+        # 不會多跑一次模型推論，實測對延遲無感。
+        #
+        # 這批資料的價值只在**直書**：PaddleOCR 自己的 cal_ocr_word_box.is_vertical_text()
+        # 判斷「框高 ÷ 框寬 > 1.5」就把逐字框沿 Y 軸往下切，這正是中文直書標籤
+        # （一個字一行、由上往下）在圖上真實呈現的樣子。TypeScript 端（text-layers.ts
+        # 的 isVerticalRun／buildVerticalBox）拿同一份原始 polygon 重算同一個比例，
+        # 兩邊分開判斷但用同一個門檻，才不會「Python 認為橫的、TS 認為直的」而誤讀座標。
+        # 橫排文字則完全不理會這批資料——PaddleOCR 逐字框只是把寬度均分，沒有字墨
+        # 量測，精度遠不如既有的 measureInk／solveBoxGeometry，硬套只會是倒退。
+        words_list = data.get("text_word", [])
+        word_boxes_list = data.get("text_word_boxes", [])
+        for index, (text, score, polygon) in enumerate(zip(texts, scores, polygons)):
+            box = {"text": str(text), "confidence": float(score),
+                   "polygon": [[float(point[0]), float(point[1])] for point in polygon]}
+            words = words_list[index] if index < len(words_list) else None
+            word_boxes = word_boxes_list[index] if index < len(word_boxes_list) else None
+            if words and word_boxes and len(words) == len(word_boxes) and len(words) >= 2:
+                box["words"] = [
+                    {"text": str(word), "box": [float(b[0]), float(b[1]), float(b[2]), float(b[3])]}
+                    for word, b in zip(words, word_boxes)
+                ]
+            boxes.append(box)
     return boxes
 
 
@@ -83,7 +105,7 @@ def main():
     from PIL import Image
     with Image.open(sys.argv[1]) as image:
         width, height = image.size
-    prediction = engine.predict(input=sys.argv[1])
+    prediction = engine.predict(input=sys.argv[1], return_word_box=True)
     emit_json({"width": width, "height": height,
                "boxes": normalize_prediction(prediction)})
 
