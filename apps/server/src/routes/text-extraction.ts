@@ -57,8 +57,9 @@ const ocrStyleRefinementSchema = z.object({
         color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
         align: z.enum(["left", "center", "right"]),
         /*
-         * 框內的顏色分段（一行裡某幾個字是強調色）。整框同色時模型不回這個欄位，
-         * 那條路的 prompt、token 與結果都與加入這個功能之前相同。
+         * 框內的顏色分段（一行裡某幾個字是強調色）。整框同色時模型回 `null`（見下方
+         * 為什麼不能省略這個欄位），那條路的 prompt 意圖、token 與結果都與加入這個
+         * 功能之前相同。
          *
          * 分段用**片段文字**而不是 `{start, end}` 字元區間，是實測選出來的：
          * 三張真實頁 × 兩個模型的比較裡，區間版本讓 `gemini-3-flash-agent` 每張都有
@@ -67,7 +68,16 @@ const ocrStyleRefinementSchema = z.object({
          * 字串可以比對——`alignRunsToText()` 就是為此存在的。
          *
          * 這裡的 `color` 只當退路：真正的顏色由 `measureRunColors()` 從原圖量。
-         */
+         *
+         * **`.nullable()` 不可省，且 JSON schema 那邊必須把 `runs` 放進 `required`**：
+         * 實機踩到的（2026-08-22，`gpt-5.6-luna`／CLI2Proxy）——這條連線是**嚴格**遵守
+         * OpenAI structured-output 規範的 gateway（CLAUDE.md 提醒的是「非嚴格 gateway
+         * 不遵守 json_schema」，這裡踩到的是反過來的坑），`strict:true` 下每個
+         * `properties` 的 key 都必須出現在 `required` 裡，選填屬性只能靠「型別裡加
+         * null、但仍列進 required」表達——省略 `runs` 一個欄位，整次呼叫直接被 gateway
+         * 拒收（400 `invalid_json_schema`／`Missing 'runs'`），連模型都還沒被呼叫到，
+         * 樣式精修因此整段降級成 `STYLE_REFINE_FAILED`，使用者看到的是「文字模型失敗」
+         * 這種完全講不出原因的訊息。*/
         runs: z
           .array(
             z.object({
@@ -76,6 +86,7 @@ const ocrStyleRefinementSchema = z.object({
             }),
           )
           .max(TEXT_RUN_LIMIT)
+          .nullable()
           .optional(),
       }),
     )
@@ -92,7 +103,9 @@ const ocrStyleRefinementJsonSchema: Record<string, unknown> = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "role", "fontFamily", "fontWeight", "color", "align"],
+        // `runs` 必須列在這裡——strict 模式下每個 `properties` 的 key 都要出現在
+        // `required`，選填靠型別裡加 `null` 表達（見上面 zod schema 的長註解）。
+        required: ["id", "role", "fontFamily", "fontWeight", "color", "align", "runs"],
         properties: {
           id: { type: "string" },
           role: { type: "string", enum: ["presentation", "logo", "incidental"] },
@@ -101,7 +114,7 @@ const ocrStyleRefinementJsonSchema: Record<string, unknown> = {
           color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" },
           align: { type: "string", enum: ["left", "center", "right"] },
           runs: {
-            type: "array",
+            type: ["array", "null"],
             maxItems: TEXT_RUN_LIMIT,
             items: {
               type: "object",
@@ -392,7 +405,7 @@ export function registerTextExtractionRoutes(app: Express, ctx: AppContext): voi
                    * 陣列只是拿使用者的配額換一次幻覺的機會（實測模型偶爾會把單色行憑空
                    * 切成兩段）。伺服器端另有一道像素防線會把量到同色的相鄰段合併回去。
                    */
-                  "A box whose text is drawn in a single colour must omit the runs field entirely. Only when one box visibly contains more than one text colour — for example an emphasised word or number in a brand colour inside an otherwise dark line — split it into consecutive runs in reading order, one run per colour change.",
+                  "Every box requires a runs field in the output. A box whose text is drawn in a single colour must set runs to null. Only when one box visibly contains more than one text colour — for example an emphasised word or number in a brand colour inside an otherwise dark line — set runs to an array split into consecutive runs in reading order, one run per colour change.",
                   "Each run carries the exact substring of that box's text; concatenating a box's runs must reproduce that box's text character for character, including spaces. Copy the characters as supplied — do not fix typos, restore missing punctuation, or normalise spacing.",
                   "OCR_BOXES_JSON",
                   JSON.stringify(
