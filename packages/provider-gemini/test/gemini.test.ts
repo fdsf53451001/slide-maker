@@ -183,6 +183,51 @@ describe("GeminiImageProvider", () => {
     expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
   });
 
+  it("takes the imageSize tier from the profile, and omits imageConfig when set to none", async () => {
+    const respond = () => ({
+      json: {
+        candidates: [
+          { content: { parts: [{ inlineData: { mimeType: "image/jpeg", data: REAL_JPEG } }] } },
+        ],
+      },
+    });
+    const tiered = mockFetch(respond);
+    await new GeminiImageProvider({
+      config,
+      model: "gemini-3.1-flash-image",
+      profile: { sizing: { mode: "image_size", resolution: "1k" } },
+    }).generate(imageRequest());
+    const tieredBody = tiered[0]!.body as {
+      generationConfig: { imageConfig?: { imageSize?: string } };
+    };
+    // 檔位存小寫、由 transport 寫成端點吃的字面。
+    expect(tieredBody.generationConfig.imageConfig?.imageSize).toBe("1K");
+
+    const bare = mockFetch(respond);
+    await new GeminiImageProvider({
+      config,
+      model: "gemini-3.1-flash-image",
+      profile: { sizing: { mode: "none" } },
+    }).generate(imageRequest());
+    const bareBody = bare[0]!.body as { generationConfig: { imageConfig?: unknown } };
+    expect(bareBody.generationConfig.imageConfig).toBeUndefined();
+  });
+
+  it("a profile prompt budget fails the call without sending a request", async () => {
+    const calls = mockFetch(() => ({ json: {} }));
+    const provider = new GeminiImageProvider({
+      config,
+      model: "gemini-3.1-flash-image",
+      profile: { sizing: { mode: "image_size", resolution: "2k" }, promptMaxBytes: 200 },
+    });
+    // 截斷是更壞的交換：prompt 尾端依序是簡報內容、UNTRUSTED_PRESENTATION_JSON 隔離
+    // 標記與注入防線，從尾端砍等於先砍掉安全邊界再送出半份資料。
+    await expect(provider.generate(imageRequest())).rejects.toMatchObject({
+      code: "GEMINI_IMAGE_PROMPT_TOO_LONG",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
   it("markdown 標記一個都不會出現在真正送上線的 prompt 裡", async () => {
     // 觸發這次改動的就是 Gemini 影像模型：它會把 ### 與 ** 當字面文字畫上投影片。合約
     // 組裝在 core，但這條守在傳輸層——哪天有 transport 自己去讀 slide.content 拼 payload，

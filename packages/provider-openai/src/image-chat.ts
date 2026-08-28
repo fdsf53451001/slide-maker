@@ -1,19 +1,20 @@
 import {
+  aspectRatioLabel,
   attachProviderCallFacts,
   buildImageGenerationContract,
+  type ImageModelProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
   withProviderUsage,
 } from "@slide-maker/core";
 import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
+import { assertPromptBudget, referenceLimitFor } from "./image-profile.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 import { parseChatCompletionsUsage } from "./usage.js";
 
 type ChatImagePart =
   { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
-
-export const MAX_CHAT_REFERENCES = 8;
 
 function chatPrompt(request: ImageGenerationRequest): string {
   return [
@@ -54,27 +55,29 @@ export function extractChatImage(payload: unknown): string {
 }
 
 /**
- * Gemini 專屬的 OpenRouter 風格 `image_config`，**只對 gemini 系模型送**。
+ * Gemini 系 chat translator 認得的 OpenRouter 風格頂層 `image_config`，會被翻成原生的
+ * `generationConfig.imageConfig.{aspectRatio,imageSize}`。
  *
- * CLIProxyAPI 的 gemini chat translator 認得這個頂層欄位，會翻成原生的
- * `generationConfig.imageConfig.{aspectRatio,imageSize}`；其他路由（GPT tool image 等）沒有
- * 對應翻譯，而嚴格的 OpenAI 端點可能直接拒絕未知欄位，所以判斷方式比照 `web-search.ts`
- * 的 `searchTool()`——那裡也是同一個 translator 的同一種擴充。
+ * 送不送、送哪個檔位，一律由 profile 決定（預設值的推導與實測依據見
+ * `image-profile.ts` 的 `defaultImageProfile()`）。其他路由（GPT tool image 等）沒有對應
+ * 翻譯，而嚴格的 OpenAI 端點可能直接拒絕未知欄位，所以那些模型的 profile 是 `none`。
  *
- * `imageSize:"2K"` 是畫質關鍵而非可選調校：2026-07-31 實測不送時模型只回 1376×768，
- * `rasterToCanvasPng` 得放大 1.40× 才填滿 1920×1080；送 `2K` 回 2752×1536，變成下採樣 0.70×。
- * 端到端跑真實投影片 fixture：銳利度（Laplacian 變異數）99.3 → 430.1，耗時 +17%、token +16%。
- * 與 `packages/provider-gemini` 的 `imageConfig()` 是同一個決定，兩條路都要送。
+ * `aspect_ratio` 與 `image_size` 分開判斷：解析度與比例無關，非 16:9 時仍要送
+ * `image_size`。
  */
-function geminiImageConfig(
-  model: string,
-  width: number,
-  height: number,
+function imageConfigFields(
+  profile: ImageModelProfile,
+  request: ImageGenerationRequest,
 ): { image_config: { image_size: string; aspect_ratio?: string } } | undefined {
-  if (!/^gemini-/i.test(model)) return undefined;
-  const sixteenByNine = height > 0 && Math.abs(width / height - 16 / 9) < 0.02;
+  const sizing = profile.sizing;
+  // `size`／`aspect_ratio` 是 REST images 端點的講法，這條 chat 路徑上沒有對應欄位。
+  if (sizing.mode !== "image_size") return undefined;
+  const ratio = aspectRatioLabel(request.width, request.height);
   return {
-    image_config: { image_size: "2K", ...(sixteenByNine ? { aspect_ratio: "16:9" } : {}) },
+    image_config: {
+      image_size: sizing.resolution.toUpperCase(),
+      ...(ratio ? { aspect_ratio: ratio } : {}),
+    },
   };
 }
 
@@ -94,16 +97,20 @@ export async function generateViaChat(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
+  profile: ImageModelProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
-  if (request.references.length > MAX_CHAT_REFERENCES) {
+  const limit = referenceLimitFor("chat", profile);
+  if (request.references.length > limit) {
     throw new SafeProviderError(
       "OPENAI_IMAGE_REFERENCES_LIMIT",
-      `Chat 圖片生成每頁最多接受 ${MAX_CHAT_REFERENCES} 張參考圖。`,
+      `Chat 圖片生成每頁最多接受 ${limit} 張參考圖。`,
     );
   }
   validateEditReferences(request);
-  const parts: ChatImagePart[] = [{ type: "text", text: chatPrompt(request) }];
+  const prompt = chatPrompt(request);
+  assertPromptBudget(prompt, profile);
+  const parts: ChatImagePart[] = [{ type: "text", text: prompt }];
   for (const [index, reference] of request.references.entries()) {
     // 遮罩是「白框＋透明底」，視覺模型會把透明底攤成白色而看不到白框，
     // 故 masked edit 的遮罩那張先攤平成不透明黑底再送。
@@ -119,7 +126,7 @@ export async function generateViaChat(
     path: "/chat/completions",
     body: {
       model,
-      ...(geminiImageConfig(model, request.width, request.height) ?? {}),
+      ...(imageConfigFields(profile, request) ?? {}),
       messages: [{ role: "user", content: parts }],
     },
     ...(signal ? { signal } : {}),

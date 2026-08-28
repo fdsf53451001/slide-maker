@@ -1,6 +1,7 @@
 import {
   attachProviderCallFacts,
   buildImageGenerationContract,
+  type ImageModelProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
@@ -13,6 +14,7 @@ import {
   readImageAsDataUrl,
   requestJson,
 } from "./http.js";
+import { assertPromptBudget, referenceLimitFor } from "./image-profile.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 import { parseOpenRouterUsage } from "./usage.js";
 
@@ -27,8 +29,6 @@ import { parseOpenRouterUsage } from "./usage.js";
  *  - 參考圖：JSON body 的 `input_references: [{ type:"image_url", image_url:{ url } }]`（可 data URL）。
  *  - 回傳：`data[0].b64_json`（媒體型別由 `data[0].media_type` 宣告，常見 image/jpeg 或 image/png）。
  */
-
-export const MAX_OPENROUTER_REFERENCES = 8;
 
 interface OpenRouterReference {
   type: "image_url";
@@ -77,15 +77,19 @@ export async function generateViaOpenRouter(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
+  profile: ImageModelProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
-  if (request.references.length > MAX_OPENROUTER_REFERENCES) {
+  const limit = referenceLimitFor("openrouter-image", profile);
+  if (request.references.length > limit) {
     throw new SafeProviderError(
       "OPENAI_IMAGE_REFERENCES_LIMIT",
-      `OpenRouter 圖片生成每頁最多接受 ${MAX_OPENROUTER_REFERENCES} 張參考圖。`,
+      `OpenRouter 圖片生成每頁最多接受 ${limit} 張參考圖。`,
     );
   }
   validateEditReferences(request);
+  const prompt = openRouterPrompt(request);
+  assertPromptBudget(prompt, profile);
   const inputReferences: OpenRouterReference[] = [];
   for (const [index, reference] of request.references.entries()) {
     // input_references 是給模型「看」的視覺通道（無 alpha 語意的 edit 端點），
@@ -102,7 +106,7 @@ export async function generateViaOpenRouter(
     path: "/",
     body: {
       model,
-      prompt: openRouterPrompt(request),
+      prompt,
       ...(inputReferences.length > 0 ? { input_references: inputReferences } : {}),
     },
     ...(signal ? { signal } : {}),

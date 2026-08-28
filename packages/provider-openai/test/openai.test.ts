@@ -702,6 +702,95 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body).toContain('name="image[]"');
   });
 
+  // ---- profile 驅動的參數（取代舊的模型名前綴比對）--------------------------------
+  //
+  // 舊版是 `/^grok-imagine-image/i` 這種前綴比對，對走 gateway 的真實 id
+  // （`x-ai/grok-imagine-image-quality`）不匹配，整段靜默失效、失效的樣子與沒寫過完全
+  // 相同。所以這幾條刻意用**與任何家族都對不上**的模型名：送出什麼欄位只跟 profile 有關。
+
+  it("images shape sends aspect_ratio + resolution when the profile says so", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "vendor/unrecognised-image-model",
+      profile: { sizing: { mode: "aspect_ratio", resolution: "2k" } },
+    });
+    const image = await provider.generate(imageRequest());
+    const body = active.requests[0]!.body as {
+      size?: string;
+      aspect_ratio?: string;
+      resolution?: string;
+    };
+    expect(body.size).toBeUndefined();
+    expect(body.aspect_ratio).toBe("16:9");
+    expect(body.resolution).toBe("2k");
+    // 產物 metadata 帶著實際送出的尺寸參數，之後查「這張是用什麼設定生的」才有依據。
+    expect(image.parameters.resolution).toBe("2k");
+    expect(image.parameters.size).toBeUndefined();
+  });
+
+  it("chat shape sends image_config for a non-gemini model when the profile asks", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    const dataUrl = `data:image/png;base64,${b64}`;
+    active = await startFake(() => ({
+      status: 200,
+      json: { choices: [{ message: { images: [{ image_url: { url: dataUrl } }] } }] },
+    }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "vendor/unrecognised-image-model",
+      apiShape: "chat",
+      profile: { sizing: { mode: "image_size", resolution: "4k" } },
+    });
+    await provider.generate(imageRequest());
+    const body = active.requests[0]!.body as {
+      image_config?: { image_size?: string; aspect_ratio?: string };
+    };
+    // 檔位存小寫、由 transport 寫成該端點的字面（Gemini 系吃大寫）。
+    expect(body.image_config?.image_size).toBe("4K");
+    expect(body.image_config?.aspect_ratio).toBe("16:9");
+  });
+
+  it("a profile prompt budget fails the call without sending a request", async () => {
+    active = await startFake(() => ({ status: 200, json: {} }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-1",
+      profile: { sizing: { mode: "size", value: "1536x1024" }, promptMaxBytes: 200 },
+    });
+    // 截斷是更壞的交換：prompt 尾端依序是簡報內容、UNTRUSTED_PRESENTATION_JSON 隔離
+    // 標記與注入防線，從尾端砍等於先砍掉安全邊界再送出半份資料。
+    await expect(provider.generate(imageRequest())).rejects.toMatchObject({
+      code: "OPENAI_IMAGE_PROMPT_TOO_LONG",
+    });
+    expect(active.requests).toHaveLength(0);
+  });
+
+  it("a profile reference limit only lowers the transport's hard ceiling", () => {
+    const config: OpenAiClientConfig = {
+      baseUrl: "http://127.0.0.1:1/v1",
+      apiKey: "test-key",
+      timeoutMs: 1_000,
+    };
+    const sizing = { mode: "size", value: "1536x1024" } as const;
+    expect(
+      new OpenAiCompatibleImageProvider({
+        config,
+        model: "gpt-image-1",
+        profile: { sizing, maxReferenceImages: 4 },
+      }).capabilities.maxReferenceImages,
+    ).toBe(4);
+    // 設得比端點自身的上限高只會換來 gateway 的不透明 400，而 jobs.ts 會以為還塞得下。
+    expect(
+      new OpenAiCompatibleImageProvider({
+        config,
+        model: "gpt-image-1",
+        profile: { sizing, maxReferenceImages: 99 },
+      }).capabilities.maxReferenceImages,
+    ).toBe(16);
+  });
+
   it("images shape without references still uses /images/generations", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));

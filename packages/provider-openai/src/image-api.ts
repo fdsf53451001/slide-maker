@@ -1,5 +1,7 @@
 import {
+  aspectRatioLabel,
   buildImageGenerationContract,
+  type ImageModelProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
@@ -12,25 +14,35 @@ import {
   readImageBytes,
   requestJson,
 } from "./http.js";
+import { assertPromptBudget, referenceLimitFor } from "./image-profile.js";
 import { flattenMaskToBlack, rasterToCanvasPng } from "./image-util.js";
 import { parseImagesApiUsage } from "./usage.js";
 
-/**
- * `image[]` 的張數上限。
- *
- * 這條通道的限制與 chat／openrouter 的 8 張不同源：那兩條把影像 base64 內嵌進 JSON body，
- * 卡的是 token 與 body 大小；這條是 multipart file part，卡的是端點自身對 `image[]` 的
- * 張數上限（gpt-image 系列為 16）。沒有上限時，參考圖一多就只會拿到 gateway 的不透明
- * 400，錯誤訊息無法指向真正原因，故比照其他 transport 在送出前擋下。
- */
-export const MAX_IMAGES_REFERENCES = 16;
-
-function assertReferenceLimit(request: ImageGenerationRequest): void {
-  if (request.references.length > MAX_IMAGES_REFERENCES)
+function assertReferenceLimit(request: ImageGenerationRequest, limit: number): void {
+  if (request.references.length > limit)
     throw new SafeProviderError(
       "OPENAI_IMAGE_REFERENCES_LIMIT",
-      `Images API 圖片生成每頁最多接受 ${MAX_IMAGES_REFERENCES} 張參考圖。`,
+      `Images API 圖片生成每頁最多接受 ${limit} 張參考圖。`,
     );
+}
+
+/**
+ * 這條 REST 路徑上的尺寸欄位。`size` 是 gpt-image 系的像素字串，`aspect_ratio`＋
+ * `resolution` 是 xAI Grok Imagine 的講法——同一個端點形狀、不同的欄位名，正是 profile
+ * 存在的理由。`image_size`（Gemini 系 chat translator 的講法）在這條路上沒有對應欄位，
+ * 與 `none` 一樣不送；模型庫寫入時會擋掉這種組合，這裡只是不假設它被擋住了。
+ */
+function sizingFields(
+  profile: ImageModelProfile,
+  request: ImageGenerationRequest,
+): Record<string, string> {
+  const sizing = profile.sizing;
+  if (sizing.mode === "size") return { size: sizing.value };
+  if (sizing.mode === "aspect_ratio") {
+    const ratio = aspectRatioLabel(request.width, request.height);
+    return { ...(ratio ? { aspect_ratio: ratio } : {}), resolution: sizing.resolution };
+  }
+  return {};
 }
 
 function imagesPrompt(request: ImageGenerationRequest): string {
@@ -67,16 +79,19 @@ async function requestGeneration(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  size: string,
+  profile: ImageModelProfile,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  const prompt = imagesPrompt(request);
+  assertPromptBudget(prompt, profile);
+  const fields = sizingFields(profile, request);
   // 有參考圖的「生成」走 /images/edits + image[] 陣列（gpt-image 用參考圖生成新圖的
   // 官方用法）；/images/generations 不吃輸入影像，故無參考圖時才走它。
   if (request.references.length > 0) {
     const form = new FormData();
     form.set("model", model);
-    form.set("prompt", imagesPrompt(request));
-    form.set("size", size);
+    form.set("prompt", prompt);
+    for (const [key, value] of Object.entries(fields)) form.set(key, value);
     form.set("n", "1");
     form.set("response_format", "b64_json");
     for (const reference of request.references) {
@@ -94,8 +109,8 @@ async function requestGeneration(
     path: "/images/generations",
     body: {
       model,
-      prompt: imagesPrompt(request),
-      size,
+      prompt,
+      ...fields,
       n: 1,
       response_format: "b64_json",
     },
@@ -107,16 +122,18 @@ async function requestEdit(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  size: string,
+  profile: ImageModelProfile,
   signal?: AbortSignal,
 ): Promise<unknown> {
   const edit = request.edit!;
   const base = request.references[edit.baseImageIndex];
   if (!base) throw new SafeProviderError("OPENAI_IMAGE_BASE_MISSING", "找不到要編輯的基底影像。");
+  const prompt = imagesPrompt(request);
+  assertPromptBudget(prompt, profile);
   const form = new FormData();
   form.set("model", model);
-  form.set("prompt", imagesPrompt(request));
-  form.set("size", size);
+  form.set("prompt", prompt);
+  for (const [key, value] of Object.entries(sizingFields(profile, request))) form.set(key, value);
   form.set("n", "1");
   form.set("response_format", "b64_json");
   if (edit.maskImageIndex !== undefined && !request.references[edit.maskImageIndex])
@@ -164,13 +181,13 @@ export async function generateViaImagesApi(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  size: string,
+  profile: ImageModelProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
-  assertReferenceLimit(request);
+  assertReferenceLimit(request, referenceLimitFor("images", profile));
   const payload = request.edit
-    ? await requestEdit(config, model, request, size, signal)
-    : await requestGeneration(config, model, request, size, signal);
+    ? await requestEdit(config, model, request, profile, signal)
+    : await requestGeneration(config, model, request, profile, signal);
   // images 端點的 usage 欄位名與 /chat/completions **完全不同**（input_tokens 而非
   // prompt_tokens）；套錯解析器會讓整條影像通道靜默落成 reported:false。
   // 先解 usage 再解圖：解不出圖是往返成功之後才失敗的，token 已經燒掉了。
