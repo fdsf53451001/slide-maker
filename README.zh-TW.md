@@ -235,6 +235,8 @@ pnpm format           # Prettier
 
 ## 專案結構
 
+![Slide Maker 架構](docs/architecture.png)
+
 pnpm monorepo，內部相依用 `workspace:*`。
 
 | 套件                       | 職責                                                                  |

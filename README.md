@@ -323,6 +323,8 @@ Two things worth knowing before you change anything:
 
 ## Project structure
 
+![Slide Maker architecture](docs/architecture.png)
+
 pnpm monorepo; internal dependencies use `workspace:*`.
 
 | Package                    | Role                                                                                               |
