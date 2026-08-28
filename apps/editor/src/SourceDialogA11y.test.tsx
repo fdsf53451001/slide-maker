@@ -139,6 +139,53 @@ describe("SourcePanel 的 Escape 鏈", () => {
   });
 });
 
+/**
+ * 照瀏覽器的真實順序派送一次「按下 → 放開 → click」。起點與終點不同時，`click` 會落在
+ * 兩者的共同祖先上——輸入文字來源的 `role="dialog"` 就在遮罩上，那正是 `onClick` 版本
+ * 會誤關的原因。
+ */
+function pressBackdrop(down: Element, up: Element, backdrop: Element) {
+  fireEvent.mouseDown(down);
+  fireEvent.mouseUp(up);
+  fireEvent.click(down === up ? down : backdrop);
+}
+
+describe("輸入文字來源的遮罩關閉", () => {
+  it("點遮罩關閉；從來源名稱拖選到卡片外不關（反向也不關）", () => {
+    panelWithSource();
+    fireEvent.click(screen.getByText("＋ 輸入文字"));
+    const backdrop = document.querySelector(".text-source-backdrop");
+    if (!backdrop) throw new Error("遮罩不存在");
+    const name = screen.getByLabelText("文字來源名稱");
+    const card = document.querySelector(".text-source-dialog");
+    if (!card) throw new Error("卡片不存在");
+
+    pressBackdrop(name, name, backdrop);
+    expect(screen.queryByRole("dialog", { name: "輸入文字來源" })).toBeTruthy();
+
+    pressBackdrop(card, card, backdrop);
+    expect(screen.queryByRole("dialog", { name: "輸入文字來源" })).toBeTruthy();
+
+    /*
+      在名稱輸入框按住、拖到遮罩上放開＝選取檔名時最自然的動作。瀏覽器此時把 `click`
+      派送到兩者的共同祖先（＝遮罩本身），所以只看 `onClick` 的版本會在放開的瞬間關掉
+      對話框、連選到的字一起沒收；內容層的 `stopPropagation` 也擋不住，因為事件 target
+      就是遮罩。
+
+      `pressBackdrop` 因此連 `click` 一起派送：只送 mousedown／mouseup 的話，退回
+      `onClick` 的實作在 jsdom 裡不會收到任何事件、這一則會假綠＝等於沒測。
+    */
+    pressBackdrop(name, backdrop, backdrop);
+    expect(screen.queryByRole("dialog", { name: "輸入文字來源" })).toBeTruthy();
+
+    pressBackdrop(backdrop, name, backdrop);
+    expect(screen.queryByRole("dialog", { name: "輸入文字來源" })).toBeTruthy();
+
+    pressBackdrop(backdrop, backdrop, backdrop);
+    expect(screen.queryByRole("dialog", { name: "輸入文字來源" })).toBeNull();
+  });
+});
+
 describe("來源卡片上的「AI 未讀取圖片內容」", () => {
   it("是持久狀態而不是事件：不得用 assertive 的 role=alert", () => {
     const project = {

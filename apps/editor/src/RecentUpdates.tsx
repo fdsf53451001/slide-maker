@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { changelogDays, formatChangelogDate, type ChangelogDay } from "./changelog.js";
+import { useBackdropDismiss } from "./useBackdropDismiss.js";
 
 /**
  * 主畫面右上角的「最近更新」：一顆按鈕加上點開的 modal，內容來自建置時內嵌的 CHANGE.md。
@@ -14,7 +15,6 @@ export function RecentUpdatesButton({ days = changelogDays }: { days?: Changelog
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const pressedOnBackdrop = useRef(false);
   const titleId = useId();
 
   // 三條關閉路徑（關閉鈕／Esc／點背景）都走這一份：焦點回到觸發按鈕是其中一步，
@@ -23,6 +23,7 @@ export function RecentUpdatesButton({ days = changelogDays }: { days?: Changelog
     setOpen(false);
     triggerRef.current?.focus();
   }, []);
+  const dismiss = useBackdropDismiss(close);
 
   useEffect(() => {
     if (!open) return;
@@ -67,21 +68,7 @@ export function RecentUpdatesButton({ days = changelogDays }: { days?: Changelog
       */}
       {open &&
         createPortal(
-          // 遮罩的關閉條件是「按下與放開都落在遮罩上」，不是 `onClick`：在內文按住往外
-          // 拖曳選字（複製更新紀錄的自然動作）時，`click` 會派送到兩者的共同祖先＝遮罩
-          // 本身，面板會在放開滑鼠的瞬間關掉、選到的字也沒了。因為事件 target 本來就是
-          // 遮罩，內容層的 `stopPropagation` 擋不住這條，只能比對按下時的落點。
-          <div
-            className="recent-updates-backdrop"
-            onMouseDown={(event) => {
-              pressedOnBackdrop.current = event.target === event.currentTarget;
-            }}
-            onMouseUp={(event) => {
-              const fromBackdrop = pressedOnBackdrop.current;
-              pressedOnBackdrop.current = false;
-              if (fromBackdrop && event.target === event.currentTarget) close();
-            }}
-          >
+          <div className="recent-updates-backdrop" {...dismiss}>
             <div
               ref={dialogRef}
               className="recent-updates-modal"

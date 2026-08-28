@@ -7,6 +7,7 @@ import {
 } from "@slide-maker/core";
 import { api, projectAssetUrl, type UrlSourceFailure, type WebSearchResult } from "./api.js";
 import { highlightSegments, matchSource, searchTerms } from "./sourceSearch.js";
+import { useBackdropDismiss } from "./useBackdropDismiss.js";
 import { useDialogA11y } from "./useDialogA11y.js";
 import { modalDialogOpen } from "./modalDialogOpen.js";
 
@@ -260,6 +261,7 @@ function SourcePreviewDialog({
   const firstHitRef = useRef<HTMLElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   useDialogA11y(dialogRef, true);
+  const dismiss = useBackdropDismiss(onClose);
   useEffect(() => {
     firstHitRef.current?.scrollIntoView?.({ block: "center" });
   }, [source.id]);
@@ -274,7 +276,7 @@ function SourcePreviewDialog({
       role="dialog"
       aria-modal="true"
       aria-label={`預覽來源：${source.name}`}
-      onClick={onClose}
+      {...dismiss}
     >
       <section
         className={`source-preview-dialog ${imageSource ? "image" : "text"}`}
@@ -422,6 +424,7 @@ function WebSourceDialog({
     }
   };
   const selected = results.filter((result) => selectedUrls.has(result.url));
+  const dismiss = useBackdropDismiss(onCancel, !busy);
   // portal 到 body，理由同 SourcePreviewDialog。
   return createPortal(
     <div
@@ -429,9 +432,7 @@ function WebSourceDialog({
       role="dialog"
       aria-modal="true"
       aria-label="搜尋並加入資料"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
+      {...dismiss}
     >
       <section
         className="web-source-dialog"
@@ -611,6 +612,7 @@ function UrlSourceDialog({
   useDialogA11y(dialogRef, true);
   const urls = parsePastedUrls(value);
   const tooMany = urls.length > URL_SOURCE_BATCH_LIMIT;
+  const dismiss = useBackdropDismiss(onCancel, !busy);
   // portal 到 body，理由同 SourcePreviewDialog。
   return createPortal(
     <div
@@ -618,9 +620,7 @@ function UrlSourceDialog({
       role="dialog"
       aria-modal="true"
       aria-label="貼上網址"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
+      {...dismiss}
     >
       <form
         className="text-source-dialog url-source-dialog"
@@ -721,6 +721,7 @@ function TextSourceDialog({
   const [content, setContent] = useState("");
   const dialogRef = useRef<HTMLFormElement>(null);
   useDialogA11y(dialogRef, true);
+  const dismiss = useBackdropDismiss(onCancel, !busy);
   const normalizedName = /\.(?:md|txt)$/i.test(name.trim())
     ? name.trim()
     : `${name.trim() || "貼上文字"}.md`;
@@ -731,9 +732,7 @@ function TextSourceDialog({
       role="dialog"
       aria-modal="true"
       aria-label="輸入文字來源"
-      onClick={() => {
-        if (!busy) onCancel();
-      }}
+      {...dismiss}
     >
       <form
         className="text-source-dialog"
