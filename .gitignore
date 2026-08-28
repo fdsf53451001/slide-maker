@@ -46,3 +46,4 @@ docker/cliproxy/logs/
 .claude/
 .cli-switch/
 .kiro/
+.serena/

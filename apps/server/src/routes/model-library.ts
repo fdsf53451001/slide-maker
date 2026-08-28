@@ -86,7 +86,10 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
     return redactLibrary(saved);
   };
   const connectionCreateSchema = modelConnectionSchema.omit({ id: true });
-  const connectionPatchSchema = modelConnectionSchema.omit({ id: true }).partial();
+  const connectionPatchSchema = modelConnectionSchema
+    .omit({ id: true })
+    .partial()
+    .extend({ timeoutMs: z.number().int().positive().nullable().optional() });
   const modelCreateSchema = modelEntrySchema.omit({ id: true });
   const modelPatchSchema = modelEntrySchema.omit({ id: true }).partial();
   const combinationCreateSchema = modelCombinationSchema.omit({ id: true });
@@ -113,10 +116,12 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
       if (!connection) throw new Error("Connection not found");
       // 空字串或 redact 佔位的 apiKey 代表「沿用舊 key」；僅在給定新明文時覆寫。
       const previousProtocol = connection.protocol;
-      const { apiKey, ...rest } = patch;
+      const { apiKey, timeoutMs, ...rest } = patch;
       Object.assign(connection, rest);
       if (apiKey !== undefined && apiKey !== "" && !isRedactedKey(apiKey))
         connection.apiKey = apiKey;
+      if (timeoutMs === null) delete connection.timeoutMs;
+      else if (timeoutMs !== undefined) connection.timeoutMs = timeoutMs;
       // 改協定會反向弄壞既有引用（entry 的 kind 不會跟著變），故只在協定真的改變時
       // 回頭檢查引用這條連線的 entry；改名／換 key 不受影響。
       if (connection.protocol !== previousProtocol)

@@ -723,7 +723,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateConnection: (id: string, patch: Partial<Omit<ModelConnection, "id">>) =>
+  updateConnection: (
+    id: string,
+    patch: Partial<Omit<ModelConnection, "id" | "timeoutMs">> & { timeoutMs?: number | null },
+  ) =>
     request<ModelLibrary>(`/api/model-library/connections/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),

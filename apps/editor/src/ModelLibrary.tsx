@@ -129,16 +129,28 @@ function isHttpUrl(value: string): boolean {
 type ConnectionFieldErrors = {
   name?: string | undefined;
   baseUrl?: string | undefined;
+  timeout?: string | undefined;
 };
 
 /** 新增與編輯連線共用的純欄位驗證；兩個入口必須回報完全相同的就地訊息。 */
-function connectionFieldErrors(name: string, baseUrl: string): ConnectionFieldErrors {
+function connectionFieldErrors(
+  name: string,
+  baseUrl: string,
+  timeout: string,
+): ConnectionFieldErrors {
   const errors: ConnectionFieldErrors = {};
   if (!name.trim()) errors.name = "請輸入名稱，之後在模型的「連線」下拉選單裡就是靠它指認。";
   const url = baseUrl.trim();
   if (!url) errors.baseUrl = "請輸入 base URL；留空的連線只會在生成時以 HTTP 錯誤失敗。";
   else if (!isHttpUrl(url))
     errors.baseUrl = "需要 http／https 開頭的完整網址，例如 http://localhost:8317/v1。";
+  const timeoutRaw = timeout.trim();
+  if (timeoutRaw) {
+    if (!/^\d+$/.test(timeoutRaw))
+      errors.timeout = "連線逾時只接受數字（正整數）；留空則沿用系統設定的模型逾時。";
+    else if (Number(timeoutRaw) <= 0)
+      errors.timeout = "連線逾時需大於 0；留空則沿用系統設定的模型逾時。";
+  }
   return errors;
 }
 
@@ -345,13 +357,14 @@ function ConnectionsSection({
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [timeout, setTimeoutMs] = useState("");
   const [protocol, setProtocol] = useState<ConnectionProtocol>("openai");
   // 顯式帶上 `| undefined`：`exactOptionalPropertyTypes` 下，清掉單一欄位的錯誤
   // （`{ ...current, name: undefined }`）對純 optional 屬性是型別錯誤。
   const [fieldErrors, setFieldErrors] = useState<ConnectionFieldErrors>({});
   const { pending, rowError, act } = useRowAction(
     run,
-    [name, baseUrl, apiKey, protocol].join("\0"),
+    [name, baseUrl, apiKey, timeout, protocol].join("\0"),
   );
   /**
    * 送出前擋掉必填缺漏，訊息就顯示在出問題的那個欄位旁邊。
@@ -361,9 +374,9 @@ function ConnectionsSection({
    * 難懂的 HTTP 錯誤，那時已經沒有人會把它連回「當初那個空欄位」。
    */
   const create = async () => {
-    const errors = connectionFieldErrors(name, baseUrl);
+    const errors = connectionFieldErrors(name, baseUrl, timeout);
     setFieldErrors(errors);
-    if (errors.name || errors.baseUrl) return;
+    if (errors.name || errors.baseUrl || errors.timeout) return;
     const before = new Set(library.connections.map((connection) => connection.id));
     const ok = await act("create", "新增連線", async () => {
       const next = await api.createConnection({
@@ -371,6 +384,7 @@ function ConnectionsSection({
         baseUrl: baseUrl.trim(),
         apiKey,
         protocol,
+        ...(timeout.trim() ? { timeoutMs: Number(timeout) } : {}),
       });
       // 建立完連線立刻打 /models，讓模型 entry 能用下拉選單挑模型。
       const created = next.connections.find((connection) => !before.has(connection.id));
@@ -381,6 +395,7 @@ function ConnectionsSection({
     setName("");
     setBaseUrl("");
     setApiKey("");
+    setTimeoutMs("");
     setProtocol("openai");
     setFieldErrors({});
   };
@@ -389,7 +404,7 @@ function ConnectionsSection({
       <SectionHeading icon="connections" label="CONNECTIONS" title="連線（HTTP 模型端點）" />
       <p className="model-library-hint">
         供 OpenAI 相容／Gemini 原生模型引用的 base URL 與 API key。協定決定請求形狀，選錯了
-        連線測試就會失敗。金鑰只寫不讀，顯示為佔位符。
+        連線測試就會失敗。金鑰只寫不讀，顯示為佔位符。逾時留空則沿用系統設定的模型逾時。
       </p>
       <div className="model-library-list">
         {library.connections.length === 0 && <p className="model-library-empty">尚無連線。</p>}
@@ -459,6 +474,22 @@ function ConnectionsSection({
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
         />
+        <div className="model-library-inline-wrap">
+          <label className="model-library-inline-field">
+            <span>逾時 ms</span>
+            <input
+              aria-label="連線逾時"
+              inputMode="numeric"
+              placeholder="留空沿用系統"
+              value={timeout}
+              onChange={(event) => {
+                setTimeoutMs(event.target.value);
+                setFieldErrors((current) => ({ ...current, timeout: undefined }));
+              }}
+            />
+          </label>
+          {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
+        </div>
         {/*
           刻意**不**在名稱空白時 disabled：按不下去的按鈕不會告訴任何人少了什麼，
           按得下去、然後在欄位旁指出缺漏才有下一步。
@@ -491,10 +522,16 @@ function ConnectionRow({
   const [name, setName] = useState(connection.name);
   const [baseUrl, setBaseUrl] = useState(connection.baseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [timeout, setTimeoutMs] = useState(
+    connection.timeoutMs !== undefined ? String(connection.timeoutMs) : "",
+  );
   const [protocol, setProtocol] = useState<ConnectionProtocol>(connection.protocol);
   const [testing, setTesting] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<ConnectionFieldErrors>({});
-  const { pending, rowError, act } = useRowAction(run, [name, baseUrl, apiKey, protocol].join(" "));
+  const { pending, rowError, act } = useRowAction(
+    run,
+    [name, baseUrl, apiKey, timeout, protocol].join(" "),
+  );
   /**
    * 與「新增連線」同一份必填檢查。
    *
@@ -502,10 +539,12 @@ function ConnectionRow({
    * 畫面上看起來正常，要到某天生成或抽字時才變成一句難懂的 HTTP 錯誤，那時沒有人會把它連回
    * 「當初把那個欄位清掉」。同一個陷阱只是換一個畫面出現。
    */
+  const savedTimeout = connection.timeoutMs !== undefined ? String(connection.timeoutMs) : "";
   const dirty =
     name !== connection.name ||
     baseUrl !== connection.baseUrl ||
     protocol !== connection.protocol ||
+    timeout !== savedTimeout ||
     apiKey !== "";
   const status = models?.status ?? "idle";
   const testLabel =
@@ -551,6 +590,19 @@ function ConnectionRow({
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
         />
+        <label className="model-library-inline-field">
+          <span>逾時 ms</span>
+          <input
+            aria-label="連線逾時"
+            inputMode="numeric"
+            placeholder="留空沿用系統"
+            value={timeout}
+            onChange={(event) => {
+              setTimeoutMs(event.target.value);
+              setFieldErrors((current) => ({ ...current, timeout: undefined }));
+            }}
+          />
+        </label>
       </div>
       {/*
         這一列是 `flex-direction: column`（`.model-library-connection-row`），所以錯誤字接在
@@ -558,18 +610,20 @@ function ConnectionRow({
       */}
       {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
       {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
+      {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
       <div className="model-library-row-actions">
         <button
           disabled={busy || !dirty}
           onClick={() => {
-            const errors = connectionFieldErrors(name, baseUrl);
+            const errors = connectionFieldErrors(name, baseUrl, timeout);
             setFieldErrors(errors);
-            if (errors.name || errors.baseUrl) return;
+            if (errors.name || errors.baseUrl || errors.timeout) return;
             void act("save", "儲存連線", async () => {
               const result = await api.updateConnection(connection.id, {
                 name,
                 baseUrl,
                 protocol,
+                timeoutMs: timeout.trim() ? Number(timeout) : null,
                 ...(apiKey ? { apiKey } : {}),
               });
               setApiKey("");
@@ -1217,7 +1271,7 @@ function SystemSection({
     <section className="dashboard-section model-library-section">
       <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
       <p className="model-library-hint">
-        影響執行而非品質的維運旋鈕。OCR 相關設定改動需重啟伺服器才生效。
+        影響執行而非品質的維運旋鈕。OCR 相關設定改動需重啟伺服器才生效。連線列若另外填了逾時，以連線的為準。
       </p>
       <div className="model-library-create">
         <label className="model-library-combo-field">

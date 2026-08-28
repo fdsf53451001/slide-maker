@@ -231,7 +231,10 @@ export class ModelRuntime {
       return {
         baseUrl: connection?.baseUrl ?? "",
         apiKey: connection?.apiKey ?? "",
-        timeoutMs: connection?.timeoutMs ?? this.#base.defaults.modelTimeoutMs,
+        timeoutMs:
+          connection?.timeoutMs ??
+          library.system.modelTimeoutMs ??
+          this.#base.defaults.modelTimeoutMs,
       };
     };
     for (const entry of library.models) {

@@ -319,6 +319,52 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
     expect(writeRequests(fetchMock)).toHaveLength(0);
   });
 
+  it("既有連線的逾時改成非數字時就地報錯，且不送出請求", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await waitFor(() =>
+      expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
+    );
+    const row = container.querySelector(".model-library-connection-row") as HTMLElement;
+
+    fireEvent.change(within(row).getByLabelText("連線逾時"), { target: { value: "abc" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    expect(
+      within(row)
+        .getAllByRole("alert")
+        .some((node) => /只接受數字/.test(node.textContent ?? "")),
+    ).toBe(true);
+    expect(writeRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it("儲存連線會送出逾時；清空則送 null 以沿用系統設定", async () => {
+    const base = libraryWithConnection();
+    const fetchMock = stubLibraryFetch({
+      ...base,
+      connections: [{ ...base.connections[0]!, timeoutMs: 180_000 }],
+    });
+    const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await waitFor(() =>
+      expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
+    );
+    const row = container.querySelector(".model-library-connection-row") as HTMLElement;
+
+    fireEvent.change(within(row).getByLabelText("連線逾時"), { target: { value: "600000" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body))).toMatchObject({
+      timeoutMs: 600000,
+    });
+
+    fireEvent.change(within(row).getByLabelText("連線逾時"), { target: { value: "" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(2));
+    expect(JSON.parse(String(writeRequests(fetchMock)[1]?.[1]?.body))).toMatchObject({
+      timeoutMs: null,
+    });
+  });
+
   it("系統設定的數字欄位擋掉非數字，不讓 NaN 送到伺服器", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);

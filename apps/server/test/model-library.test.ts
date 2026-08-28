@@ -77,6 +77,15 @@ describe("model library CRUD and project composition", () => {
     expect(library.connections.find((item) => item.id === connection.id)?.name).toBe("改名端點");
     expect(library.connections.find((item) => item.id === connection.id)?.apiKey).toBe("••••••••");
 
+    library = await send<ModelLibrary>(`/api/model-library/connections/${connection.id}`, "PATCH", {
+      timeoutMs: 180_000,
+    });
+    expect(library.connections.find((item) => item.id === connection.id)?.timeoutMs).toBe(180_000);
+    library = await send<ModelLibrary>(`/api/model-library/connections/${connection.id}`, "PATCH", {
+      timeoutMs: null,
+    });
+    expect(library.connections.find((item) => item.id === connection.id)?.timeoutMs).toBeUndefined();
+
     // 模型 entry（openai text，引用連線）。
     library = await send<ModelLibrary>("/api/model-library/models", "POST", {
       name: "測試文字模型",
