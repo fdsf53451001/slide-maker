@@ -84,7 +84,9 @@ describe("model library CRUD and project composition", () => {
     library = await send<ModelLibrary>(`/api/model-library/connections/${connection.id}`, "PATCH", {
       timeoutMs: null,
     });
-    expect(library.connections.find((item) => item.id === connection.id)?.timeoutMs).toBeUndefined();
+    expect(
+      library.connections.find((item) => item.id === connection.id)?.timeoutMs,
+    ).toBeUndefined();
 
     // 模型 entry（openai text，引用連線）。
     library = await send<ModelLibrary>("/api/model-library/models", "POST", {
@@ -306,6 +308,37 @@ describe("model library CRUD and project composition", () => {
         providerKind: "openai",
         model: "gpt-test",
         connectionRef: connection.id,
+        imageProfile: { sizing: { mode: "size", value: "1536x1024" } },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_NOT_APPLICABLE");
+
+    // 參考圖上限設得比端點自身的上限高不會生效（provider 會夾回去），使用者卻會以為每頁
+    // 真的能附那麼多張。這個 entry 上面已改走 chat 通道，上限是 8 張。
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", {
+        imageProfile: { maxReferenceImages: 20 },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_REFERENCE_LIMIT_TOO_HIGH");
+    // 端點上限之內就收下。
+    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
+      imageProfile: { maxReferenceImages: 4 },
+    });
+    expect(
+      library.models.find((item) => item.id === entry.id)?.imageProfile?.maxReferenceImages,
+    ).toBe(4);
+    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
+      imageProfile: null,
+    });
+
+    // 影像參數對 mock／local 也沒有作用——這兩種 kind 不打 HTTP 影像端點，profile 對它們
+    // 一樣是死欄位。這是與上面「capability 不是 image」不同的分支（provider kind 檢查），
+    // 兩個分支共用同一個錯誤碼，容易只測到其中一個就以為擋住了。
+    await expect(
+      send("/api/model-library/models", "POST", {
+        name: "mock 影像模型帶影像參數",
+        capability: "image",
+        providerKind: "mock",
+        model: "",
         imageProfile: { sizing: { mode: "size", value: "1536x1024" } },
       }),
     ).rejects.toThrow("IMAGE_PROFILE_NOT_APPLICABLE");

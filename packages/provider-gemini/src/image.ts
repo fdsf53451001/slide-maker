@@ -2,6 +2,7 @@ import {
   aspectRatioLabel,
   buildImageGenerationContract,
   type ImageModelProfile,
+  type ImageSizing,
   type ResolvedImageProfile,
   resolveImageProfile,
   SafeProviderError,
@@ -51,6 +52,12 @@ export const MAX_REFERENCES = 8;
  * 原生端點的預設 profile。`imageSize` 取 `2k` 是畫質的關鍵而非可有可無的調校，實測依據
  * 見 `provider-openai` 的 `defaultImageProfile()`——那是同一個決定，兩條路都要送。
  */
+/**
+ * 原生端點說得出來的尺寸講法（`size`／`aspect_ratio` 是 OpenAI-compatible REST 的欄位，
+ * 這裡沒有對應）。理由同 provider-openai 的 `SIZING_MODES_BY_SHAPE`：單一真相。
+ */
+export const GEMINI_SIZING_MODES: ReadonlyArray<ImageSizing["mode"]> = ["image_size", "none"];
+
 export const DEFAULT_GEMINI_IMAGE_PROFILE: ResolvedImageProfile = {
   sizing: { mode: "image_size", resolution: "2k" },
 };

@@ -13,8 +13,16 @@ import {
   type ModelEntry,
   type ModelLibrary,
 } from "@slide-maker/core";
-import { listGeminiModelIds } from "@slide-maker/provider-gemini";
-import { listModelIds } from "@slide-maker/provider-openai";
+import {
+  GEMINI_MAX_REFERENCES,
+  GEMINI_SIZING_MODES,
+  listGeminiModelIds,
+} from "@slide-maker/provider-gemini";
+import {
+  listModelIds,
+  MAX_REFERENCES_BY_SHAPE,
+  SIZING_MODES_BY_SHAPE,
+} from "@slide-maker/provider-openai";
 import { ModelLibraryError, type ModelRuntime } from "../model-runtime.js";
 import { idSchema } from "../project-write-helpers.js";
 import type { AppContext } from "./context.js";
@@ -41,26 +49,40 @@ function assertConnectionProtocol(draft: ModelLibrary, entry: ModelEntry): void 
 }
 
 /**
- * 影像 profile 的尺寸講法必須是這條 transport 說得出來的。
+ * 影像 profile 必須是這條 transport 表達得出來的。
  *
- * 這幾組是**協定**而不是偏好：`size` 是 OpenAI images 端點的欄位、`image_size` 是 Gemini
+ * 尺寸講法是**協定**而不是偏好：`size` 是 OpenAI images 端點的欄位、`image_size` 是 Gemini
  * 系（chat translator 與原生 generateContent）的欄位，兩邊沒有對應翻譯。存下一個對不上的
  * 組合不會有任何立即症狀——transport 會靜默不送尺寸，於是模型回一張只有 1376×768 的圖，
- * 正規化放大 1.40× 後糊掉，而使用者只會覺得「這個模型畫得比較差」。所以在寫入時就擋掉，
- * 這是使用者現在改得掉的設定問題。
+ * 正規化放大 1.40× 後糊掉，而使用者只會覺得「這個模型畫得比較差」。
+ *
+ * 參考圖上限同理但方向相反：設得比端點自身的上限高不會生效（provider 會夾回去），使用者
+ * 卻會以為每頁真的能附那麼多張。兩者都是現在改得掉的設定問題，所以在寫入時就擋下。
+ *
+ * 兩張表都**從 provider 套件 import**，不在這裡另抄一份：抄一份的話，新增一種 mode 只改了
+ * 其中一邊就會通過驗證、然後在送出時靜默 no-op。
  */
-const IMAGE_SIZING_MODES: Record<string, ReadonlyArray<ImageSizing["mode"]>> = {
-  gemini: ["image_size", "none"],
-  images: ["size", "aspect_ratio", "none"],
-  chat: ["image_size", "none"],
-  "openrouter-image": ["none"],
-};
 const SIZING_MODE_LABEL: Record<ImageSizing["mode"], string> = {
   size: "size（像素字串，如 1536x1024）",
   aspect_ratio: "aspect_ratio（比例＋解析度檔位）",
   image_size: "image_size（解析度檔位）",
   none: "不送尺寸參數",
 };
+
+function imageTransportLimits(entry: ModelEntry): {
+  name: string;
+  modes: ReadonlyArray<ImageSizing["mode"]>;
+  maxReferences: number;
+} {
+  if (entry.providerKind === "gemini")
+    return { name: "gemini", modes: GEMINI_SIZING_MODES, maxReferences: GEMINI_MAX_REFERENCES };
+  const shape = entry.imageApi ?? "images";
+  return {
+    name: shape,
+    modes: SIZING_MODES_BY_SHAPE[shape],
+    maxReferences: MAX_REFERENCES_BY_SHAPE[shape],
+  };
+}
 
 function assertImageProfile(entry: ModelEntry): void {
   const profile = entry.imageProfile;
@@ -75,17 +97,23 @@ function assertImageProfile(entry: ModelEntry): void {
       "IMAGE_PROFILE_NOT_APPLICABLE",
       `模型「${entry.name}」是 ${entry.providerKind} 類型，不會打 HTTP 影像端點，影像參數對它沒有作用；請清掉這些參數。`,
     );
-  if (!profile.sizing) return;
-  const transport = entry.providerKind === "gemini" ? "gemini" : (entry.imageApi ?? "images");
-  const allowed = IMAGE_SIZING_MODES[transport] ?? [];
-  if (!allowed.includes(profile.sizing.mode))
+  const transport = imageTransportLimits(entry);
+  if (profile.sizing && !transport.modes.includes(profile.sizing.mode))
     throw new ModelLibraryError(
       "IMAGE_PROFILE_SIZING_UNSUPPORTED",
-      `模型「${entry.name}」走的是 ${transport} 通道，它的尺寸參數只支援：${allowed
+      `模型「${entry.name}」走的是 ${transport.name} 通道，它的尺寸參數只支援：${transport.modes
         .map((mode) => SIZING_MODE_LABEL[mode])
         .join(
           "、",
         )}。請改選其中一種，或改用支援 ${SIZING_MODE_LABEL[profile.sizing.mode]} 的影像 API。`,
+    );
+  if (
+    profile.maxReferenceImages !== undefined &&
+    profile.maxReferenceImages > transport.maxReferences
+  )
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_REFERENCE_LIMIT_TOO_HIGH",
+      `模型「${entry.name}」走的是 ${transport.name} 通道，每次請求最多只能附 ${transport.maxReferences} 張圖，填 ${profile.maxReferenceImages} 不會生效。請填 ${transport.maxReferences} 以下的數字，或留空沿用端點上限。`,
     );
 }
 

@@ -1,4 +1,9 @@
-import { type ResolvedImageProfile, SafeProviderError, utf8ByteLength } from "@slide-maker/core";
+import {
+  type ImageSizing,
+  type ResolvedImageProfile,
+  SafeProviderError,
+  utf8ByteLength,
+} from "@slide-maker/core";
 
 /**
  * Maintained image transports:
@@ -19,6 +24,23 @@ export const MAX_IMAGES_REFERENCES = 16;
 export const MAX_CHAT_REFERENCES = 8;
 export const MAX_OPENROUTER_REFERENCES = 8;
 
+/**
+ * 每條 transport 說得出來的尺寸講法。**這是單一真相**：模型庫寫入時的相容性檢查要 import
+ * 這份，不可在伺服器端另抄一份——抄一份的話，新增一種 mode 只改了其中一邊就會通過驗證、
+ * 然後在送出時靜默 no-op，那正是整個 profile 機制要消滅的失敗形狀。
+ *
+ * 內容必須與 `image-api.ts` 的 `sizingFields()`／`image-chat.ts` 的 `imageConfigFields()`
+ * 真正認得的 mode 一致，`image-profile.test.ts` 逐一送出請求釘住這件事。
+ */
+export const SIZING_MODES_BY_SHAPE: Record<
+  OpenAiImageApiShape,
+  ReadonlyArray<ImageSizing["mode"]>
+> = {
+  images: ["size", "aspect_ratio", "none"],
+  chat: ["image_size", "none"],
+  "openrouter-image": ["none"],
+};
+
 export const MAX_REFERENCES_BY_SHAPE: Record<OpenAiImageApiShape, number> = {
   images: MAX_IMAGES_REFERENCES,
   chat: MAX_CHAT_REFERENCES,
@@ -29,7 +51,10 @@ export const MAX_REFERENCES_BY_SHAPE: Record<OpenAiImageApiShape, number> = {
  * profile 宣告的張數上限只能**往下**調：端點自身的上限是物理限制，設得比它高只會換來
  * gateway 的不透明 400，而 `jobs.ts` 的 `limitReferences` 會以為還塞得下。
  */
-export function referenceLimitFor(shape: OpenAiImageApiShape, profile: ResolvedImageProfile): number {
+export function referenceLimitFor(
+  shape: OpenAiImageApiShape,
+  profile: ResolvedImageProfile,
+): number {
   const hard = MAX_REFERENCES_BY_SHAPE[shape];
   return profile.maxReferenceImages === undefined
     ? hard

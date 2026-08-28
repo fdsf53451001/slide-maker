@@ -65,6 +65,89 @@ function expectModelLibraryError(action: () => unknown, code: string, message: s
   expect(thrown).toMatchObject({ name: "ModelLibraryError", code, message });
 }
 
+describe("ModelRuntime wires imageProfile through to the constructed provider", () => {
+  // 這幾條釘的是 #buildImage 裡的 `entry.imageProfile ? { profile: entry.imageProfile } : {}`
+  // ——沒有它，entry 上設定的 profile 只會被存進 models.json，永遠不會影響任何一次真正的
+  // 生成請求（存檔驗證是另一份測試，apps/server/test/model-library.test.ts；這裡測的是
+  // 執行期真的接上了）。用 `capabilities.maxReferenceImages` 當可觀測窗口：它是 profile
+  // 唯一能在不打真實 HTTP 的情況下、從建好的 provider 實例上直接讀到的欄位。
+  it("an openai image entry's maxReferenceImages override reaches the provider instance", () => {
+    const library: ModelLibrary = {
+      schemaVersion: SCHEMA_VERSION,
+      connections: [],
+      models: [
+        {
+          id: "openai-image-with-profile",
+          name: "openai image with profile",
+          capability: "image",
+          providerKind: "openai",
+          model: "vendor/unrecognised-image-model",
+          imageApi: "images",
+          imageProfile: { maxReferenceImages: 3 },
+        },
+      ],
+      combinations: [],
+      system: {},
+      updatedAt: "2026-07-31T00:00:00.000Z",
+    };
+    const runtime = new ModelRuntime(BASE, library);
+    // 沒有 profile 覆寫時 images shape 的上限是 16（見 image-profile.ts 的
+    // MAX_IMAGES_REFERENCES）；量到 3 才代表 entry.imageProfile 真的被讀了。
+    expect(runtime.imageProvider("openai-image-with-profile").capabilities.maxReferenceImages).toBe(
+      3,
+    );
+  });
+
+  it("a gemini image entry's maxReferenceImages override reaches the provider instance", () => {
+    const library: ModelLibrary = {
+      schemaVersion: SCHEMA_VERSION,
+      connections: [],
+      models: [
+        {
+          id: "gemini-image-with-profile",
+          name: "gemini image with profile",
+          capability: "image",
+          providerKind: "gemini",
+          model: "gemini-3.1-flash-image",
+          imageProfile: { maxReferenceImages: 2 },
+        },
+      ],
+      combinations: [],
+      system: {},
+      updatedAt: "2026-07-31T00:00:00.000Z",
+    };
+    const runtime = new ModelRuntime(BASE, library);
+    // 沒有 profile 覆寫時 Gemini 原生端點的上限是 8（見 provider-gemini 的 MAX_REFERENCES）。
+    expect(runtime.imageProvider("gemini-image-with-profile").capabilities.maxReferenceImages).toBe(
+      2,
+    );
+  });
+
+  it("without imageProfile, capabilities are unaffected (pins the pre-feature default)", () => {
+    const library: ModelLibrary = {
+      schemaVersion: SCHEMA_VERSION,
+      connections: [],
+      models: [
+        {
+          id: "openai-image-no-profile",
+          name: "openai image no profile",
+          capability: "image",
+          providerKind: "openai",
+          model: "gpt-image-1",
+          imageApi: "images",
+        },
+      ],
+      combinations: [],
+      system: {},
+      updatedAt: "2026-07-31T00:00:00.000Z",
+    };
+    const runtime = new ModelRuntime(BASE, library);
+    expect(runtime.imageProvider("openai-image-no-profile").capabilities.maxReferenceImages).toBe(
+      16,
+    );
+  });
+});
+
 describe("ModelRuntime provider resolution", () => {
   it.each(["mock", "local", "dangling"] as const)(
     "search provider %s registry miss is an actionable ModelLibraryError",

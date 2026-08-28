@@ -429,6 +429,55 @@ describe("ModelLibrary 影像參數", () => {
     expect(body.imageProfile).toBeNull();
   });
 
+  it("儲存成功之後「儲存」按鈕就回到停用，不會一直顯示成有未存的變更", async () => {
+    const base = libraryWithConnection();
+    const saved = {
+      ...base,
+      models: base.models.map((entry) =>
+        entry.id === "image-1"
+          ? { ...entry, imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" } } }
+          : entry,
+      ),
+    };
+    // PATCH 回傳的那份會直接成為畫面上的 library，所以 dirty 必須是拿它來比。
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.pathname
+            : new URL(input.url).pathname;
+      if (path === "/api/model-library" && !init?.method) return Response.json(base);
+      if (init?.method === "PATCH" && path.startsWith("/api/model-library/models/"))
+        return Response.json(saved);
+      if (path.endsWith("/models") && path.startsWith("/api/model-library/connections"))
+        return Response.json({ models: [] });
+      return Response.json({ error: "UNEXPECTED_REQUEST" }, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+
+    expect((within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(within(row).getByLabelText("尺寸參數"), {
+      target: { value: "aspect_ratio" },
+    });
+    expect((within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    // 這一列以 entry.id 當 React key，存檔後只換 entry prop、不會 remount——把初始值凍在
+    // useState 裡的話，存成功了按鈕仍會一直亮著，使用者只能靠把每一格手動改回原值才消掉。
+    await waitFor(() =>
+      expect(
+        (within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled,
+      ).toBe(true),
+    );
+  });
+
   it("尺寸值留白或上限不是數字時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);

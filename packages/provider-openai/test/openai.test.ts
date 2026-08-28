@@ -14,7 +14,9 @@ import {
   extractOpenRouterImage,
   flattenMaskToBlack,
   maskAwareDataUrl,
+  SIZING_MODES_BY_SHAPE,
 } from "../src/index.js";
+import type { ImageModelProfile, ImageSizing } from "@slide-maker/core";
 
 // ---- minimal valid PNG builder (structure only; not real pixels) --------------
 
@@ -790,6 +792,65 @@ describe("OpenAiCompatibleImageProvider", () => {
       }).capabilities.maxReferenceImages,
     ).toBe(16);
   });
+
+  /**
+   * `SIZING_MODES_BY_SHAPE` 是模型庫寫入時的相容性檢查所依據的表。它與 transport 真正
+   * 認得的欄位若走散，後果正是這整個機制要消滅的那一種：設定通過驗證、送出時靜默 no-op。
+   * 所以逐一送一次請求，確認每一種「宣稱支援」的講法都真的落到 request body 上。
+   */
+  it("every sizing mode a transport advertises actually reaches the request body", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    const dataUrl = `data:image/png;base64,${b64}`;
+    const sizingFor = (mode: ImageSizing["mode"]): ImageSizing =>
+      mode === "size"
+        ? { mode, value: "1536x1024" }
+        : mode === "none"
+          ? { mode }
+          : { mode, resolution: "2k" };
+    /** 該 mode 應該在 body 上留下的欄位；`none` 是「三個都不該出現」。 */
+    const expectedField: Record<ImageSizing["mode"], string | undefined> = {
+      size: "size",
+      aspect_ratio: "aspect_ratio",
+      image_size: "image_config",
+      none: undefined,
+    };
+
+    for (const [shape, modes] of Object.entries(SIZING_MODES_BY_SHAPE)) {
+      for (const mode of modes) {
+        const profile: ImageModelProfile = { sizing: sizingFor(mode) };
+        const fake = await startFake((captured) =>
+          captured.path.includes("/chat/completions")
+            ? {
+                status: 200,
+                json: { choices: [{ message: { images: [{ image_url: { url: dataUrl } }] } }] },
+              }
+            : { status: 200, json: { data: [{ b64_json: b64 }] } },
+        );
+        try {
+          const provider = new OpenAiCompatibleImageProvider({
+            config:
+              shape === "openrouter-image"
+                ? { ...fake.config, baseUrl: `${fake.config.baseUrl}/images` }
+                : fake.config,
+            // 刻意用對不上任何家族的模型名：送出什麼只能由 profile 決定。
+            model: "vendor/unrecognised-image-model",
+            apiShape: shape as "images" | "chat" | "openrouter-image",
+            profile,
+          });
+          await provider.generate(imageRequest());
+          const body = fake.requests[0]!.body as Record<string, unknown>;
+          const field = expectedField[mode];
+          if (field) expect(body[field], `${shape} / ${mode}`).toBeDefined();
+          else
+            for (const absent of ["size", "aspect_ratio", "resolution", "image_config"])
+              expect(body[absent], `${shape} / ${mode}`).toBeUndefined();
+        } finally {
+          fake.server.closeAllConnections();
+          await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+        }
+      }
+    }
+  }, 30_000);
 
   it("images shape without references still uses /images/generations", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");

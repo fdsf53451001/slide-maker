@@ -67,8 +67,46 @@ interface ImageProfileForm {
   value: ImageModelProfile | undefined;
   /** 給 useRowAction 與 dirty 比較用的穩定字串。 */
   key: string;
-  initialKey: string;
   errors: { sizeValue?: string; maxRefs?: string; promptMax?: string };
+}
+
+interface ImageProfileFormState {
+  sizingMode: SizingMode | "";
+  sizeValue: string;
+  resolution: ImageResolutionTier;
+  maxRefs: string;
+  promptMax: string;
+}
+
+/** 把存下來的 profile 攤成表單欄位；沒設過就是一組空白（＝「（預設）」）。 */
+function imageProfileFormState(profile?: ImageModelProfile): ImageProfileFormState {
+  const sizing = profile?.sizing;
+  return {
+    sizingMode: sizing?.mode ?? "",
+    sizeValue: sizing?.mode === "size" ? sizing.value : "",
+    resolution:
+      sizing?.mode === "aspect_ratio" || sizing?.mode === "image_size" ? sizing.resolution : "2k",
+    maxRefs: profile?.maxReferenceImages !== undefined ? String(profile.maxReferenceImages) : "",
+    promptMax: profile?.promptMaxBytes !== undefined ? String(profile.promptMaxBytes) : "",
+  };
+}
+
+/**
+ * dirty 比較用的字串。
+ *
+ * **必須每次 render 從 `entry` 重算**，不可把初始值凍在 `useState` 裡：`ModelRow` 以
+ * `entry.id` 當 key，存檔後父層重抓模型庫只會換掉 `entry` prop、不會 remount，凍住的初始值
+ * 於是永遠停在打開那一刻——存檔成功了「儲存」按鈕卻一直亮著，使用者只能靠把每一格手動改
+ * 回原值才消得掉。同一列其他欄位比的都是活的 prop（`name !== entry.name`），本來就沒這問題。
+ */
+function imageProfileFormKey(state: ImageProfileFormState): string {
+  return [
+    state.sizingMode,
+    state.sizeValue.trim(),
+    state.resolution,
+    state.maxRefs.trim(),
+    state.promptMax.trim(),
+  ].join("\u0000");
 }
 
 function positiveIntError(raw: string, label: string): string | undefined {
@@ -79,22 +117,12 @@ function positiveIntError(raw: string, label: string): string | undefined {
 }
 
 function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
-  const initialSizing = initial?.sizing;
-  const [sizingMode, setSizingMode] = useState<SizingMode | "">(initialSizing?.mode ?? "");
-  const [sizeValue, setSizeValue] = useState(
-    initialSizing?.mode === "size" ? initialSizing.value : "",
-  );
-  const [resolution, setResolution] = useState<ImageResolutionTier>(
-    initialSizing?.mode === "aspect_ratio" || initialSizing?.mode === "image_size"
-      ? initialSizing.resolution
-      : "2k",
-  );
-  const [maxRefs, setMaxRefs] = useState(
-    initial?.maxReferenceImages !== undefined ? String(initial.maxReferenceImages) : "",
-  );
-  const [promptMax, setPromptMax] = useState(
-    initial?.promptMaxBytes !== undefined ? String(initial.promptMaxBytes) : "",
-  );
+  const [initialState] = useState(() => imageProfileFormState(initial));
+  const [sizingMode, setSizingMode] = useState<SizingMode | "">(initialState.sizingMode);
+  const [sizeValue, setSizeValue] = useState(initialState.sizeValue);
+  const [resolution, setResolution] = useState<ImageResolutionTier>(initialState.resolution);
+  const [maxRefs, setMaxRefs] = useState(initialState.maxRefs);
+  const [promptMax, setPromptMax] = useState(initialState.promptMax);
 
   const errors: ImageProfileForm["errors"] = {};
   if (sizingMode === "size" && !sizeValue.trim())
@@ -122,10 +150,7 @@ function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
           ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
           ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
         };
-  const key = [sizingMode, sizeValue.trim(), resolution, maxRefs.trim(), promptMax.trim()].join(
-    "\u0000",
-  );
-  const [initialKey] = useState(key);
+  const key = imageProfileFormKey({ sizingMode, sizeValue, resolution, maxRefs, promptMax });
   return {
     sizingMode,
     setSizingMode,
@@ -139,7 +164,6 @@ function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
     setPromptMax,
     value,
     key,
-    initialKey,
     errors,
   };
 }
@@ -1146,7 +1170,8 @@ function ModelRow({
     model !== entry.model ||
     connectionRef !== (entry.connectionRef ?? "") ||
     imageApi !== (entry.imageApi ?? "") ||
-    (showImageProfile && imageProfile.key !== imageProfile.initialKey);
+    (showImageProfile &&
+      imageProfile.key !== imageProfileFormKey(imageProfileFormState(entry.imageProfile)));
   const connections = connectionsFor(library, entry.providerKind);
   const availableModels =
     needsConnection(entry.providerKind) && connectionRef
