@@ -1,4 +1,5 @@
 import {
+  attachProviderCallFacts,
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
@@ -6,7 +7,12 @@ import {
   withProviderUsage,
 } from "@slide-maker/core";
 import { normalizePngToCanvas, validatePngStructure } from "@slide-maker/core/png-canvas";
-import { type OpenAiClientConfig, readImageAsDataUrl, requestJson } from "./http.js";
+import {
+  detectImageMediaType,
+  type OpenAiClientConfig,
+  readImageAsDataUrl,
+  requestJson,
+} from "./http.js";
 import { maskAwareDataUrl, parseDataUri, rasterToCanvasPng } from "./image-util.js";
 import { parseOpenRouterUsage } from "./usage.js";
 
@@ -51,8 +57,7 @@ export function extractOpenRouterImage(payload: unknown): { mediaType: string; b
   if (bytes.byteLength <= 0)
     throw new SafeProviderError("OPENAI_IMAGE_INVALID", "OpenRouter 圖片資料為空。");
   const declared = typeof first?.media_type === "string" ? first.media_type.toLowerCase() : "";
-  // media_type 可能省略（無法判別時）；交給下游用 magic bytes 正規化，這裡預設 png。
-  const mediaType = declared || "image/png";
+  const mediaType = detectImageMediaType(bytes) ?? (declared || "image/png");
   return { mediaType, bytes };
 }
 
@@ -106,13 +111,17 @@ export async function generateViaOpenRouter(
   // 且多一個 `cost`——那就是 (a) 的形狀，`parseOpenRouterUsage` 只是同一個函式的別名。
   // 先解 usage 再解圖：解不出圖是往返成功之後才失敗的，token 已經燒掉了。
   const usage = parseOpenRouterUsage(payload);
-  return withProviderUsage(usage, () => {
-    const { mediaType, bytes } = extractOpenRouterImage(payload);
-    // png 走結構驗證＋canvas 正規化；jpeg/webp 等改走 raster→canvas png 轉檔。
+  const { mediaType, bytes } = withProviderUsage(usage, () => extractOpenRouterImage(payload));
+  try {
     if (mediaType === "image/png") {
       validatePngStructure(Buffer.from(bytes));
       return { bytes: normalizePngToCanvas(bytes, request.width, request.height), usage };
     }
-    return { bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height), usage };
-  });
+    return {
+      bytes: await rasterToCanvasPng(bytes, mediaType, request.width, request.height),
+      usage,
+    };
+  } catch (error) {
+    throw attachProviderCallFacts(error, { usage });
+  }
 }

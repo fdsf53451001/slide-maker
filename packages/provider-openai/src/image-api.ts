@@ -186,7 +186,10 @@ export async function generateViaImagesApi(
     return { bytes: normalizePngToCanvas(raw, request.width, request.height), usage };
   }
   if (mediaType)
-    return { bytes: rasterToCanvasPng(raw, mediaType, request.width, request.height), usage };
+    return {
+      bytes: await rasterToCanvasPng(raw, mediaType, request.width, request.height),
+      usage,
+    };
   throw new SafeProviderError("OPENAI_IMAGE_INVALID", "Images API 回應的影像格式無法辨識。", {
     usage,
   });

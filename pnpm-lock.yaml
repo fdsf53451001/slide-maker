@@ -142,6 +142,9 @@ importers:
       '@slide-maker/core':
         specifier: workspace:*
         version: link:../core
+      sharp:
+        specifier: 0.35.3
+        version: 0.35.3(@types/node@24.13.3)
 
 packages:
 

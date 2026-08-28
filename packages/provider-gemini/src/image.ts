@@ -200,7 +200,7 @@ export class GeminiImageProvider implements ImageProvider {
     const { mediaType, bytes } = withProviderUsage(usage, () => extractInlineImage(payload));
     let png: Uint8Array;
     try {
-      png = rasterToCanvasPng(bytes, mediaType, request.width, request.height);
+      png = await rasterToCanvasPng(bytes, mediaType, request.width, request.height);
     } catch (error) {
       rethrowAsGeminiError(error, GEMINI_IMAGE_OUTPUT_FALLBACK);
     }

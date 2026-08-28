@@ -1,4 +1,5 @@
 import {
+  attachProviderCallFacts,
   buildImageGenerationContract,
   SafeProviderError,
   type ImageGenerationRequest,
@@ -126,11 +127,15 @@ export async function generateViaChat(
   // 這條走的是 /chat/completions，usage 形狀與文字／搜尋相同（見 usage.ts 的 (a)）。
   // 解圖失敗（模型不支援圖片輸出、回了純文字）也是往返成功之後才失敗，usage 要跟著錯誤走。
   const usage = parseChatCompletionsUsage(payload);
-  return withProviderUsage(usage, () => {
-    const { mediaType, bytes } = parseDataUri(extractChatImage(payload));
+  const { mediaType, bytes } = withProviderUsage(usage, () =>
+    parseDataUri(extractChatImage(payload)),
+  );
+  try {
     return {
-      bytes: rasterToCanvasPng(bytes, mediaType, request.width, request.height),
+      bytes: await rasterToCanvasPng(bytes, mediaType, request.width, request.height),
       usage,
     };
-  });
+  } catch (error) {
+    throw attachProviderCallFacts(error, { usage });
+  }
 }

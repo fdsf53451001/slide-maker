@@ -1,6 +1,7 @@
 import { Resvg } from "@resvg/resvg-js";
 import { SafeProviderError, type ImageGenerationRequest } from "@slide-maker/core";
 import { validatePngStructure } from "@slide-maker/core/png-canvas";
+import sharp from "sharp";
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const SUPPORTED_RASTER = ["image/png", "image/jpeg", "image/webp"];
@@ -22,20 +23,40 @@ function renderCanvasSvgToPng(
   width: number,
   height: number,
   failureMessage: string,
+  requireVisible = false,
 ): Uint8Array {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${inner}</svg>`;
-  let png: Uint8Array;
+  let rendered: ReturnType<Resvg["render"]>;
   try {
-    png = new Uint8Array(
-      new Resvg(svg, { fitTo: { mode: "width", value: width } }).render().asPng(),
-    );
+    rendered = new Resvg(svg, { fitTo: { mode: "width", value: width } }).render();
   } catch {
     throw new SafeProviderError("OPENAI_IMAGE_INVALID", failureMessage);
   }
+  if (requireVisible && !hasVisiblePixel(rendered.pixels))
+    throw new SafeProviderError("OPENAI_IMAGE_INVALID", "影像正規化後沒有可見像素。");
+  const png = new Uint8Array(rendered.asPng());
   if (png.byteLength <= 0 || png.byteLength > MAX_IMAGE_BYTES)
     throw new SafeProviderError("OPENAI_IMAGE_INVALID", "正規化後 PNG 大小不合法。");
   validatePngStructure(Buffer.from(png), width, height);
   return png;
+}
+
+function hasVisiblePixel(pixels: Buffer): boolean {
+  for (let i = 3; i < pixels.length; i += 4) if (pixels[i] !== 0) return true;
+  return false;
+}
+
+/** resvg 解不了 WebP（data URI 會靜默畫成全透明畫布）；先轉 PNG 再走既有 cover 正規化。 */
+async function webpToPng(bytes: Uint8Array): Promise<Uint8Array> {
+  try {
+    const png = await sharp(Buffer.from(bytes)).png().toBuffer();
+    if (png.byteLength <= 0 || png.byteLength > MAX_IMAGE_BYTES)
+      throw new SafeProviderError("OPENAI_IMAGE_INVALID", "影像正規化失敗。");
+    return new Uint8Array(png);
+  } catch (error) {
+    if (error instanceof SafeProviderError) throw error;
+    throw new SafeProviderError("OPENAI_IMAGE_INVALID", "影像正規化失敗。");
+  }
 }
 
 function assertSupportedRaster(mediaType: string): void {
@@ -44,19 +65,27 @@ function assertSupportedRaster(mediaType: string): void {
 }
 
 /** 把任意 raster（png/jpeg/webp）以 cover 方式正規化成 canvas 尺寸的 PNG。 */
-export function rasterToCanvasPng(
+export async function rasterToCanvasPng(
   bytes: Uint8Array,
   mediaType: string,
   width: number,
   height: number,
-): Uint8Array {
+): Promise<Uint8Array> {
   assertSupportedRaster(mediaType);
-  const dataUri = `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`;
+  let raster = bytes;
+  let type = mediaType;
+  const fromWebp = type === "image/webp";
+  if (fromWebp) {
+    raster = await webpToPng(raster);
+    type = "image/png";
+  }
+  const dataUri = `data:${type};base64,${Buffer.from(raster).toString("base64")}`;
   return renderCanvasSvgToPng(
     `<image href="${dataUri}" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`,
     width,
     height,
     "影像正規化失敗。",
+    fromWebp,
   );
 }
 

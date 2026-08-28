@@ -11,6 +11,7 @@ import {
   OpenAiCompatibleImageProvider,
   OpenAiStructuredTextProvider,
   OpenAiWebSearchProvider,
+  extractOpenRouterImage,
   flattenMaskToBlack,
   maskAwareDataUrl,
 } from "../src/index.js";
@@ -251,6 +252,7 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(call.path).toBe("/v1/images/generations");
     expect((call.body as { response_format?: string }).response_format).toBe("b64_json");
     expect((call.body as { model?: string }).model).toBe("gpt-image-1");
+    expect((call.body as { size?: string }).size).toBe("1536x1024");
     const prompt = (call.body as { prompt?: string }).prompt ?? "";
     expect(prompt).toContain("左文右圖");
     expect(prompt).toContain("明亮留白");
@@ -824,6 +826,41 @@ describe("OpenAiCompatibleImageProvider", () => {
       expect(call.body).not.toHaveProperty("input_references");
       const prompt = (call.body as { prompt?: string }).prompt ?? "";
       expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
+    },
+    RASTER_TIMEOUT_MS,
+  );
+
+  it("openrouter extract prefers magic bytes over a lying media_type", () => {
+    const webpB64 =
+      "UklGRjoAAABXRUJQVlA4IC4AAADQAQCdASoIAAgAAUAmJaACdLoB+AADsAD+73bX/hV8bkLW//voB70A96Af4IAA";
+    const extracted = extractOpenRouterImage({
+      data: [{ b64_json: webpB64, media_type: "image/png" }],
+    });
+    expect(extracted.mediaType).toBe("image/webp");
+  });
+
+  it(
+    "openrouter shape normalizes a webp response to a canvas PNG with visible pixels",
+    async () => {
+      const webpB64 =
+        "UklGRjoAAABXRUJQVlA4IC4AAADQAQCdASoIAAgAAUAmJaACdLoB+AADsAD+73bX/hV8bkLW//voB70A96Af4IAA";
+      active = await startFake(() => ({
+        status: 200,
+        json: { data: [{ b64_json: webpB64, media_type: "image/webp" }] },
+      }));
+      const provider = new OpenAiCompatibleImageProvider({
+        config: { ...active.config, baseUrl: `${active.config.baseUrl}/images` },
+        model: "meta/muse-image",
+        apiShape: "openrouter-image",
+      });
+      const image = await provider.generate(imageRequest());
+      expect(image.mediaType).toBe("image/png");
+      expect(image.parameters.transport).toBe("openrouter-image");
+      expect(pngSize(image.bytes)).toEqual({ width: 1920, height: 1080 });
+      const pixel = pixelAt(decodePixels(image.bytes), 960, 540);
+      expect(pixel[3] ?? 0).toBeGreaterThan(0);
+      expect(pixel[0] ?? 0).toBeGreaterThan(pixel[1] ?? 0);
+      expect(pixel[0] ?? 0).toBeGreaterThan(pixel[2] ?? 0);
     },
     RASTER_TIMEOUT_MS,
   );
