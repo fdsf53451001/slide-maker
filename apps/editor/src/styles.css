@@ -5086,6 +5086,32 @@ header {
   flex-wrap: wrap;
   gap: 8px;
 }
+/*
+  影像參數是「這個模型怎麼講尺寸」那組欄位，數量比一列塞得下的多，所以整組換到自己那一
+  行（flex-basis:100%）；上面的分隔線是為了讓它讀起來屬於同一列而不是下一筆模型。
+*/
+.model-library-image-profile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex-basis: 100%;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-1);
+}
+.model-library-image-profile-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.model-library-image-profile select,
+.model-library-image-profile input {
+  flex: 1 1 150px;
+  min-width: 0;
+}
 .model-library-inline-wrap {
   display: flex;
   flex: 1 1 160px;

@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type {
   ConnectionProtocol,
+  ImageModelProfile,
+  ImageResolutionTier,
+  ImageSizing,
   ModelCapability,
   ModelCombination,
   ModelConnection,
@@ -31,6 +34,179 @@ const CAPABILITIES: ModelCapability[] = ["image", "text", "search"];
 const KINDS: ProviderKind[] = ["mock", "openai", "gemini", "local"];
 const PROTOCOLS: ConnectionProtocol[] = ["openai", "gemini"];
 const OPENAI_IMAGE_APIS: OpenAiImageApi[] = ["images", "chat", "openrouter-image"];
+
+// ── 影像參數（imageProfile）────────────────────────────────────────────────────
+//
+// 各家影像端點對「輸出尺寸怎麼講」用的欄位名不同，但那是**參數**差異而不是形狀差異。
+// 由使用者在這裡選定，好過在 transport 裡用模型名前綴猜——猜不中時整段靜默失效，而
+// 失效的樣子與沒寫過完全相同（`packages/core/src/model-profile.ts` 有完整說明）。
+// 「（預設）」＝不存 imageProfile，行為與加這個欄位之前逐位元相同。
+
+type SizingMode = ImageSizing["mode"];
+const SIZING_MODES: SizingMode[] = ["size", "aspect_ratio", "image_size", "none"];
+const SIZING_MODE_LABEL: Record<SizingMode, string> = {
+  size: "size：像素字串（gpt-image 系）",
+  aspect_ratio: "aspect_ratio：比例＋解析度（Grok Imagine）",
+  image_size: "image_size：解析度檔位（Gemini 系）",
+  none: "不送尺寸參數",
+};
+const RESOLUTION_TIERS: ImageResolutionTier[] = ["1k", "2k", "4k"];
+
+interface ImageProfileForm {
+  sizingMode: SizingMode | "";
+  setSizingMode: (value: SizingMode | "") => void;
+  sizeValue: string;
+  setSizeValue: (value: string) => void;
+  resolution: ImageResolutionTier;
+  setResolution: (value: ImageResolutionTier) => void;
+  maxRefs: string;
+  setMaxRefs: (value: string) => void;
+  promptMax: string;
+  setPromptMax: (value: string) => void;
+  /** 目前欄位組出來的 profile；全部留白時是 undefined（＝不存這個欄位）。 */
+  value: ImageModelProfile | undefined;
+  /** 給 useRowAction 與 dirty 比較用的穩定字串。 */
+  key: string;
+  initialKey: string;
+  errors: { sizeValue?: string; maxRefs?: string; promptMax?: string };
+}
+
+function positiveIntError(raw: string, label: string): string | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  if (!/^\d+$/.test(value)) return `${label}只接受數字（正整數）；留空則沿用預設。`;
+  return Number(value) > 0 ? undefined : `${label}需大於 0；留空則沿用預設。`;
+}
+
+function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
+  const initialSizing = initial?.sizing;
+  const [sizingMode, setSizingMode] = useState<SizingMode | "">(initialSizing?.mode ?? "");
+  const [sizeValue, setSizeValue] = useState(
+    initialSizing?.mode === "size" ? initialSizing.value : "",
+  );
+  const [resolution, setResolution] = useState<ImageResolutionTier>(
+    initialSizing?.mode === "aspect_ratio" || initialSizing?.mode === "image_size"
+      ? initialSizing.resolution
+      : "2k",
+  );
+  const [maxRefs, setMaxRefs] = useState(
+    initial?.maxReferenceImages !== undefined ? String(initial.maxReferenceImages) : "",
+  );
+  const [promptMax, setPromptMax] = useState(
+    initial?.promptMaxBytes !== undefined ? String(initial.promptMaxBytes) : "",
+  );
+
+  const errors: ImageProfileForm["errors"] = {};
+  if (sizingMode === "size" && !sizeValue.trim())
+    errors.sizeValue = "請填尺寸（如 1536x1024）；這個端點靠它決定輸出解析度。";
+  const maxRefsError = positiveIntError(maxRefs, "參考圖上限");
+  if (maxRefsError) errors.maxRefs = maxRefsError;
+  const promptMaxError = positiveIntError(promptMax, "prompt 上限");
+  if (promptMaxError) errors.promptMax = promptMaxError;
+
+  const sizing: ImageSizing | undefined =
+    sizingMode === "size"
+      ? { mode: "size", value: sizeValue.trim() }
+      : sizingMode === "aspect_ratio" || sizingMode === "image_size"
+        ? { mode: sizingMode, resolution }
+        : sizingMode === "none"
+          ? { mode: "none" }
+          : undefined;
+  const maxReferenceImages = maxRefs.trim() ? Number(maxRefs) : undefined;
+  const promptMaxBytes = promptMax.trim() ? Number(promptMax) : undefined;
+  const value: ImageModelProfile | undefined =
+    sizing === undefined && maxReferenceImages === undefined && promptMaxBytes === undefined
+      ? undefined
+      : {
+          ...(sizing ? { sizing } : {}),
+          ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
+          ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+        };
+  const key = [sizingMode, sizeValue.trim(), resolution, maxRefs.trim(), promptMax.trim()].join(
+    "\u0000",
+  );
+  const [initialKey] = useState(key);
+  return {
+    sizingMode,
+    setSizingMode,
+    sizeValue,
+    setSizeValue,
+    resolution,
+    setResolution,
+    maxRefs,
+    setMaxRefs,
+    promptMax,
+    setPromptMax,
+    value,
+    key,
+    initialKey,
+    errors,
+  };
+}
+
+function ImageProfileFields({ form }: { form: ImageProfileForm }) {
+  const showResolution = form.sizingMode === "aspect_ratio" || form.sizingMode === "image_size";
+  return (
+    <div className="model-library-image-profile">
+      <span className="model-library-image-profile-label">影像參數</span>
+      <select
+        aria-label="尺寸參數"
+        value={form.sizingMode}
+        onChange={(event) => form.setSizingMode(event.target.value as SizingMode | "")}
+      >
+        <option value="">尺寸參數（預設：依通道與模型推導）</option>
+        {SIZING_MODES.map((mode) => (
+          <option key={mode} value={mode}>
+            {SIZING_MODE_LABEL[mode]}
+          </option>
+        ))}
+      </select>
+      {form.sizingMode === "size" && (
+        <input
+          aria-label="尺寸值"
+          placeholder="1536x1024"
+          value={form.sizeValue}
+          onChange={(event) => form.setSizeValue(event.target.value)}
+        />
+      )}
+      {showResolution && (
+        <select
+          aria-label="解析度檔位"
+          value={form.resolution}
+          onChange={(event) => form.setResolution(event.target.value as ImageResolutionTier)}
+        >
+          {RESOLUTION_TIERS.map((tier) => (
+            <option key={tier} value={tier}>
+              {tier.toUpperCase()}
+            </option>
+          ))}
+        </select>
+      )}
+      <input
+        aria-label="參考圖上限"
+        inputMode="numeric"
+        placeholder="參考圖上限（留空沿用）"
+        value={form.maxRefs}
+        onChange={(event) => form.setMaxRefs(event.target.value)}
+      />
+      <input
+        aria-label="prompt 上限"
+        inputMode="numeric"
+        placeholder="prompt 上限 bytes（留空不限）"
+        value={form.promptMax}
+        onChange={(event) => form.setPromptMax(event.target.value)}
+      />
+      {form.errors.sizeValue && <FieldError>{form.errors.sizeValue}</FieldError>}
+      {form.errors.maxRefs && <FieldError>{form.errors.maxRefs}</FieldError>}
+      {form.errors.promptMax && <FieldError>{form.errors.promptMax}</FieldError>}
+    </div>
+  );
+}
+
+/** 影像參數只對真的會打 HTTP 影像端點的 entry 有意義（mock／local 不打）。 */
+function supportsImageProfile(capability: ModelCapability, kind: ProviderKind): boolean {
+  return capability === "image" && needsConnection(kind);
+}
 
 /** 需要連線的 provider kind（HTTP 端點兩家）；mock／local 在本機跑，沒有連線概念。 */
 function needsConnection(kind: ProviderKind): kind is ConnectionProtocol {
@@ -701,6 +877,7 @@ function ModelsSection({
   const [model, setModel] = useState("");
   const [connectionRef, setConnectionRef] = useState("");
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">("");
+  const imageProfile = useImageProfileForm();
   const connections = connectionsFor(library, providerKind);
   const availableModels =
     needsConnection(providerKind) && connectionRef
@@ -713,7 +890,7 @@ function ModelsSection({
   }>({});
   const { pending, rowError, act } = useRowAction(
     run,
-    [name, capability, providerKind, model, connectionRef, imageApi].join(" "),
+    [name, capability, providerKind, model, connectionRef, imageApi, imageProfile.key].join(" "),
   );
   /**
    * 送出前擋掉會變成「懸空 entry」的組合，訊息顯示在缺漏的那個欄位旁邊。
@@ -739,7 +916,10 @@ function ModelsSection({
         next.connectionRef = `${KIND_LABEL[providerKind]}模型一定要指定連線，否則不會有任何端點可打。`;
     }
     setFieldErrors(next);
-    return !next.name && !next.model && !next.connectionRef;
+    const profileOk =
+      !supportsImageProfile(capability, providerKind) ||
+      Object.keys(imageProfile.errors).length === 0;
+    return !next.name && !next.model && !next.connectionRef && profileOk;
   };
   const create = async () => {
     if (!validate()) return;
@@ -751,12 +931,19 @@ function ModelsSection({
         model: model.trim(),
         ...(needsConnection(providerKind) && connectionRef ? { connectionRef } : {}),
         ...(providerKind === "openai" && capability === "image" && imageApi ? { imageApi } : {}),
+        ...(supportsImageProfile(capability, providerKind) && imageProfile.value
+          ? { imageProfile: imageProfile.value }
+          : {}),
       }),
     );
     if (!ok) return; // 保留已填欄位讓使用者直接重試
     setName("");
     setModel("");
     setImageApi("");
+    imageProfile.setSizingMode("");
+    imageProfile.setSizeValue("");
+    imageProfile.setMaxRefs("");
+    imageProfile.setPromptMax("");
     setFieldErrors({});
   };
   return (
@@ -909,6 +1096,9 @@ function ModelsSection({
             ))}
           </select>
         )}
+        {supportsImageProfile(capability, providerKind) && (
+          <ImageProfileFields form={imageProfile} />
+        )}
         {/* 同「新增連線」：不靠 disabled 擋，按下去之後在缺漏的欄位旁邊講清楚缺什麼。 */}
         <button className="primary" disabled={busy} onClick={create}>
           {pending === "create" ? "新增中…" : "新增模型"}
@@ -938,9 +1128,11 @@ function ModelRow({
   const [model, setModel] = useState(entry.model);
   const [connectionRef, setConnectionRef] = useState(entry.connectionRef ?? "");
   const [imageApi, setImageApi] = useState<OpenAiImageApi | "">(entry.imageApi ?? "");
+  const imageProfile = useImageProfileForm(entry.imageProfile);
+  const showImageProfile = supportsImageProfile(entry.capability, entry.providerKind);
   const { pending, rowError, act } = useRowAction(
     run,
-    [name, model, connectionRef, imageApi].join(" "),
+    [name, model, connectionRef, imageApi, imageProfile.key].join(" "),
   );
   // 刪掉模型會讓引用它的組合欄位變成懸空 ref；確認文案要講得出是哪幾個組合。
   const usedBy = library.combinations.filter(
@@ -953,7 +1145,8 @@ function ModelRow({
     name !== entry.name ||
     model !== entry.model ||
     connectionRef !== (entry.connectionRef ?? "") ||
-    imageApi !== (entry.imageApi ?? "");
+    imageApi !== (entry.imageApi ?? "") ||
+    (showImageProfile && imageProfile.key !== imageProfile.initialKey);
   const connections = connectionsFor(library, entry.providerKind);
   const availableModels =
     needsConnection(entry.providerKind) && connectionRef
@@ -1017,10 +1210,13 @@ function ModelRow({
           ))}
         </select>
       )}
+      {showImageProfile && <ImageProfileFields form={imageProfile} />}
       <div className="model-library-row-actions">
         <button
           disabled={busy || !dirty}
-          onClick={() =>
+          onClick={() => {
+            // 欄位有誤時不送出：訊息已經顯示在出問題的那一格旁邊。
+            if (showImageProfile && Object.keys(imageProfile.errors).length > 0) return;
             void act("save", "儲存模型", () =>
               api.updateModel(entry.id, {
                 name,
@@ -1031,9 +1227,12 @@ function ModelRow({
                 ...(entry.providerKind === "openai" && entry.capability === "image"
                   ? { imageApi: imageApi || undefined }
                   : {}),
+                // 全部留白時送 null 明確清掉；送 undefined 的話 key 會在 JSON 裡消失，
+                // PATCH 就變成「不動這個欄位」，使用者永遠清不掉已經設過的參數。
+                ...(showImageProfile ? { imageProfile: imageProfile.value ?? null } : {}),
               }),
-            )
-          }
+            );
+          }}
         >
           {pending === "save" ? "儲存中…" : "儲存"}
         </button>
@@ -1271,7 +1470,8 @@ function SystemSection({
     <section className="dashboard-section model-library-section">
       <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
       <p className="model-library-hint">
-        影響執行而非品質的維運旋鈕。OCR 相關設定改動需重啟伺服器才生效。連線列若另外填了逾時，以連線的為準。
+        影響執行而非品質的維運旋鈕。OCR
+        相關設定改動需重啟伺服器才生效。連線列若另外填了逾時，以連線的為準。
       </p>
       <div className="model-library-create">
         <label className="model-library-combo-field">

@@ -1,7 +1,7 @@
 import {
   attachProviderCallFacts,
   buildImageGenerationContract,
-  type ImageModelProfile,
+  type ResolvedImageProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
@@ -77,7 +77,7 @@ export async function generateViaOpenRouter(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   const limit = referenceLimitFor("openrouter-image", profile);

@@ -1,6 +1,7 @@
 import type {
   EditableTextBox,
   GenerationJob,
+  ImageModelProfile,
   ModelCombination,
   ModelConnection,
   ModelEntry,
@@ -740,7 +741,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateModel: (id: string, patch: Partial<Omit<ModelEntry, "id">>) =>
+  updateModel: (
+    id: string,
+    patch: Partial<Omit<ModelEntry, "id" | "imageProfile">> & {
+      imageProfile?: ImageModelProfile | null;
+    },
+  ) =>
     request<ModelLibrary>(`/api/model-library/models/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),

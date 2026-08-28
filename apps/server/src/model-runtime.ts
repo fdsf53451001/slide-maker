@@ -254,13 +254,16 @@ export class ModelRuntime {
     if (entry.providerKind === "mock") return new MockImageProvider(entry.id);
     if (entry.providerKind === "local")
       return new LocalInpaintProvider({ id: entry.id, root: this.#base.localToolsRoot });
+    // profile 是 entry 上的參數覆寫；沒設就整個不傳，provider 用 transport 推導的預設值。
+    const profile = entry.imageProfile ? { profile: entry.imageProfile } : {};
     if (entry.providerKind === "gemini")
-      return new GeminiImageProvider({ id: entry.id, config, model: entry.model });
+      return new GeminiImageProvider({ id: entry.id, config, model: entry.model, ...profile });
     return new OpenAiCompatibleImageProvider({
       id: entry.id,
       config,
       model: entry.model,
       ...(entry.imageApi ? { apiShape: entry.imageApi } : {}),
+      ...profile,
     });
   }
 

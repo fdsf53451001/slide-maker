@@ -1,4 +1,4 @@
-import { type ImageModelProfile, SafeProviderError, utf8ByteLength } from "@slide-maker/core";
+import { type ResolvedImageProfile, SafeProviderError, utf8ByteLength } from "@slide-maker/core";
 
 /**
  * Maintained image transports:
@@ -29,7 +29,7 @@ export const MAX_REFERENCES_BY_SHAPE: Record<OpenAiImageApiShape, number> = {
  * profile 宣告的張數上限只能**往下**調：端點自身的上限是物理限制，設得比它高只會換來
  * gateway 的不透明 400，而 `jobs.ts` 的 `limitReferences` 會以為還塞得下。
  */
-export function referenceLimitFor(shape: OpenAiImageApiShape, profile: ImageModelProfile): number {
+export function referenceLimitFor(shape: OpenAiImageApiShape, profile: ResolvedImageProfile): number {
   const hard = MAX_REFERENCES_BY_SHAPE[shape];
   return profile.maxReferenceImages === undefined
     ? hard
@@ -40,7 +40,7 @@ export function referenceLimitFor(shape: OpenAiImageApiShape, profile: ImageMode
  * prompt 超過 profile 宣告的位元組上限時**丟具名錯誤，不截斷**（理由見
  * `imageModelProfileSchema.promptMaxBytes`）。未設上限＝不檢查，這是預設。
  */
-export function assertPromptBudget(prompt: string, profile: ImageModelProfile): void {
+export function assertPromptBudget(prompt: string, profile: ResolvedImageProfile): void {
   const max = profile.promptMaxBytes;
   if (max === undefined) return;
   const bytes = utf8ByteLength(prompt);
@@ -85,7 +85,7 @@ export function defaultImageProfile(
   shape: OpenAiImageApiShape,
   model: string,
   requestSize?: string,
-): ImageModelProfile {
+): ResolvedImageProfile {
   if (shape === "chat")
     return {
       sizing: looksLikeGeminiFamily(model)

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageModelProfileSchema } from "./model-profile.js";
 import { SCHEMA_VERSION } from "./schemas.js";
 
 /**
@@ -65,6 +66,11 @@ export type ModelConnection = z.infer<typeof modelConnectionSchema>;
 /**
  * 模型層：一個 entry 服務單一能力。openai／gemini kind 才有 connectionRef；
  * imageApi 專屬 openai 影像（Gemini 只有一種 transport）。
+ *
+ * `imageProfile` 是這個影像模型的參數覆寫（尺寸講法、參考圖上限、prompt 上限）。沒填的
+ * 欄位沿用 transport 推導出的預設值，整個沒設就完全等同於加這個欄位之前的行為。它存在的
+ * 理由見 `model-profile.ts`：欄位差異若寫回 transport 就只能靠模型名判斷，而模型名判斷
+ * 必定會漏。
  */
 export const modelEntrySchema = z.object({
   id: z.string().min(1),
@@ -74,6 +80,7 @@ export const modelEntrySchema = z.object({
   model: z.string().trim().default(""),
   connectionRef: z.string().optional(),
   imageApi: openAiImageApiSchema.optional(),
+  imageProfile: imageModelProfileSchema.optional(),
 });
 export type ModelEntry = z.infer<typeof modelEntrySchema>;
 

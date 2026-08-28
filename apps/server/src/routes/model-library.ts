@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { z } from "zod";
 import {
+  imageModelProfileSchema,
+  type ImageSizing,
   isRedactedKey,
   modelCombinationSchema,
   modelConnectionSchema,
@@ -35,6 +37,55 @@ function assertConnectionProtocol(draft: ModelLibrary, entry: ModelEntry): void 
     throw new ModelLibraryError(
       "CONNECTION_PROTOCOL_MISMATCH",
       `模型「${entry.name}」是 ${entry.providerKind} 類型，不能引用 ${connection.protocol} 協定的連線「${connection.name}」。`,
+    );
+}
+
+/**
+ * 影像 profile 的尺寸講法必須是這條 transport 說得出來的。
+ *
+ * 這幾組是**協定**而不是偏好：`size` 是 OpenAI images 端點的欄位、`image_size` 是 Gemini
+ * 系（chat translator 與原生 generateContent）的欄位，兩邊沒有對應翻譯。存下一個對不上的
+ * 組合不會有任何立即症狀——transport 會靜默不送尺寸，於是模型回一張只有 1376×768 的圖，
+ * 正規化放大 1.40× 後糊掉，而使用者只會覺得「這個模型畫得比較差」。所以在寫入時就擋掉，
+ * 這是使用者現在改得掉的設定問題。
+ */
+const IMAGE_SIZING_MODES: Record<string, ReadonlyArray<ImageSizing["mode"]>> = {
+  gemini: ["image_size", "none"],
+  images: ["size", "aspect_ratio", "none"],
+  chat: ["image_size", "none"],
+  "openrouter-image": ["none"],
+};
+const SIZING_MODE_LABEL: Record<ImageSizing["mode"], string> = {
+  size: "size（像素字串，如 1536x1024）",
+  aspect_ratio: "aspect_ratio（比例＋解析度檔位）",
+  image_size: "image_size（解析度檔位）",
+  none: "不送尺寸參數",
+};
+
+function assertImageProfile(entry: ModelEntry): void {
+  const profile = entry.imageProfile;
+  if (!profile) return;
+  if (entry.capability !== "image")
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_NOT_APPLICABLE",
+      `模型「${entry.name}」不是影像模型，影像參數對它沒有作用；請改設能力為影像，或清掉這些參數。`,
+    );
+  if (entry.providerKind !== "openai" && entry.providerKind !== "gemini")
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_NOT_APPLICABLE",
+      `模型「${entry.name}」是 ${entry.providerKind} 類型，不會打 HTTP 影像端點，影像參數對它沒有作用；請清掉這些參數。`,
+    );
+  if (!profile.sizing) return;
+  const transport = entry.providerKind === "gemini" ? "gemini" : (entry.imageApi ?? "images");
+  const allowed = IMAGE_SIZING_MODES[transport] ?? [];
+  if (!allowed.includes(profile.sizing.mode))
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_SIZING_UNSUPPORTED",
+      `模型「${entry.name}」走的是 ${transport} 通道，它的尺寸參數只支援：${allowed
+        .map((mode) => SIZING_MODE_LABEL[mode])
+        .join(
+          "、",
+        )}。請改選其中一種，或改用支援 ${SIZING_MODE_LABEL[profile.sizing.mode]} 的影像 API。`,
     );
 }
 
@@ -91,7 +142,12 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
     .partial()
     .extend({ timeoutMs: z.number().int().positive().nullable().optional() });
   const modelCreateSchema = modelEntrySchema.omit({ id: true });
-  const modelPatchSchema = modelEntrySchema.omit({ id: true }).partial();
+  // imageProfile 的 `null` 語意同連線的 timeoutMs：明確清掉這個欄位。送 undefined 的話
+  // key 會在 JSON 裡消失，PATCH 就變成「不動它」，使用者永遠清不掉設過的參數。
+  const modelPatchSchema = modelEntrySchema
+    .omit({ id: true })
+    .partial()
+    .extend({ imageProfile: imageModelProfileSchema.nullable().optional() });
   const combinationCreateSchema = modelCombinationSchema.omit({ id: true });
   const combinationPatchSchema = modelCombinationSchema.omit({ id: true }).partial();
 
@@ -171,6 +227,7 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
     const library = await mutateLibrary((draft) => {
       const entry = modelEntrySchema.parse({ ...input, id });
       assertConnectionProtocol(draft, entry);
+      assertImageProfile(entry);
       draft.models.push(entry);
     });
     response.status(201).json(library);
@@ -182,8 +239,12 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
     const library = await mutateLibrary((draft) => {
       const entry = draft.models.find((item) => item.id === modelId);
       if (!entry) throw new Error("Model not found");
-      Object.assign(entry, patch);
+      const { imageProfile, ...rest } = patch;
+      Object.assign(entry, rest);
+      if (imageProfile === null) delete entry.imageProfile;
+      else if (imageProfile !== undefined) entry.imageProfile = imageProfile;
       assertConnectionProtocol(draft, entry);
+      assertImageProfile(entry);
     });
     response.json(library);
   });

@@ -1,5 +1,7 @@
 import {
   type ImageModelProfile,
+  type ResolvedImageProfile,
+  resolveImageProfile,
   SafeProviderError,
   type GeneratedImage,
   type ImageGenerationContext,
@@ -32,8 +34,9 @@ export interface OpenAiImageOptions {
    */
   requestSize?: string;
   /**
-   * 這個模型的參數設定。未給時由 transport ＋ 模型名推導（見 `defaultImageProfile()`）。
-   * 推導只發生在這裡，送出請求時一律只讀這個物件。
+   * 這個模型的參數覆寫（模型庫 entry 上存的那份）。沒填的欄位沿用 transport ＋ 模型名
+   * 推導出的預設值（見 `defaultImageProfile()`）。推導只發生在建構這一刻，送出請求時
+   * 一律只讀 resolve 之後的物件。
    */
   profile?: ImageModelProfile;
   /** Registry id 覆寫（模型庫 entry id）。未設回退 "openai-image"。 */
@@ -48,14 +51,16 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   readonly capabilities: ImageProviderCapabilities;
   readonly #options: OpenAiImageOptions;
   readonly #shape: OpenAiImageApiShape;
-  readonly #profile: ImageModelProfile;
+  readonly #profile: ResolvedImageProfile;
 
   constructor(options: OpenAiImageOptions) {
     this.id = options.id ?? "openai-image";
     this.#options = options;
     this.#shape = options.apiShape ?? "images";
-    this.#profile =
-      options.profile ?? defaultImageProfile(this.#shape, options.model, options.requestSize);
+    this.#profile = resolveImageProfile(
+      defaultImageProfile(this.#shape, options.model, options.requestSize),
+      options.profile,
+    );
     // 兩種 transport 都支援參考圖：chat 走 image_url parts；images 走 /images/edits 的 image[] 陣列。
     this.capabilities = {
       fullSlideGeneration: true,

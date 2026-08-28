@@ -2,7 +2,7 @@ import {
   aspectRatioLabel,
   attachProviderCallFacts,
   buildImageGenerationContract,
-  type ImageModelProfile,
+  type ResolvedImageProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
@@ -66,7 +66,7 @@ export function extractChatImage(payload: unknown): string {
  * `image_size`。
  */
 function imageConfigFields(
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   request: ImageGenerationRequest,
 ): { image_config: { image_size: string; aspect_ratio?: string } } | undefined {
   const sizing = profile.sizing;
@@ -97,7 +97,7 @@ export async function generateViaChat(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   const limit = referenceLimitFor("chat", profile);

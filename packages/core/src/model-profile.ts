@@ -46,8 +46,13 @@ export const imageSizingSchema = z.discriminatedUnion("mode", [
 ]);
 export type ImageSizing = z.infer<typeof imageSizingSchema>;
 
+/**
+ * 模型庫 entry 上存的 profile：**每個欄位都是覆寫**，沒填的沿用 transport 推導出的預設值
+ * （`resolveImageProfile()`）。三個旋鈕彼此正交——只想給某個模型設 prompt 上限、不動尺寸
+ * 講法，是完全合理的一種設定。
+ */
 export const imageModelProfileSchema = z.object({
-  sizing: imageSizingSchema,
+  sizing: imageSizingSchema.optional(),
   /**
    * 單次請求最多附幾張影像。未設＝沿用 transport 的預設（chat／openrouter 8、images 16）。
    * 這個值會進 `capabilities.maxReferenceImages`，`jobs.ts` 的 `limitReferences` 靠它在
@@ -65,6 +70,31 @@ export const imageModelProfileSchema = z.object({
   promptMaxBytes: z.number().int().positive().optional(),
 });
 export type ImageModelProfile = z.infer<typeof imageModelProfileSchema>;
+
+/**
+ * provider 實際使用的 profile：`sizing` 一定有值（transport 的預設值填滿了它）。
+ * transport 只讀這個型別，不必到處處理 undefined。
+ */
+export interface ResolvedImageProfile {
+  sizing: ImageSizing;
+  maxReferenceImages?: number;
+  promptMaxBytes?: number;
+}
+
+/** 以 entry 的覆寫蓋過 transport 推導的預設值；沒填的欄位一律沿用預設。 */
+export function resolveImageProfile(
+  base: ResolvedImageProfile,
+  override?: ImageModelProfile,
+): ResolvedImageProfile {
+  if (!override) return base;
+  const maxReferenceImages = override.maxReferenceImages ?? base.maxReferenceImages;
+  const promptMaxBytes = override.promptMaxBytes ?? base.promptMaxBytes;
+  return {
+    sizing: override.sizing ?? base.sizing,
+    ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
+    ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+  };
+}
 
 /** 16:9 判定的容差：兩條既有路徑（chat translator 與 Gemini 原生）用的都是這個值。 */
 const ASPECT_TOLERANCE = 0.02;

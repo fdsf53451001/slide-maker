@@ -377,6 +377,95 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   });
 });
 
+describe("ModelLibrary 影像參數", () => {
+  /** 影像 entry 那一列；`libraryWithConnection` 裡是 image-1（openai／gpt-image-2）。 */
+  const imageRow = async (): Promise<HTMLElement> => {
+    await waitFor(() => expect(screen.getAllByLabelText("模型名稱").length).toBeGreaterThan(0));
+    const nameInput = screen
+      .getAllByLabelText("模型名稱")
+      .find((node) => (node as HTMLInputElement).value === "GPT 影像") as HTMLElement;
+    return nameInput.closest(".model-library-row") as HTMLElement;
+  };
+
+  it("儲存影像模型時把選定的尺寸參數送出", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+
+    fireEvent.change(within(row).getByLabelText("尺寸參數"), {
+      target: { value: "aspect_ratio" },
+    });
+    fireEvent.change(within(row).getByLabelText("解析度檔位"), { target: { value: "2k" } });
+    fireEvent.change(within(row).getByLabelText("prompt 上限"), { target: { value: "8000" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body))).toMatchObject({
+      imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" }, promptMaxBytes: 8000 },
+    });
+  });
+
+  it("欄位全部留白時送 null，才清得掉已經設過的參數", async () => {
+    const base = libraryWithConnection();
+    const fetchMock = stubLibraryFetch({
+      ...base,
+      models: base.models.map((entry) =>
+        entry.id === "image-1"
+          ? { ...entry, imageProfile: { sizing: { mode: "size", value: "1536x1024" } } }
+          : entry,
+      ),
+    });
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+
+    // 送 undefined 的話 key 會在 JSON 裡消失，PATCH 就變成「不動這個欄位」。
+    fireEvent.change(within(row).getByLabelText("尺寸參數"), { target: { value: "" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    const body = JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body)) as {
+      imageProfile: unknown;
+    };
+    expect(body.imageProfile).toBeNull();
+  });
+
+  it("尺寸值留白或上限不是數字時就地報錯，且不送出請求", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+
+    fireEvent.change(within(row).getByLabelText("尺寸參數"), { target: { value: "size" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    expect(
+      within(row)
+        .getAllByRole("alert")
+        .some((node) => /請填尺寸/.test(node.textContent ?? "")),
+    ).toBe(true);
+
+    fireEvent.change(within(row).getByLabelText("尺寸值"), { target: { value: "1536x1024" } });
+    fireEvent.change(within(row).getByLabelText("參考圖上限"), { target: { value: "abc" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    expect(
+      within(row)
+        .getAllByRole("alert")
+        .some((node) => /只接受數字/.test(node.textContent ?? "")),
+    ).toBe(true);
+    expect(writeRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it("文字模型那一列沒有影像參數欄位", async () => {
+    stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    // 「GPT 文字」也是組合那條文字下拉的選中值，故限定成模型列上的名稱輸入框。
+    await waitFor(() => expect(screen.getAllByLabelText("模型名稱").length).toBeGreaterThan(0));
+    const nameInput = screen
+      .getAllByLabelText("模型名稱")
+      .find((node) => (node as HTMLInputElement).value === "GPT 文字") as HTMLElement;
+    const row = nameInput.closest(".model-library-row") as HTMLElement;
+    expect(within(row).queryByLabelText("尺寸參數")).toBeNull();
+  });
+});
+
 describe("ModelLibrary 寫入失敗只被回報一次", () => {
   it("就地顯示在該區塊，且不再另外長出一顆 toast", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

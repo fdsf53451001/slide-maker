@@ -1,7 +1,7 @@
 import {
   aspectRatioLabel,
   buildImageGenerationContract,
-  type ImageModelProfile,
+  type ResolvedImageProfile,
   SafeProviderError,
   type ImageGenerationRequest,
   type ProviderUsage,
@@ -33,7 +33,7 @@ function assertReferenceLimit(request: ImageGenerationRequest, limit: number): v
  * 與 `none` 一樣不送；模型庫寫入時會擋掉這種組合，這裡只是不假設它被擋住了。
  */
 function sizingFields(
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   request: ImageGenerationRequest,
 ): Record<string, string> {
   const sizing = profile.sizing;
@@ -79,7 +79,7 @@ async function requestGeneration(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   signal?: AbortSignal,
 ): Promise<unknown> {
   const prompt = imagesPrompt(request);
@@ -122,7 +122,7 @@ async function requestEdit(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   signal?: AbortSignal,
 ): Promise<unknown> {
   const edit = request.edit!;
@@ -181,7 +181,7 @@ export async function generateViaImagesApi(
   config: OpenAiClientConfig,
   model: string,
   request: ImageGenerationRequest,
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; usage: ProviderUsage }> {
   assertReferenceLimit(request, referenceLimitFor("images", profile));

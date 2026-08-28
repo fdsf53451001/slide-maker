@@ -247,6 +247,74 @@ describe("model library CRUD and project composition", () => {
     await send(`/api/model-library/connections/${openaiConnection.id}`, "DELETE");
   });
 
+  it("stores an image profile, refuses a sizing mode the transport cannot express", async (context) => {
+    if (unavailable) return context.skip();
+    let library = await send<ModelLibrary>("/api/model-library/connections", "POST", {
+      name: "影像參數用端點",
+      baseUrl: "http://127.0.0.1:9/v1",
+      apiKey: "k",
+      protocol: "openai",
+    });
+    const connection = library.connections.at(-1)!;
+    library = await send<ModelLibrary>("/api/model-library/models", "POST", {
+      name: "影像參數模型",
+      capability: "image",
+      providerKind: "openai",
+      model: "vendor/unrecognised-image-model",
+      connectionRef: connection.id,
+      imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" }, promptMaxBytes: 8000 },
+    });
+    const entry = library.models.at(-1)!;
+    expect(entry.imageProfile).toEqual({
+      sizing: { mode: "aspect_ratio", resolution: "2k" },
+      promptMaxBytes: 8000,
+    });
+
+    // image_size 是 Gemini 系的講法，images 這條 REST 路徑上沒有對應欄位。存下一個對不上
+    // 的組合不會有立即症狀——transport 會靜默不送尺寸，使用者只會覺得這個模型畫得比較差。
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", {
+        imageProfile: { sizing: { mode: "image_size", resolution: "2k" } },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_SIZING_UNSUPPORTED");
+    // 擋下之後不得留下副作用。
+    const afterReject = await json<ModelLibrary>("/api/model-library");
+    expect(afterReject.models.find((item) => item.id === entry.id)?.imageProfile).toEqual({
+      sizing: { mode: "aspect_ratio", resolution: "2k" },
+      promptMaxBytes: 8000,
+    });
+    // 改走 chat 通道之後同一個 sizing 就合法了。
+    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
+      imageApi: "chat",
+      imageProfile: { sizing: { mode: "image_size", resolution: "4k" } },
+    });
+    expect(library.models.find((item) => item.id === entry.id)?.imageProfile).toEqual({
+      sizing: { mode: "image_size", resolution: "4k" },
+    });
+
+    // null 明確清掉；送 undefined 的話 key 會在 JSON 裡消失，PATCH 等於「不動它」。
+    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
+      imageProfile: null,
+    });
+    expect(library.models.find((item) => item.id === entry.id)?.imageProfile).toBeUndefined();
+
+    // 影像參數對非影像模型沒有作用，存下來只會讓人以為它有效。
+    await expect(
+      send("/api/model-library/models", "POST", {
+        name: "文字模型帶影像參數",
+        capability: "text",
+        providerKind: "openai",
+        model: "gpt-test",
+        connectionRef: connection.id,
+        imageProfile: { sizing: { mode: "size", value: "1536x1024" } },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_NOT_APPLICABLE");
+
+    // 這個 describe 共用同一個 server／資料目錄，殘留的 entry 會干擾後續計數。
+    await send(`/api/model-library/models/${entry.id}`, "DELETE");
+    await send(`/api/model-library/connections/${connection.id}`, "DELETE");
+  });
+
   it("builds gemini providers into the registry for all three capabilities", async (context) => {
     if (unavailable) return context.skip();
     let library = await send<ModelLibrary>("/api/model-library/connections", "POST", {

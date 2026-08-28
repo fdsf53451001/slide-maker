@@ -2,6 +2,8 @@ import {
   aspectRatioLabel,
   buildImageGenerationContract,
   type ImageModelProfile,
+  type ResolvedImageProfile,
+  resolveImageProfile,
   SafeProviderError,
   utf8ByteLength,
   type GeneratedImage,
@@ -36,8 +38,8 @@ export interface GeminiImageOptions {
   /** Registry id 覆寫（模型庫 entry id）。未設回退 "gemini-image"。 */
   id?: string;
   /**
-   * 這個模型的參數設定。未給時用 `DEFAULT_GEMINI_IMAGE_PROFILE`——原生端點只有一種
-   * transport，所以預設值不必看模型名，直接是常數。
+   * 這個模型的參數覆寫（模型庫 entry 上存的那份）。沒填的欄位沿用
+   * `DEFAULT_GEMINI_IMAGE_PROFILE`——原生端點只有一種 transport，所以預設值不必看模型名。
    */
   profile?: ImageModelProfile;
 }
@@ -49,7 +51,7 @@ export const MAX_REFERENCES = 8;
  * 原生端點的預設 profile。`imageSize` 取 `2k` 是畫質的關鍵而非可有可無的調校，實測依據
  * 見 `provider-openai` 的 `defaultImageProfile()`——那是同一個決定，兩條路都要送。
  */
-export const DEFAULT_GEMINI_IMAGE_PROFILE: ImageModelProfile = {
+export const DEFAULT_GEMINI_IMAGE_PROFILE: ResolvedImageProfile = {
   sizing: { mode: "image_size", resolution: "2k" },
 };
 
@@ -141,12 +143,12 @@ export class GeminiImageProvider implements ImageProvider {
   readonly maxConcurrency = 2;
   readonly capabilities: ImageProviderCapabilities;
   readonly #options: GeminiImageOptions;
-  readonly #profile: ImageModelProfile;
+  readonly #profile: ResolvedImageProfile;
 
   constructor(options: GeminiImageOptions) {
     this.id = options.id ?? "gemini-image";
     this.#options = options;
-    this.#profile = options.profile ?? DEFAULT_GEMINI_IMAGE_PROFILE;
+    this.#profile = resolveImageProfile(DEFAULT_GEMINI_IMAGE_PROFILE, options.profile);
     this.capabilities = {
       fullSlideGeneration: true,
       referenceImages: true,
@@ -262,7 +264,7 @@ export class GeminiImageProvider implements ImageProvider {
  * 不符的比例會讓模型照錯的比例構圖，正規化再 cover 裁切一次就吃掉版面邊緣。
  */
 function imageConfigFields(
-  profile: ImageModelProfile,
+  profile: ResolvedImageProfile,
   width: number,
   height: number,
 ): { imageConfig: { imageSize: string; aspectRatio?: string } } | undefined {
