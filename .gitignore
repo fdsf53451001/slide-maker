@@ -42,8 +42,12 @@ docker/cliproxy/config.yaml
 docker/cliproxy/auths/
 docker/cliproxy/logs/
 
-# cli-switch managed entries (per-CLI private fixtures)
-.claude/
+# cli-switch managed entries (per-CLI private fixtures)。
+# `.claude/skills/` 是例外：那是專案自己的流程規範（該跟著 repo 走、每個人拿到的是同一份），
+# 不是某一支 CLI 的私有設定。所以只忽略 .claude 的**內容**，再把 skills 排除在忽略之外——
+# 寫成 `.claude/` 的話 git 根本不會遞迴進去，底下再寫幾條 `!` 都不會生效。
+.claude/*
+!.claude/skills/
 .cli-switch/
 .kiro/
 .serena/

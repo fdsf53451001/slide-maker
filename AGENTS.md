@@ -65,3 +65,5 @@ pnpm monorepo（`apps/*`、`packages/*`，內部相依用 `workspace:*`）：`ap
 重大修改要起worktree和feature branch，完成功能在merge回去
 一般任務你作開發開發，開發玩起一個qa&reviewer agent作檢查，如果有需要可以起更多Agent並行。沒有特別說就用sonnet模型
 任務完成記得更新CHANGE.md，檢端描述，一個項目一到兩行
+
+接一個新的生圖模型、或排查生圖「失敗／畫質不如預期」時，照 `.claude/skills/image-model-onboarding/SKILL.md` 的流程走。**接新模型的預設動作是實測，不是能跑就收工**：先跑一次記下基線（回傳尺寸、銳利度、耗時、token），探出它吃哪些參數，逐一實測比較（**有內容的** fixture，每個候選至少 3 次），選最優當預設，並把**所有實測可用**的值都註冊進 option set 讓使用者能選。任何情況下都不要在 transport（`image-api.ts`／`image-chat.ts`／`image-openrouter.ts`／`provider-gemini/src/image.ts`）裡加模型名判斷——猜不中會靜默少送欄位，而那與「沒寫過這段」長得一模一樣。
