@@ -44,6 +44,8 @@ export interface GeminiImageOptions {
    * `DEFAULT_GEMINI_IMAGE_PROFILE`——原生端點只有一種 transport，所以預設值不必看模型名。
    */
   profile?: ImageModelProfile;
+  /** 系統設定的全局並行數；entry 自己填了就以 entry 為準。 */
+  systemMaxConcurrency?: number;
 }
 
 // 與 provider-openai 的 chat transport 對齊：單次請求塞太多張圖會撐爆 JSON body。
@@ -58,6 +60,9 @@ export const MAX_REFERENCES = 8;
  * `image-options.ts`），這裡只給 transport 層的骨架：`none` 表示「這一層不主張任何尺寸」。
  */
 const TRANSPORT_DEFAULT_PROFILE: ResolvedImageProfile = { sizing: { mode: "none" } };
+
+/** 沒有任何設定時同時跑幾個 job；與 provider-openai 的預設一致。 */
+const DEFAULT_IMAGE_CONCURRENCY = 2;
 
 interface InlineDataPart {
   inlineData: { mimeType: string; data: string };
@@ -144,7 +149,7 @@ export class GeminiImageProvider implements ImageProvider {
   readonly id: string;
   readonly name = "Gemini 原生影像";
   readonly availability: ProviderAvailability;
-  readonly maxConcurrency = 2;
+  readonly maxConcurrency: number;
   readonly capabilities: ImageProviderCapabilities;
   readonly #options: GeminiImageOptions;
   readonly #profile: ResolvedImageProfile;
@@ -156,9 +161,14 @@ export class GeminiImageProvider implements ImageProvider {
     // 行為）→ entry 上與模型無關的覆寫。「沒設定」與「使用者選了」走同一條路。
     this.#profile = resolveImageProfile(
       TRANSPORT_DEFAULT_PROFILE,
+      // 系統的全局預設排在 entry 之前：entry 沒填才輪到它。
+      options.systemMaxConcurrency === undefined
+        ? undefined
+        : { maxConcurrency: options.systemMaxConcurrency },
       geminiImageOptionSet(options.model).resolve(options.profile?.options ?? {}),
       generalImageProfileOverride(options.profile),
     );
+    this.maxConcurrency = this.#profile.maxConcurrency ?? DEFAULT_IMAGE_CONCURRENCY;
     this.capabilities = {
       fullSlideGeneration: true,
       referenceImages: true,

@@ -76,6 +76,14 @@ export const imageModelProfileSchema = z.object({
    * 看到一張「畫得不太對」的圖。長度不夠是「這個模型吃不下這一頁」，要讓人知道。
    */
   promptMaxBytes: z.number().int().positive().optional(),
+  /**
+   * 這個模型同時能跑幾個生成 job。未設＝沿用系統設定的全局預設，再沒有就是內建的 2。
+   *
+   * 上界 32 與 `jobs.ts` 的 `providerLimit()` 對齊——它對超出範圍的值是**丟例外**，那會讓
+   * 整批生成在排程時就死掉，所以擋在寫入這一端。往上調撞的是 gateway 的限流（那一整批會
+   * 一起失敗），往下調到 1 則是「一次只跑一頁」，慢但最不容易被限流擋。
+   */
+  maxConcurrency: z.number().int().min(1).max(32).optional(),
 });
 export type ImageModelProfile = z.infer<typeof imageModelProfileSchema>;
 
@@ -88,6 +96,7 @@ export interface ResolvedImageProfile {
   sizing: ImageSizing;
   maxReferenceImages?: number;
   promptMaxBytes?: number;
+  maxConcurrency?: number;
 }
 
 /**
@@ -103,10 +112,12 @@ export function resolveImageProfile(
     if (!override) continue;
     const maxReferenceImages = override.maxReferenceImages ?? current.maxReferenceImages;
     const promptMaxBytes = override.promptMaxBytes ?? current.promptMaxBytes;
+    const maxConcurrency = override.maxConcurrency ?? current.maxConcurrency;
     current = {
       sizing: override.sizing ?? current.sizing,
       ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
       ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+      ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
     };
   }
   return current;
@@ -122,6 +133,7 @@ export function generalImageProfileOverride(profile?: ImageModelProfile): ImageP
       ? { maxReferenceImages: profile.maxReferenceImages }
       : {}),
     ...(profile?.promptMaxBytes !== undefined ? { promptMaxBytes: profile.promptMaxBytes } : {}),
+    ...(profile?.maxConcurrency !== undefined ? { maxConcurrency: profile.maxConcurrency } : {}),
   };
 }
 

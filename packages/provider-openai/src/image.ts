@@ -18,6 +18,7 @@ import { generateViaChat } from "./image-chat.js";
 import { generateViaOpenRouter } from "./image-openrouter.js";
 import { imageOptionSet } from "./image-options.js";
 import {
+  DEFAULT_IMAGE_CONCURRENCY,
   type OpenAiImageApiShape,
   referenceLimitFor,
   transportDefaultProfile,
@@ -36,11 +37,12 @@ export interface OpenAiImageOptions {
    */
   requestSize?: string;
   /**
-   * 這個模型的參數覆寫（模型庫 entry 上存的那份）。沒填的欄位沿用 transport ＋ 模型名
-   * 推導出的預設值（見 `defaultImageProfile()`）。推導只發生在建構這一刻，送出請求時
-   * 一律只讀 resolve 之後的物件。
+   * 這個模型的參數覆寫（模型庫 entry 上存的那份）。沒填的欄位沿用 transport 與 option set
+   * 給的預設值。推導只發生在建構這一刻，送出請求時一律只讀 resolve 之後的物件。
    */
   profile?: ImageModelProfile;
+  /** 系統設定的全局並行數；entry 自己填了就以 entry 為準。 */
+  systemMaxConcurrency?: number;
   /** Registry id 覆寫（模型庫 entry id）。未設回退 "openai-image"。 */
   id?: string;
 }
@@ -49,7 +51,7 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
   readonly id: string;
   readonly name = "OpenAI 相容影像";
   readonly availability: ProviderAvailability;
-  readonly maxConcurrency = 2;
+  readonly maxConcurrency: number;
   readonly capabilities: ImageProviderCapabilities;
   readonly #options: OpenAiImageOptions;
   readonly #shape: OpenAiImageApiShape;
@@ -65,9 +67,14 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     const optionSet = imageOptionSet(this.#shape, options.model);
     this.#profile = resolveImageProfile(
       transportDefaultProfile(this.#shape, options.requestSize),
+      // 系統的全局預設排在 entry 之前：entry 沒填才輪到它。
+      options.systemMaxConcurrency === undefined
+        ? undefined
+        : { maxConcurrency: options.systemMaxConcurrency },
       optionSet?.resolve(options.profile?.options ?? {}),
       generalImageProfileOverride(options.profile),
     );
+    this.maxConcurrency = this.#profile.maxConcurrency ?? DEFAULT_IMAGE_CONCURRENCY;
     // 兩種 transport 都支援參考圖：chat 走 image_url parts；images 走 /images/edits 的 image[] 陣列。
     this.capabilities = {
       fullSlideGeneration: true,

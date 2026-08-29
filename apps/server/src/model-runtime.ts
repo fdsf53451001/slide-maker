@@ -239,7 +239,10 @@ export class ModelRuntime {
     };
     for (const entry of library.models) {
       if (entry.capability === "image") {
-        image.register(this.#buildImage(entry, connectionConfig(entry)));
+        // 取自傳進來的 library 而不是 this.#library：重建 registry 時後者可能還是舊的那份。
+        image.register(
+          this.#buildImage(entry, connectionConfig(entry), library.system.imageConcurrency),
+        );
       } else if (entry.capability === "text") {
         const provider = this.#buildText(entry, connectionConfig(entry));
         if (provider) text.register(provider);
@@ -250,20 +253,35 @@ export class ModelRuntime {
     }
   }
 
-  #buildImage(entry: ModelEntry, config: OpenAiClientConfig): ImageProvider {
+  #buildImage(
+    entry: ModelEntry,
+    config: OpenAiClientConfig,
+    imageConcurrency: number | undefined,
+  ): ImageProvider {
     if (entry.providerKind === "mock") return new MockImageProvider(entry.id);
     if (entry.providerKind === "local")
       return new LocalInpaintProvider({ id: entry.id, root: this.#base.localToolsRoot });
     // profile 是 entry 上的參數覆寫；沒設就整個不傳，provider 用 transport 推導的預設值。
+    // 全局並行數只給打 HTTP 端點的兩家：mock 不消耗配額，本機抹字那條卡的是 CPU 與記憶體，
+    // 跟著這個數字一起放大會直接把機器吃垮。
     const profile = entry.imageProfile ? { profile: entry.imageProfile } : {};
+    const systemConcurrency =
+      imageConcurrency === undefined ? {} : { systemMaxConcurrency: imageConcurrency };
     if (entry.providerKind === "gemini")
-      return new GeminiImageProvider({ id: entry.id, config, model: entry.model, ...profile });
+      return new GeminiImageProvider({
+        id: entry.id,
+        config,
+        model: entry.model,
+        ...profile,
+        ...systemConcurrency,
+      });
     return new OpenAiCompatibleImageProvider({
       id: entry.id,
       config,
       model: entry.model,
       ...(entry.imageApi ? { apiShape: entry.imageApi } : {}),
       ...profile,
+      ...systemConcurrency,
     });
   }
 

@@ -536,6 +536,45 @@ describe("ModelLibrary 影像參數", () => {
     expect(writeRequests(fetchMock)).toHaveLength(0);
   });
 
+  it("並行生成數超過 32 就地報錯——jobs.ts 對超出範圍是丟例外，整批生成會在排程時就死", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+
+    fireEvent.change(within(row).getByLabelText("並行生成數"), { target: { value: "33" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    expect(
+      within(row)
+        .getAllByRole("alert")
+        .some((node) => /最多 32/.test(node.textContent ?? "")),
+    ).toBe(true);
+    expect(writeRequests(fetchMock)).toHaveLength(0);
+
+    fireEvent.change(within(row).getByLabelText("並行生成數"), { target: { value: "4" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body))).toMatchObject({
+      imageProfile: { maxConcurrency: 4 },
+    });
+  });
+
+  it("系統設定的影像並行數是全局預設，模型自己填了就以模型的為準", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText("影像並行數")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("影像並行數"), { target: { value: "33" } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存系統設定" }));
+    expect(writeRequests(fetchMock)).toHaveLength(0);
+
+    fireEvent.change(screen.getByLabelText("影像並行數"), { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: "儲存系統設定" }));
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body))).toMatchObject({
+      imageConcurrency: 6,
+    });
+  });
+
   it("文字模型那一列沒有影像參數欄位", async () => {
     stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);

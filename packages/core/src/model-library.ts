@@ -103,6 +103,14 @@ export type ModelCombination = z.infer<typeof modelCombinationSchema>;
  */
 export const modelLibrarySystemSchema = z.object({
   modelTimeoutMs: z.number().int().positive().optional(),
+  /**
+   * 影像生成的全局並行數：每個影像模型同時能跑幾個 job（未設＝內建的 2）。模型自己填了就
+   * 以模型的為準。上界 32 與 `jobs.ts` 的 `providerLimit()` 對齊，那裡對超出範圍是丟例外。
+   *
+   * 只套用到會打 HTTP 端點的影像模型（openai／gemini）：mock 不消耗配額，而本機抹字那條
+   * 卡的是 CPU 與記憶體，跟著這個數字一起放大會直接把機器吃垮。
+   */
+  imageConcurrency: z.number().int().min(1).max(32).optional(),
   ocrModelTier: ocrModelTierSchema.optional(),
   ocrDetSideLen: z.number().int().positive().optional(),
 });

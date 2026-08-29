@@ -66,6 +66,7 @@ function imageProfileKey(profile: ImageModelProfile | undefined): string {
     values,
     profile?.maxReferenceImages ?? null,
     profile?.promptMaxBytes ?? null,
+    profile?.maxConcurrency ?? null,
   ]);
 }
 
@@ -76,10 +77,12 @@ interface ImageProfileForm {
   setMaxRefs: (value: string) => void;
   promptMax: string;
   setPromptMax: (value: string) => void;
+  concurrency: string;
+  setConcurrency: (value: string) => void;
   /** 目前欄位組出來的設定；全部留白時是 undefined（＝這個 entry 不存影像參數）。 */
   profile: ImageModelProfile | undefined;
   key: string;
-  errors: { maxRefs?: string; promptMax?: string };
+  errors: { maxRefs?: string; promptMax?: string; concurrency?: string };
 }
 
 function positiveIntError(raw: string, label: string): string | undefined {
@@ -97,23 +100,36 @@ function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
   const [promptMax, setPromptMax] = useState(
     initial?.promptMaxBytes !== undefined ? String(initial.promptMaxBytes) : "",
   );
+  const [concurrency, setConcurrency] = useState(
+    initial?.maxConcurrency !== undefined ? String(initial.maxConcurrency) : "",
+  );
 
   const errors: ImageProfileForm["errors"] = {};
   const maxRefsError = positiveIntError(maxRefs, "參考圖上限");
   if (maxRefsError) errors.maxRefs = maxRefsError;
   const promptMaxError = positiveIntError(promptMax, "prompt 上限");
   if (promptMaxError) errors.promptMax = promptMaxError;
+  const concurrencyError = positiveIntError(concurrency, "並行生成數");
+  if (concurrencyError) errors.concurrency = concurrencyError;
+  // 上界與 jobs.ts 的 providerLimit() 對齊：那裡對超出範圍是丟例外，整批生成會在排程時就死。
+  else if (concurrency.trim() && Number(concurrency) > 32)
+    errors.concurrency = "並行生成數最多 32；再高只會撞上端點限流，整批一起失敗。";
 
   const maxReferenceImages = maxRefs.trim() ? Number(maxRefs) : undefined;
   const promptMaxBytes = promptMax.trim() ? Number(promptMax) : undefined;
+  const maxConcurrency = concurrency.trim() ? Number(concurrency) : undefined;
   const hasValues = Object.keys(values).length > 0;
   const profile: ImageModelProfile | undefined =
-    !hasValues && maxReferenceImages === undefined && promptMaxBytes === undefined
+    !hasValues &&
+    maxReferenceImages === undefined &&
+    promptMaxBytes === undefined &&
+    maxConcurrency === undefined
       ? undefined
       : {
           ...(hasValues ? { options: values } : {}),
           ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
           ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+          ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
         };
 
   return {
@@ -132,6 +148,8 @@ function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
     setMaxRefs,
     promptMax,
     setPromptMax,
+    concurrency,
+    setConcurrency,
     profile,
     key: imageProfileKey(profile),
     errors,
@@ -224,8 +242,19 @@ function ImageProfileFields({
               onChange={(event) => form.setPromptMax(event.target.value)}
             />
           </label>
+          <label className="model-library-option-field">
+            <span>並行生成數</span>
+            <input
+              aria-label="並行生成數"
+              inputMode="numeric"
+              placeholder="留空沿用系統設定"
+              value={form.concurrency}
+              onChange={(event) => form.setConcurrency(event.target.value)}
+            />
+          </label>
           {form.errors.maxRefs && <FieldError>{form.errors.maxRefs}</FieldError>}
           {form.errors.promptMax && <FieldError>{form.errors.promptMax}</FieldError>}
+          {form.errors.concurrency && <FieldError>{form.errors.concurrency}</FieldError>}
         </div>
       </details>
     </div>
@@ -1465,8 +1494,12 @@ function SystemSection({
   run: RunFn;
 }) {
   const [timeout, setTimeout] = useState(String(library.system.modelTimeoutMs ?? ""));
-  const [fieldErrors, setFieldErrors] = useState<{ timeout?: string | undefined }>({});
-  const { pending, rowError, act } = useRowAction(run, timeout);
+  const [concurrency, setConcurrency] = useState(String(library.system.imageConcurrency ?? ""));
+  const [fieldErrors, setFieldErrors] = useState<{
+    timeout?: string | undefined;
+    concurrency?: string | undefined;
+  }>({});
+  const { pending, rowError, act } = useRowAction(run, [timeout, concurrency].join("\u0000"));
   /**
    * 兩個欄位都是 `inputMode="numeric"`（只是鍵盤提示，不擋任何輸入），舊版沒有任何前端
    * 驗證：打進 `abc` → `Number("abc")` 是 `NaN` → 照樣送出。留空是合法的（代表沿用伺服器
@@ -1479,14 +1512,19 @@ function SystemSection({
         : undefined
       : `${label}只接受數字（正整數）；留空則沿用伺服器預設。`;
   const save = async () => {
-    const next = {
+    const next: { timeout?: string | undefined; concurrency?: string | undefined } = {
       timeout: positiveInteger(timeout, "模型逾時"),
+      concurrency: positiveInteger(concurrency, "影像並行數"),
     };
+    // 上界與 jobs.ts 的 providerLimit() 對齊：那裡對超出範圍是丟例外，整批生成會在排程時就死。
+    if (!next.concurrency && concurrency.trim() && Number(concurrency) > 32)
+      next.concurrency = "影像並行數最多 32；再高只會撞上端點限流，整批一起失敗。";
     setFieldErrors(next);
-    if (next.timeout) return;
+    if (next.timeout || next.concurrency) return;
     await act("save", "儲存系統設定", () =>
       api.updateModelLibrarySystem({
         ...(timeout.trim() ? { modelTimeoutMs: Number(timeout) } : {}),
+        ...(concurrency.trim() ? { imageConcurrency: Number(concurrency) } : {}),
       }),
     );
   };
@@ -1495,7 +1533,7 @@ function SystemSection({
       <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
       <p className="model-library-hint">
         影響執行而非品質的維運旋鈕。OCR
-        相關設定改動需重啟伺服器才生效。連線列若另外填了逾時，以連線的為準。
+        相關設定改動需重啟伺服器才生效。連線列若另外填了逾時、影像模型若另外填了並行數，都以那一列的為準。
       </p>
       <div className="model-library-create">
         <label className="model-library-combo-field">
@@ -1510,6 +1548,20 @@ function SystemSection({
             }}
           />
           {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
+        </label>
+        <label className="model-library-combo-field">
+          影像並行數
+          <input
+            aria-label="影像並行數"
+            inputMode="numeric"
+            placeholder="留空為 2"
+            value={concurrency}
+            onChange={(event) => {
+              setConcurrency(event.target.value);
+              setFieldErrors((current) => ({ ...current, concurrency: undefined }));
+            }}
+          />
+          {fieldErrors.concurrency && <FieldError>{fieldErrors.concurrency}</FieldError>}
         </label>
         <button className="primary" disabled={busy} onClick={() => void save()}>
           {pending === "save" ? "儲存中…" : "儲存系統設定"}

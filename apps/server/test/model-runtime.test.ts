@@ -123,6 +123,45 @@ describe("ModelRuntime wires imageProfile through to the constructed provider", 
     );
   });
 
+  /**
+   * 並行生成數的三層優先序：entry → 系統設定 → 內建的 2。
+   *
+   * `maxConcurrency` 是 `jobs.ts` 排程時每個 provider 同時能跑幾個 job，也是這幾個欄位裡
+   * 唯一能從建好的 provider 實例直接讀到、又不必打真實 HTTP 的。
+   */
+  it("takes concurrency from the entry first, then the system default, then the built-in 2", () => {
+    const libraryWithConcurrency = (
+      systemConcurrency: number | undefined,
+      entryConcurrency: number | undefined,
+    ): ModelLibrary => ({
+      schemaVersion: SCHEMA_VERSION,
+      connections: [],
+      models: [
+        {
+          id: "openai-image-concurrency",
+          name: "openai image",
+          capability: "image",
+          providerKind: "openai",
+          model: "vendor/unrecognised-image-model",
+          imageApi: "images",
+          ...(entryConcurrency === undefined
+            ? {}
+            : { imageProfile: { maxConcurrency: entryConcurrency } }),
+        },
+      ],
+      combinations: [],
+      system: systemConcurrency === undefined ? {} : { imageConcurrency: systemConcurrency },
+      updatedAt: "2026-07-31T00:00:00.000Z",
+    });
+    const concurrencyOf = (library: ModelLibrary): number | undefined =>
+      new ModelRuntime(BASE, library).imageProvider("openai-image-concurrency").maxConcurrency;
+
+    expect(concurrencyOf(libraryWithConcurrency(5, undefined))).toBe(5);
+    // entry 自己填了就以 entry 為準，系統設定只是它沒填時的回退。
+    expect(concurrencyOf(libraryWithConcurrency(5, 3))).toBe(3);
+    expect(concurrencyOf(libraryWithConcurrency(undefined, undefined))).toBe(2);
+  });
+
   it("without imageProfile, capabilities are unaffected (pins the pre-feature default)", () => {
     const library: ModelLibrary = {
       schemaVersion: SCHEMA_VERSION,

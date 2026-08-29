@@ -117,8 +117,10 @@ describe("model library CRUD and project composition", () => {
     // 系統設定。
     library = await send<ModelLibrary>("/api/model-library/system", "PATCH", {
       modelTimeoutMs: 90_000,
+      imageConcurrency: 4,
     });
     expect(library.system.modelTimeoutMs).toBe(90_000);
+    expect(library.system.imageConcurrency).toBe(4);
 
     // 參照完整性：連線仍被模型引用時不可刪。
     await expect(send(`/api/model-library/connections/${connection.id}`, "DELETE")).rejects.toThrow(
@@ -318,6 +320,20 @@ describe("model library CRUD and project composition", () => {
     expect(
       library.models.find((item) => item.id === entry.id)?.imageProfile?.maxReferenceImages,
     ).toBe(4);
+
+    // 並行生成數：模型自己填了就以它為準，沒填才輪到系統設定的全局值。上界 32 與
+    // jobs.ts 的 providerLimit() 對齊——那裡對超出範圍是丟例外，整批生成會在排程時就死掉。
+    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
+      imageProfile: { maxConcurrency: 6 },
+    });
+    expect(library.models.find((item) => item.id === entry.id)?.imageProfile?.maxConcurrency).toBe(
+      6,
+    );
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", {
+        imageProfile: { maxConcurrency: 33 },
+      }),
+    ).rejects.toThrow("INVALID_REQUEST");
 
     // null 明確清掉；送 undefined 的話 key 會在 JSON 裡消失，PATCH 等於「不動它」。
     library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {

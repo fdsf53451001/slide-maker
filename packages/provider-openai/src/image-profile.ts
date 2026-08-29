@@ -15,6 +15,14 @@ export const DEFAULT_IMAGES_REQUEST_SIZE = "1536x1024";
  * body，卡的是 token 與 body 大小；images 是 multipart file part，卡的是端點自身對
  * `image[]` 的張數上限。profile 沒有覆寫時用這裡的值。
  */
+/**
+ * 沒有任何設定時，一個影像模型同時跑幾個 job。
+ *
+ * 2 是既有值：往上調撞的是 gateway 的限流（那一整批會一起失敗），往下調到 1 是「一次只跑
+ * 一頁」，慢但最不容易被擋。要改的是模型庫的設定，不是這個常數。
+ */
+export const DEFAULT_IMAGE_CONCURRENCY = 2;
+
 export const MAX_IMAGES_REFERENCES = 16;
 export const MAX_CHAT_REFERENCES = 8;
 export const MAX_OPENROUTER_REFERENCES = 8;
