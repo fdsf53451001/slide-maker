@@ -755,7 +755,7 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body.image_config?.aspect_ratio).toBe("16:9");
   });
 
-  it("a model with no option set falls back to the transport default", async () => {
+  it("a model with no option set sends no sizing field at all", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
     const provider = new OpenAiCompatibleImageProvider({
@@ -770,9 +770,24 @@ describe("OpenAiCompatibleImageProvider", () => {
       aspect_ratio?: string;
       resolution?: string;
     };
-    expect(body.size).toBe("1536x1024");
+    // 這裡曾經無條件送 size:"1536x1024"。那個值只是**剛好** OpenAI 吃——別家未必認得這個
+    // 字串，送過去就是一個不透明的 400。不送才是把決定權交回端點自己的預設。
+    expect(body.size).toBeUndefined();
     expect(body.aspect_ratio).toBeUndefined();
     expect(body.resolution).toBeUndefined();
+  });
+
+  it("a gpt-image model still sends its own default size, from its option set", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2",
+    });
+    await provider.generate(imageRequest());
+    // 不送的話這條端點回 1024×1024 方形，cover 到 16:9 會吃掉左右兩側——所以 gpt-image 的
+    // 預設住在它自己的 option set（`resolve({})`）裡，而不是所有 images 模型共用的那一層。
+    expect((active.requests[0]!.body as { size?: string }).size).toBe("1536x1024");
   });
 
   it("a profile prompt budget fails the call without sending a request", async () => {
@@ -829,8 +844,18 @@ describe("OpenAiCompatibleImageProvider", () => {
       shape: "images" | "chat";
       field: string;
     }> = [
-      { setId: "gemini-chat", model: "gemini-3.1-flash-image", shape: "chat", field: "image_config" },
-      { setId: "grok-imagine", model: "grok-imagine-image-2.0", shape: "images", field: "resolution" },
+      {
+        setId: "gemini-chat",
+        model: "gemini-3.1-flash-image",
+        shape: "chat",
+        field: "image_config",
+      },
+      {
+        setId: "grok-imagine",
+        model: "grok-imagine-image-2.0",
+        shape: "images",
+        field: "resolution",
+      },
       { setId: "gpt-image", model: "gpt-image-2", shape: "images", field: "size" },
     ];
     // 少宣告一個 set（或多一個沒有 case 的）都要讓這條測試停下來，否則新加的那組不會被驗到。

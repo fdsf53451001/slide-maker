@@ -7,7 +7,10 @@ import { type ResolvedImageProfile, SafeProviderError, utf8ByteLength } from "@s
  */
 export type OpenAiImageApiShape = "images" | "chat" | "openrouter-image";
 
-/** Images API 未指定時的請求尺寸（gpt-image 系接受的 16:9 檔位）。 */
+/**
+ * gpt-image 系沒選時送的尺寸（那條端點只接受幾組固定字串，這組最接近 16:9 畫布）。
+ * 只有 gpt-image 的 option set 用得到它——**不是**所有 images 通道模型的預設值。
+ */
 export const DEFAULT_IMAGES_REQUEST_SIZE = "1536x1024";
 
 /**
@@ -64,18 +67,17 @@ export function assertPromptBudget(prompt: string, profile: ResolvedImageProfile
 }
 
 /**
- * transport 自己的預設尺寸講法——**與模型無關**，只表達「這條路徑在沒有任何設定時送什麼」。
- * 哪個模型該送什麼由 `image-options.ts` 的 option set 決定，那裡才是唯一看模型名的地方。
+ * transport 自己的預設：**一律不送尺寸參數**。
  *
- * images 預設送 `size`：這條 REST 路徑上絕大多數模型（gpt-image 系）都吃它，而且不送的話
- * 端點會用自己的預設尺寸。chat 與 openrouter 預設不送：那兩條沒有共通的尺寸欄位，而嚴格的
- * OpenAI 端點可能直接拒絕未知欄位。
+ * 這裡曾經對 `images` 通道無條件送 `size:"1536x1024"`（那是重構前為 gpt-image 寫的）。拿掉
+ * 的理由是那個值只是**剛好** OpenAI 吃：別家的 OpenAI-compatible 端點未必認得這個字串，
+ * 送過去就是一個不透明的 400；就算認得，值域也未必一樣。送一個猜的值等於賭對方跟 OpenAI
+ * 一致——而「假設沒見過的模型會照 OpenAI 的規矩來」正是整個 option set 機制要拔掉的東西。
+ *
+ * 不送則是把決定權交回端點自己的預設，那是它最清楚的事。真正需要指定尺寸的模型（gpt-image
+ * 系就是）由自己的 option set 講出來，連「沒選時送什麼」都在那份宣告裡（`resolve({})`），
+ * 所以這一層不必也不該替任何人代言。
  */
-export function transportDefaultProfile(
-  shape: OpenAiImageApiShape,
-  requestSize?: string,
-): ResolvedImageProfile {
-  if (shape === "images")
-    return { sizing: { mode: "size", value: requestSize ?? DEFAULT_IMAGES_REQUEST_SIZE } };
+export function transportDefaultProfile(): ResolvedImageProfile {
   return { sizing: { mode: "none" } };
 }
