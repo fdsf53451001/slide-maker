@@ -12,7 +12,9 @@ export {
 export { generateViaOpenRouter, extractOpenRouterImage } from "./image-openrouter.js";
 // 模型庫寫入時的相容性檢查要用這兩份：transport 說得出哪些尺寸講法、端點自身的參考圖上限。
 // 伺服器端另抄一份的話，改了其中一邊就會變成「驗證通過、送出時 no-op」。
-export { MAX_REFERENCES_BY_SHAPE, SIZING_MODES_BY_SHAPE } from "./image-profile.js";
+export { MAX_REFERENCES_BY_SHAPE } from "./image-profile.js";
+// 「這個模型可調什麼」的宣告：伺服器把它交給前端渲染，前端不自己算（那必然漂移）。
+export { imageOptionSet, IMAGE_OPTION_SETS } from "./image-options.js";
 // 影像後處理與 data URI 解析是 transport 無關的工具，provider-gemini 直接沿用，
 // 避免第二套 cover 正規化／PNG 驗證規則（遮罩攤平同理）。
 export {

@@ -183,7 +183,7 @@ describe("GeminiImageProvider", () => {
     expect(prompt).toContain("UNTRUSTED_PRESENTATION_JSON");
   });
 
-  it("takes the imageSize tier from the profile, and omits imageConfig when set to none", async () => {
+  it("takes the imageSize tier from the profile and ignores values it no longer offers", async () => {
     const respond = () => ({
       json: {
         candidates: [
@@ -195,7 +195,7 @@ describe("GeminiImageProvider", () => {
     await new GeminiImageProvider({
       config,
       model: "gemini-3.1-flash-image",
-      profile: { sizing: { mode: "image_size", resolution: "1k" } },
+      profile: { options: { imageSize: "1k" } },
     }).generate(imageRequest());
     const tieredBody = tiered[0]!.body as {
       generationConfig: { imageConfig?: { imageSize?: string } };
@@ -203,14 +203,18 @@ describe("GeminiImageProvider", () => {
     // 檔位存小寫、由 transport 寫成端點吃的字面。
     expect(tieredBody.generationConfig.imageConfig?.imageSize).toBe("1K");
 
-    const bare = mockFetch(respond);
+    // 認不得的值（provider 改版、模型被換掉）當作沒設，退回這個模型的預設檔位，
+    // 而不是憑空送一個端點不吃的字面。
+    const stale = mockFetch(respond);
     await new GeminiImageProvider({
       config,
       model: "gemini-3.1-flash-image",
-      profile: { sizing: { mode: "none" } },
+      profile: { options: { imageSize: "8k" } },
     }).generate(imageRequest());
-    const bareBody = bare[0]!.body as { generationConfig: { imageConfig?: unknown } };
-    expect(bareBody.generationConfig.imageConfig).toBeUndefined();
+    const staleBody = stale[0]!.body as {
+      generationConfig: { imageConfig?: { imageSize?: string } };
+    };
+    expect(staleBody.generationConfig.imageConfig?.imageSize).toBe("2K");
   });
 
   it("a profile prompt budget fails the call without sending a request", async () => {
@@ -218,7 +222,7 @@ describe("GeminiImageProvider", () => {
     const provider = new GeminiImageProvider({
       config,
       model: "gemini-3.1-flash-image",
-      profile: { sizing: { mode: "image_size", resolution: "2k" }, promptMaxBytes: 200 },
+      profile: { promptMaxBytes: 200 },
     });
     // 截斷是更壞的交換：prompt 尾端依序是簡報內容、UNTRUSTED_PRESENTATION_JSON 隔離
     // 標記與注入防線，從尾端砍等於先砍掉安全邊界再送出半份資料。

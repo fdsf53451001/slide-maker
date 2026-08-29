@@ -2,6 +2,7 @@ import type {
   EditableTextBox,
   GenerationJob,
   ImageModelProfile,
+  ImageOptionSetView,
   ModelCombination,
   ModelConnection,
   ModelEntry,
@@ -715,6 +716,9 @@ export const api = {
     }),
   // ── 模型庫 ──────────────────────────────────────────────────────────────
   modelLibrary: () => request<ModelLibrary>("/api/model-library"),
+  /** 每個影像模型可調什麼：由 provider 宣告、伺服器原樣轉交，前端不自己算。 */
+  imageOptions: () =>
+    request<{ options: Record<string, ImageOptionSetView> }>("/api/model-library/image-options"),
   connectionModels: (connectionId: string) =>
     request<{ models: string[] }>(
       `/api/model-library/connections/${encodeURIComponent(connectionId)}/models`,

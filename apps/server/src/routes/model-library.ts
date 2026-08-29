@@ -3,7 +3,8 @@ import type { Express } from "express";
 import { z } from "zod";
 import {
   imageModelProfileSchema,
-  type ImageSizing,
+  type ImageModelOptionSet,
+  type ImageOptionSetView,
   isRedactedKey,
   modelCombinationSchema,
   modelConnectionSchema,
@@ -15,13 +16,13 @@ import {
 } from "@slide-maker/core";
 import {
   GEMINI_MAX_REFERENCES,
-  GEMINI_SIZING_MODES,
+  geminiImageOptionSet,
   listGeminiModelIds,
 } from "@slide-maker/provider-gemini";
 import {
+  imageOptionSet,
   listModelIds,
   MAX_REFERENCES_BY_SHAPE,
-  SIZING_MODES_BY_SHAPE,
 } from "@slide-maker/provider-openai";
 import { ModelLibraryError, type ModelRuntime } from "../model-runtime.js";
 import { idSchema } from "../project-write-helpers.js";
@@ -49,39 +50,61 @@ function assertConnectionProtocol(draft: ModelLibrary, entry: ModelEntry): void 
 }
 
 /**
- * 影像 profile 必須是這條 transport 表達得出來的。
+ * 影像設定必須是**這個模型真的可調的東西**。
  *
- * 尺寸講法是**協定**而不是偏好：`size` 是 OpenAI images 端點的欄位、`image_size` 是 Gemini
- * 系（chat translator 與原生 generateContent）的欄位，兩邊沒有對應翻譯。存下一個對不上的
- * 組合不會有任何立即症狀——transport 會靜默不送尺寸，於是模型回一張只有 1376×768 的圖，
- * 正規化放大 1.40× 後糊掉，而使用者只會覺得「這個模型畫得比較差」。
+ * 「有哪些可調項」由 provider 的 option set 宣告（`image-options.ts`），伺服器只負責比對，
+ * 不在這裡另抄一份清單——抄一份的話，provider 改了選項而這裡沒跟上，就會出現「存得進去、
+ * 送出時被忽略」的設定，那正是整個機制要消滅的失敗形狀。
  *
- * 參考圖上限同理但方向相反：設得比端點自身的上限高不會生效（provider 會夾回去），使用者
+ * 參考圖上限則是相反方向的問題：設得比端點自身的上限高不會生效（provider 會夾回去），使用者
  * 卻會以為每頁真的能附那麼多張。兩者都是現在改得掉的設定問題，所以在寫入時就擋下。
- *
- * 兩張表都**從 provider 套件 import**，不在這裡另抄一份：抄一份的話，新增一種 mode 只改了
- * 其中一邊就會通過驗證、然後在送出時靜默 no-op。
  */
-const SIZING_MODE_LABEL: Record<ImageSizing["mode"], string> = {
-  size: "size（像素字串，如 1536x1024）",
-  aspect_ratio: "aspect_ratio（比例＋解析度檔位）",
-  image_size: "image_size（解析度檔位）",
-  none: "不送尺寸參數",
-};
+function imageOptionSetFor(entry: ModelEntry): ImageModelOptionSet | undefined {
+  if (entry.capability !== "image") return undefined;
+  if (entry.providerKind === "gemini") return geminiImageOptionSet(entry.model);
+  if (entry.providerKind === "openai")
+    return imageOptionSet(entry.imageApi ?? "images", entry.model);
+  return undefined;
+}
 
-function imageTransportLimits(entry: ModelEntry): {
-  name: string;
-  modes: ReadonlyArray<ImageSizing["mode"]>;
-  maxReferences: number;
-} {
+function imageReferenceCeiling(entry: ModelEntry): { name: string; maxReferences: number } {
   if (entry.providerKind === "gemini")
-    return { name: "gemini", modes: GEMINI_SIZING_MODES, maxReferences: GEMINI_MAX_REFERENCES };
+    return { name: "gemini", maxReferences: GEMINI_MAX_REFERENCES };
   const shape = entry.imageApi ?? "images";
-  return {
-    name: shape,
-    modes: SIZING_MODES_BY_SHAPE[shape],
-    maxReferences: MAX_REFERENCES_BY_SHAPE[shape],
-  };
+  return { name: shape, maxReferences: MAX_REFERENCES_BY_SHAPE[shape] };
+}
+
+function assertOptionValue(
+  entry: ModelEntry,
+  set: ImageModelOptionSet,
+  key: string,
+  value: string | number,
+): void {
+  const field = set.fields.find((candidate) => candidate.id === key);
+  if (!field)
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_OPTION_INVALID",
+      `模型「${entry.name}」（${set.label}）沒有「${key}」這個可調項，存下來也不會生效。請重新選一次。`,
+    );
+  if (field.kind === "select") {
+    if (field.choices.some((choice) => choice.id === value)) return;
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_OPTION_INVALID",
+      `模型「${entry.name}」的「${field.label}」不支援「${value}」，可選：${field.choices
+        .map((choice) => choice.label)
+        .join("、")}。`,
+    );
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < field.min ||
+    value > field.max
+  )
+    throw new ModelLibraryError(
+      "IMAGE_PROFILE_OPTION_INVALID",
+      `模型「${entry.name}」的「${field.label}」只接受 ${field.min}–${field.max} 的整數。`,
+    );
 }
 
 function assertImageProfile(entry: ModelEntry): void {
@@ -97,23 +120,25 @@ function assertImageProfile(entry: ModelEntry): void {
       "IMAGE_PROFILE_NOT_APPLICABLE",
       `模型「${entry.name}」是 ${entry.providerKind} 類型，不會打 HTTP 影像端點，影像參數對它沒有作用；請清掉這些參數。`,
     );
-  const transport = imageTransportLimits(entry);
-  if (profile.sizing && !transport.modes.includes(profile.sizing.mode))
-    throw new ModelLibraryError(
-      "IMAGE_PROFILE_SIZING_UNSUPPORTED",
-      `模型「${entry.name}」走的是 ${transport.name} 通道，它的尺寸參數只支援：${transport.modes
-        .map((mode) => SIZING_MODE_LABEL[mode])
-        .join(
-          "、",
-        )}。請改選其中一種，或改用支援 ${SIZING_MODE_LABEL[profile.sizing.mode]} 的影像 API。`,
-    );
+  const values = Object.entries(profile.options ?? {});
+  if (values.length > 0) {
+    const set = imageOptionSetFor(entry);
+    // 換過模型或通道之後舊的選值就不再對應任何東西：留著它等於畫面上顯示一個不會生效的設定。
+    if (!set)
+      throw new ModelLibraryError(
+        "IMAGE_PROFILE_OPTION_INVALID",
+        `模型「${entry.name}」目前這個通道沒有可調的影像參數；請先清掉這些設定。`,
+      );
+    for (const [key, value] of values) assertOptionValue(entry, set, key, value);
+  }
+  const ceiling = imageReferenceCeiling(entry);
   if (
     profile.maxReferenceImages !== undefined &&
-    profile.maxReferenceImages > transport.maxReferences
+    profile.maxReferenceImages > ceiling.maxReferences
   )
     throw new ModelLibraryError(
       "IMAGE_PROFILE_REFERENCE_LIMIT_TOO_HIGH",
-      `模型「${entry.name}」走的是 ${transport.name} 通道，每次請求最多只能附 ${transport.maxReferences} 張圖，填 ${profile.maxReferenceImages} 不會生效。請填 ${transport.maxReferences} 以下的數字，或留空沿用端點上限。`,
+      `模型「${entry.name}」走的是 ${ceiling.name} 通道，每次請求最多只能附 ${ceiling.maxReferences} 張圖，填 ${profile.maxReferenceImages} 不會生效。請填 ${ceiling.maxReferences} 以下的數字，或留空沿用端點上限。`,
     );
 }
 
@@ -247,6 +272,21 @@ export function registerModelLibraryRoutes(app: Express, ctx: AppContext): void 
         ? await listGeminiModelIds(config)
         : await listModelIds(config);
     response.json({ models });
+  });
+
+  /**
+   * 「每個影像模型可調什麼」——由 provider 的 option set 宣告，這裡原樣交給前端渲染。
+   *
+   * 前端不自己算：算得出來的前提是知道每一家吃什麼欄位，而那份知識住在 provider 套件裡，
+   * 鏡射一份必然漂移。沒有可調項的模型不會出現在這份 map 裡（UI 那格就只剩「依端點預設」）。
+   */
+  app.get("/api/model-library/image-options", (_request, response) => {
+    const options: Record<string, ImageOptionSetView> = {};
+    for (const entry of runtime.library.models) {
+      const set = imageOptionSetFor(entry);
+      if (set) options[entry.id] = { id: set.id, label: set.label, fields: set.fields };
+    }
+    response.json({ options });
   });
 
   app.post("/api/model-library/models", async (request, response) => {

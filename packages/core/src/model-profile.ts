@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageOptionValuesSchema, type ImageProfileOverride } from "./image-options.js";
 
 /**
  * 影像模型的參數設定（profile）。
@@ -49,12 +50,17 @@ export const imageSizingSchema = z.discriminatedUnion("mode", [
 export type ImageSizing = z.infer<typeof imageSizingSchema>;
 
 /**
- * 模型庫 entry 上存的 profile：**每個欄位都是覆寫**，沒填的沿用 transport 推導出的預設值
- * （`resolveImageProfile()`）。三個旋鈕彼此正交——只想給某個模型設 prompt 上限、不動尺寸
- * 講法，是完全合理的一種設定。
+ * 模型庫 entry 上存的影像設定。
+ *
+ * `options` 是 provider 宣告的可調項的選值（見 `image-options.ts`）——存成不透明的字典，
+ * 因為每一家的旋鈕都不一樣，寫成具名欄位等於加一家就要改 core、伺服器與前端型別。
+ * 另外兩個是**每條 transport 都有**的概念（不是某家特有的），所以留在框架這一層。
+ *
+ * 三者都是覆寫：沒填的沿用 transport 與 option set 給的預設值，整個沒設就等同於加這個
+ * 欄位之前的行為。
  */
 export const imageModelProfileSchema = z.object({
-  sizing: imageSizingSchema.optional(),
+  options: imageOptionValuesSchema.optional(),
   /**
    * 單次請求最多附幾張影像。未設＝沿用 transport 的預設（chat／openrouter 8、images 16）。
    * 這個值會進 `capabilities.maxReferenceImages`，`jobs.ts` 的 `limitReferences` 靠它在
@@ -75,7 +81,8 @@ export type ImageModelProfile = z.infer<typeof imageModelProfileSchema>;
 
 /**
  * provider 實際使用的 profile：`sizing` 一定有值（transport 的預設值填滿了它）。
- * transport 只讀這個型別，不必到處處理 undefined。
+ * transport 只讀這個型別，不必到處處理 undefined，也**完全不認得** option 的 id——
+ * 那層翻譯由 provider 的 option set 做完了。
  */
 export interface ResolvedImageProfile {
   sizing: ImageSizing;
@@ -83,18 +90,38 @@ export interface ResolvedImageProfile {
   promptMaxBytes?: number;
 }
 
-/** 以 entry 的覆寫蓋過 transport 推導的預設值；沒填的欄位一律沿用預設。 */
+/**
+ * 依序套用覆寫：transport 預設 → option set 翻出來的 → entry 上的通用覆寫。
+ * `undefined` 的欄位一律不蓋掉前一層，`exactOptionalPropertyTypes` 下不可顯式寫 undefined。
+ */
 export function resolveImageProfile(
   base: ResolvedImageProfile,
-  override?: ImageModelProfile,
+  ...overrides: ReadonlyArray<ImageProfileOverride | undefined>
 ): ResolvedImageProfile {
-  if (!override) return base;
-  const maxReferenceImages = override.maxReferenceImages ?? base.maxReferenceImages;
-  const promptMaxBytes = override.promptMaxBytes ?? base.promptMaxBytes;
+  let current = base;
+  for (const override of overrides) {
+    if (!override) continue;
+    const maxReferenceImages = override.maxReferenceImages ?? current.maxReferenceImages;
+    const promptMaxBytes = override.promptMaxBytes ?? current.promptMaxBytes;
+    current = {
+      sizing: override.sizing ?? current.sizing,
+      ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
+      ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+    };
+  }
+  return current;
+}
+
+/**
+ * entry 上那兩個**與模型無關**的覆寫（每條 transport 都有這兩個概念，不屬於任何一家）。
+ * `options` 不在這裡：那是 provider 的 option set 負責翻譯的，框架不認得它的語意。
+ */
+export function generalImageProfileOverride(profile?: ImageModelProfile): ImageProfileOverride {
   return {
-    sizing: override.sizing ?? base.sizing,
-    ...(maxReferenceImages !== undefined ? { maxReferenceImages } : {}),
-    ...(promptMaxBytes !== undefined ? { promptMaxBytes } : {}),
+    ...(profile?.maxReferenceImages !== undefined
+      ? { maxReferenceImages: profile.maxReferenceImages }
+      : {}),
+    ...(profile?.promptMaxBytes !== undefined ? { promptMaxBytes: profile.promptMaxBytes } : {}),
   };
 }
 

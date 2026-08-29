@@ -101,8 +101,34 @@ const libraryWithConnection = () => ({
   updatedAt: new Date().toISOString(),
 });
 
-/** 只回應模型庫與 /models 探測；其餘一律 404，讓「不該送出的請求」在斷言前就無法成立。 */
-function stubLibraryFetch(library: unknown) {
+/**
+ * image-1（影像 entry）的可調項，形狀比照伺服器 `GET /api/model-library/image-options`
+ * ——那份清單由 provider 宣告，前端只負責渲染，所以測試也從外面餵進來。
+ */
+const imageOptionSets = {
+  "image-1": {
+    id: "gpt-image",
+    label: "gpt-image 系列",
+    fields: [
+      {
+        kind: "select" as const,
+        id: "size",
+        label: "輸出尺寸",
+        unsetLabel: "1536x1024（模型預設）",
+        choices: [
+          { id: "1536x1024", label: "1536×1024（橫向）" },
+          { id: "1024x1024", label: "1024×1024（方形）" },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * 只回應模型庫、/models 探測與影像可調項；其餘一律 404，讓「不該送出的請求」在斷言前就
+ * 無法成立。`options` 傳 `{}` 可以模擬「這個模型沒有已知可調項」。
+ */
+function stubLibraryFetch(library: unknown, options: unknown = imageOptionSets) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path =
       typeof input === "string"
@@ -111,6 +137,7 @@ function stubLibraryFetch(library: unknown) {
           ? input.pathname
           : new URL(input.url).pathname;
     if (path === "/api/model-library" && !init?.method) return Response.json(library);
+    if (path === "/api/model-library/image-options") return Response.json({ options });
     if (path.endsWith("/models") && path.startsWith("/api/model-library/connections"))
       return Response.json({ models: [] });
     return Response.json({ error: "UNEXPECTED_REQUEST" }, { status: 404 });
@@ -387,46 +414,61 @@ describe("ModelLibrary 影像參數", () => {
     return nameInput.closest(".model-library-row") as HTMLElement;
   };
 
-  it("儲存影像模型時把選定的尺寸參數送出", async () => {
+  it("渲染的是伺服器給的可調項，選了就照那個欄位 id 送出", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
     const row = await imageRow();
 
-    fireEvent.change(within(row).getByLabelText("尺寸參數"), {
-      target: { value: "aspect_ratio" },
-    });
-    fireEvent.change(within(row).getByLabelText("解析度檔位"), { target: { value: "2k" } });
-    fireEvent.change(within(row).getByLabelText("prompt 上限"), { target: { value: "8000" } });
-    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+    // 欄位與選項都來自 provider 的宣告，前端不認得「輸出尺寸」是什麼意思。
+    await waitFor(() => expect(within(row).queryByLabelText("輸出尺寸")).toBeTruthy());
+    const select = within(row).getByLabelText("輸出尺寸") as HTMLSelectElement;
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      "1536x1024（模型預設）",
+      "1536×1024（橫向）",
+      "1024×1024（方形）",
+    ]);
 
+    fireEvent.change(select, { target: { value: "1024x1024" } });
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
     await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
     expect(JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body))).toMatchObject({
-      imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" }, promptMaxBytes: 8000 },
+      imageProfile: { options: { size: "1024x1024" } },
     });
   });
 
-  it("欄位全部留白時送 null，才清得掉已經設過的參數", async () => {
+  it("選回「模型預設」時整個欄位拿掉，全部留白就送 null", async () => {
     const base = libraryWithConnection();
     const fetchMock = stubLibraryFetch({
       ...base,
       models: base.models.map((entry) =>
         entry.id === "image-1"
-          ? { ...entry, imageProfile: { sizing: { mode: "size", value: "1536x1024" } } }
+          ? { ...entry, imageProfile: { options: { size: "1024x1024" } } }
           : entry,
       ),
     });
     render(<ModelLibrary onNavigate={() => {}} />);
     const row = await imageRow();
+    await waitFor(() => expect(within(row).queryByLabelText("輸出尺寸")).toBeTruthy());
 
-    // 送 undefined 的話 key 會在 JSON 裡消失，PATCH 就變成「不動這個欄位」。
-    fireEvent.change(within(row).getByLabelText("尺寸參數"), { target: { value: "" } });
+    // 存一個空字串的話，伺服器拿它去比對 provider 宣告的選項會落空——選回預設就是整個拿掉。
+    fireEvent.change(within(row).getByLabelText("輸出尺寸"), { target: { value: "" } });
     fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
 
     await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
     const body = JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body)) as {
       imageProfile: unknown;
     };
+    // 送 undefined 的話 key 會在 JSON 裡消失，PATCH 就變成「不動這個欄位」。
     expect(body.imageProfile).toBeNull();
+  });
+
+  it("沒有已知可調項的模型不給假選項", async () => {
+    stubLibraryFetch(libraryWithConnection(), {});
+    render(<ModelLibrary onNavigate={() => {}} />);
+    const row = await imageRow();
+    // 列一個端點不吃的值，使用者選了只會拿到不透明的 400——所以什麼都不列。
+    await waitFor(() => expect(within(row).getByText(/沒有已知的可調項/)).toBeTruthy());
+    expect(within(row).queryByLabelText("輸出尺寸")).toBeNull();
   });
 
   it("儲存成功之後「儲存」按鈕就回到停用，不會一直顯示成有未存的變更", async () => {
@@ -435,7 +477,7 @@ describe("ModelLibrary 影像參數", () => {
       ...base,
       models: base.models.map((entry) =>
         entry.id === "image-1"
-          ? { ...entry, imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" } } }
+          ? { ...entry, imageProfile: { options: { size: "1024x1024" } } }
           : entry,
       ),
     };
@@ -448,6 +490,8 @@ describe("ModelLibrary 影像參數", () => {
             ? input.pathname
             : new URL(input.url).pathname;
       if (path === "/api/model-library" && !init?.method) return Response.json(base);
+      if (path === "/api/model-library/image-options")
+        return Response.json({ options: imageOptionSets });
       if (init?.method === "PATCH" && path.startsWith("/api/model-library/models/"))
         return Response.json(saved);
       if (path.endsWith("/models") && path.startsWith("/api/model-library/connections"))
@@ -457,13 +501,12 @@ describe("ModelLibrary 影像參數", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<ModelLibrary onNavigate={() => {}} />);
     const row = await imageRow();
+    await waitFor(() => expect(within(row).queryByLabelText("輸出尺寸")).toBeTruthy());
 
     expect((within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    fireEvent.change(within(row).getByLabelText("尺寸參數"), {
-      target: { value: "aspect_ratio" },
-    });
+    fireEvent.change(within(row).getByLabelText("輸出尺寸"), { target: { value: "1024x1024" } });
     expect((within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
@@ -478,20 +521,11 @@ describe("ModelLibrary 影像參數", () => {
     );
   });
 
-  it("尺寸值留白或上限不是數字時就地報錯，且不送出請求", async () => {
+  it("進階欄位不是數字時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
     const row = await imageRow();
 
-    fireEvent.change(within(row).getByLabelText("尺寸參數"), { target: { value: "size" } });
-    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
-    expect(
-      within(row)
-        .getAllByRole("alert")
-        .some((node) => /請填尺寸/.test(node.textContent ?? "")),
-    ).toBe(true);
-
-    fireEvent.change(within(row).getByLabelText("尺寸值"), { target: { value: "1536x1024" } });
     fireEvent.change(within(row).getByLabelText("參考圖上限"), { target: { value: "abc" } });
     fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
     expect(
@@ -511,7 +545,7 @@ describe("ModelLibrary 影像參數", () => {
       .getAllByLabelText("模型名稱")
       .find((node) => (node as HTMLInputElement).value === "GPT 文字") as HTMLElement;
     const row = nameInput.closest(".model-library-row") as HTMLElement;
-    expect(within(row).queryByLabelText("尺寸參數")).toBeNull();
+    expect(within(row).queryByText("影像參數")).toBeNull();
   });
 });
 

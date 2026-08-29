@@ -10,6 +10,7 @@ export * from "./download-filename.js";
 export * from "./outline-markdown.js";
 export * from "./image-contract.js";
 export * from "./model-library.js";
+export * from "./image-options.js";
 export * from "./model-profile.js";
 export * from "./log.js";
 export * from "./http-response.js";

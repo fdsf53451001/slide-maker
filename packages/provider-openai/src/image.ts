@@ -1,4 +1,5 @@
 import {
+  generalImageProfileOverride,
   type ImageModelProfile,
   type ResolvedImageProfile,
   resolveImageProfile,
@@ -15,10 +16,11 @@ import { type OpenAiClientConfig, probeReady } from "./http.js";
 import { generateViaImagesApi } from "./image-api.js";
 import { generateViaChat } from "./image-chat.js";
 import { generateViaOpenRouter } from "./image-openrouter.js";
+import { imageOptionSet } from "./image-options.js";
 import {
-  defaultImageProfile,
   type OpenAiImageApiShape,
   referenceLimitFor,
+  transportDefaultProfile,
 } from "./image-profile.js";
 
 export type { OpenAiImageApiShape };
@@ -57,9 +59,14 @@ export class OpenAiCompatibleImageProvider implements ImageProvider {
     this.id = options.id ?? "openai-image";
     this.#options = options;
     this.#shape = options.apiShape ?? "images";
+    // 三層：transport 預設 → 這個模型的 option set 翻出來的 → entry 上與模型無關的覆寫。
+    // option set 的 `resolve({})` 就是這個模型的預設行為，所以「沒設定」與「使用者選了」
+    // 走的是同一條路，不會分岔成兩套規則。
+    const optionSet = imageOptionSet(this.#shape, options.model);
     this.#profile = resolveImageProfile(
-      defaultImageProfile(this.#shape, options.model, options.requestSize),
-      options.profile,
+      transportDefaultProfile(this.#shape, options.requestSize),
+      optionSet?.resolve(options.profile?.options ?? {}),
+      generalImageProfileOverride(options.profile),
     );
     // 兩種 transport 都支援參考圖：chat 走 image_url parts；images 走 /images/edits 的 image[] 陣列。
     this.capabilities = {

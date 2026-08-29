@@ -249,7 +249,7 @@ describe("model library CRUD and project composition", () => {
     await send(`/api/model-library/connections/${openaiConnection.id}`, "DELETE");
   });
 
-  it("stores an image profile, refuses a sizing mode the transport cannot express", async (context) => {
+  it("stores the options a provider declares and refuses the ones it does not offer", async (context) => {
     if (unavailable) return context.skip();
     let library = await send<ModelLibrary>("/api/model-library/connections", "POST", {
       name: "影像參數用端點",
@@ -262,37 +262,62 @@ describe("model library CRUD and project composition", () => {
       name: "影像參數模型",
       capability: "image",
       providerKind: "openai",
-      model: "vendor/unrecognised-image-model",
+      // 這個模型在 images 通道上有一組宣告好的可調項（解析度檔位）。
+      model: "grok-imagine-image-2.0",
       connectionRef: connection.id,
-      imageProfile: { sizing: { mode: "aspect_ratio", resolution: "2k" }, promptMaxBytes: 8000 },
+      imageProfile: { options: { resolution: "2k" }, promptMaxBytes: 8000 },
     });
     const entry = library.models.at(-1)!;
-    expect(entry.imageProfile).toEqual({
-      sizing: { mode: "aspect_ratio", resolution: "2k" },
-      promptMaxBytes: 8000,
-    });
+    expect(entry.imageProfile).toEqual({ options: { resolution: "2k" }, promptMaxBytes: 8000 });
 
-    // image_size 是 Gemini 系的講法，images 這條 REST 路徑上沒有對應欄位。存下一個對不上
-    // 的組合不會有立即症狀——transport 會靜默不送尺寸，使用者只會覺得這個模型畫得比較差。
+    // 「這個模型可調什麼」由 provider 宣告，伺服器原樣交給前端渲染。
+    const declared = await json<{
+      options: Record<
+        string,
+        { id: string; fields: Array<{ id: string; choices?: Array<{ id: string }> }> }
+      >;
+    }>("/api/model-library/image-options");
+    expect(declared.options[entry.id]?.id).toBe("grok-imagine");
+    expect(declared.options[entry.id]?.fields[0]?.choices?.map((choice) => choice.id)).toContain(
+      "2k",
+    );
+
+    // 存一個宣告裡沒有的值／欄位，畫面上會顯示成有效設定，送出時卻什麼都不會發生。
     await expect(
       send(`/api/model-library/models/${entry.id}`, "PATCH", {
-        imageProfile: { sizing: { mode: "image_size", resolution: "2k" } },
+        imageProfile: { options: { resolution: "8k" } },
       }),
-    ).rejects.toThrow("IMAGE_PROFILE_SIZING_UNSUPPORTED");
+    ).rejects.toThrow("IMAGE_PROFILE_OPTION_INVALID");
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", {
+        imageProfile: { options: { imageSize: "2k" } },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_OPTION_INVALID");
     // 擋下之後不得留下副作用。
     const afterReject = await json<ModelLibrary>("/api/model-library");
     expect(afterReject.models.find((item) => item.id === entry.id)?.imageProfile).toEqual({
-      sizing: { mode: "aspect_ratio", resolution: "2k" },
+      options: { resolution: "2k" },
       promptMaxBytes: 8000,
     });
-    // 改走 chat 通道之後同一個 sizing 就合法了。
+
+    // 換通道會讓既有的選值失去對應——驗證跑在**合併後**的 entry 上才抓得到這種。
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", { imageApi: "chat" }),
+    ).rejects.toThrow("IMAGE_PROFILE_OPTION_INVALID");
+
+    // 參考圖上限設得比端點自身的上限高不會生效（provider 會夾回去），使用者卻會以為每頁
+    // 真的能附那麼多張。images 通道是 16 張。
+    await expect(
+      send(`/api/model-library/models/${entry.id}`, "PATCH", {
+        imageProfile: { maxReferenceImages: 20 },
+      }),
+    ).rejects.toThrow("IMAGE_PROFILE_REFERENCE_LIMIT_TOO_HIGH");
     library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
-      imageApi: "chat",
-      imageProfile: { sizing: { mode: "image_size", resolution: "4k" } },
+      imageProfile: { maxReferenceImages: 4 },
     });
-    expect(library.models.find((item) => item.id === entry.id)?.imageProfile).toEqual({
-      sizing: { mode: "image_size", resolution: "4k" },
-    });
+    expect(
+      library.models.find((item) => item.id === entry.id)?.imageProfile?.maxReferenceImages,
+    ).toBe(4);
 
     // null 明確清掉；送 undefined 的話 key 會在 JSON 裡消失，PATCH 等於「不動它」。
     library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
@@ -308,38 +333,19 @@ describe("model library CRUD and project composition", () => {
         providerKind: "openai",
         model: "gpt-test",
         connectionRef: connection.id,
-        imageProfile: { sizing: { mode: "size", value: "1536x1024" } },
+        imageProfile: { promptMaxBytes: 8000 },
       }),
     ).rejects.toThrow("IMAGE_PROFILE_NOT_APPLICABLE");
 
-    // 參考圖上限設得比端點自身的上限高不會生效（provider 會夾回去），使用者卻會以為每頁
-    // 真的能附那麼多張。這個 entry 上面已改走 chat 通道，上限是 8 張。
-    await expect(
-      send(`/api/model-library/models/${entry.id}`, "PATCH", {
-        imageProfile: { maxReferenceImages: 20 },
-      }),
-    ).rejects.toThrow("IMAGE_PROFILE_REFERENCE_LIMIT_TOO_HIGH");
-    // 端點上限之內就收下。
-    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
-      imageProfile: { maxReferenceImages: 4 },
-    });
-    expect(
-      library.models.find((item) => item.id === entry.id)?.imageProfile?.maxReferenceImages,
-    ).toBe(4);
-    library = await send<ModelLibrary>(`/api/model-library/models/${entry.id}`, "PATCH", {
-      imageProfile: null,
-    });
-
-    // 影像參數對 mock／local 也沒有作用——這兩種 kind 不打 HTTP 影像端點，profile 對它們
-    // 一樣是死欄位。這是與上面「capability 不是 image」不同的分支（provider kind 檢查），
-    // 兩個分支共用同一個錯誤碼，容易只測到其中一個就以為擋住了。
+    // 影像參數對 mock／local 也沒有作用——這兩種 kind 不打 HTTP 影像端點。這是與上面
+    // 「capability 不是 image」不同的分支（provider kind 檢查），兩個分支共用同一個錯誤碼。
     await expect(
       send("/api/model-library/models", "POST", {
         name: "mock 影像模型帶影像參數",
         capability: "image",
         providerKind: "mock",
         model: "",
-        imageProfile: { sizing: { mode: "size", value: "1536x1024" } },
+        imageProfile: { promptMaxBytes: 8000 },
       }),
     ).rejects.toThrow("IMAGE_PROFILE_NOT_APPLICABLE");
 

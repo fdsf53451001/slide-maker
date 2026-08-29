@@ -14,9 +14,8 @@ import {
   extractOpenRouterImage,
   flattenMaskToBlack,
   maskAwareDataUrl,
-  SIZING_MODES_BY_SHAPE,
+  IMAGE_OPTION_SETS,
 } from "../src/index.js";
-import type { ImageModelProfile, ImageSizing } from "@slide-maker/core";
 
 // ---- minimal valid PNG builder (structure only; not real pixels) --------------
 
@@ -704,20 +703,20 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body).toContain('name="image[]"');
   });
 
-  // ---- profile 驅動的參數（取代舊的模型名前綴比對）--------------------------------
+  // ---- 可調項由 provider 宣告、使用者選值 ----------------------------------------
   //
-  // 舊版是 `/^grok-imagine-image/i` 這種前綴比對。同一個模型在不同 gateway 上 id 寫法就
-  // 不同（`grok-imagine-image-2.0` vs `x-ai/grok-imagine-image-quality`），前綴只命中得了
-  // 其中一種，而判斷發生在送出的那一刻——猜不中就靜默少送欄位，與沒寫過長得一模一樣。
-  // 所以這幾條刻意用**與任何家族都對不上**的模型名：送出什麼欄位只跟 profile 有關。
+  // 「這個模型可調什麼」是 provider 的 option set 說了算（`image-options.ts`），框架只負責
+  // 把選到的值交回去翻譯。所以這幾條驗的是兩件事：選了值真的落到 request body 上、以及
+  // 沒有 option set 的模型退回 transport 預設而不是憑空送一個欄位。
 
-  it("images shape sends aspect_ratio + resolution when the profile says so", async () => {
+  it("a Grok Imagine model turns the chosen resolution into aspect_ratio + resolution", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
     const provider = new OpenAiCompatibleImageProvider({
       config: active.config,
-      model: "vendor/unrecognised-image-model",
-      profile: { sizing: { mode: "aspect_ratio", resolution: "2k" } },
+      // 同一個模型在不同 gateway 上寫法不同，比對前會先剝掉 vendor 前綴。
+      model: "x-ai/grok-imagine-image-2.0",
+      profile: { options: { resolution: "4k" } },
     });
     const image = await provider.generate(imageRequest());
     const body = active.requests[0]!.body as {
@@ -725,15 +724,16 @@ describe("OpenAiCompatibleImageProvider", () => {
       aspect_ratio?: string;
       resolution?: string;
     };
+    // 這條端點不吃 size——送它正是 2026-08-28 那次生成失敗的直接原因。
     expect(body.size).toBeUndefined();
     expect(body.aspect_ratio).toBe("16:9");
-    expect(body.resolution).toBe("2k");
+    expect(body.resolution).toBe("4k");
     // 產物 metadata 帶著實際送出的尺寸參數，之後查「這張是用什麼設定生的」才有依據。
-    expect(image.parameters.resolution).toBe("2k");
+    expect(image.parameters.resolution).toBe("4k");
     expect(image.parameters.size).toBeUndefined();
   });
 
-  it("chat shape sends image_config for a non-gemini model when the profile asks", async () => {
+  it("a Gemini chat model turns the chosen imageSize into image_config", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     const dataUrl = `data:image/png;base64,${b64}`;
     active = await startFake(() => ({
@@ -742,9 +742,9 @@ describe("OpenAiCompatibleImageProvider", () => {
     }));
     const provider = new OpenAiCompatibleImageProvider({
       config: active.config,
-      model: "vendor/unrecognised-image-model",
+      model: "gemini-3.1-flash-image",
       apiShape: "chat",
-      profile: { sizing: { mode: "image_size", resolution: "4k" } },
+      profile: { options: { imageSize: "4k" } },
     });
     await provider.generate(imageRequest());
     const body = active.requests[0]!.body as {
@@ -755,12 +755,32 @@ describe("OpenAiCompatibleImageProvider", () => {
     expect(body.image_config?.aspect_ratio).toBe("16:9");
   });
 
+  it("a model with no option set falls back to the transport default", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "vendor/unrecognised-image-model",
+      // 認不出來的模型沒有可調項，存下來的值也不該被憑空當成某一家的欄位送出去。
+      profile: { options: { resolution: "4k" } },
+    });
+    await provider.generate(imageRequest());
+    const body = active.requests[0]!.body as {
+      size?: string;
+      aspect_ratio?: string;
+      resolution?: string;
+    };
+    expect(body.size).toBe("1536x1024");
+    expect(body.aspect_ratio).toBeUndefined();
+    expect(body.resolution).toBeUndefined();
+  });
+
   it("a profile prompt budget fails the call without sending a request", async () => {
     active = await startFake(() => ({ status: 200, json: {} }));
     const provider = new OpenAiCompatibleImageProvider({
       config: active.config,
       model: "gpt-image-1",
-      profile: { sizing: { mode: "size", value: "1536x1024" }, promptMaxBytes: 200 },
+      profile: { promptMaxBytes: 200 },
     });
     // 截斷是更壞的交換：prompt 尾端依序是簡報內容、UNTRUSTED_PRESENTATION_JSON 隔離
     // 標記與注入防線，從尾端砍等於先砍掉安全邊界再送出半份資料。
@@ -776,12 +796,11 @@ describe("OpenAiCompatibleImageProvider", () => {
       apiKey: "test-key",
       timeoutMs: 1_000,
     };
-    const sizing = { mode: "size", value: "1536x1024" } as const;
     expect(
       new OpenAiCompatibleImageProvider({
         config,
         model: "gpt-image-1",
-        profile: { sizing, maxReferenceImages: 4 },
+        profile: { maxReferenceImages: 4 },
       }).capabilities.maxReferenceImages,
     ).toBe(4);
     // 設得比端點自身的上限高只會換來 gateway 的不透明 400，而 jobs.ts 會以為還塞得下。
@@ -789,69 +808,67 @@ describe("OpenAiCompatibleImageProvider", () => {
       new OpenAiCompatibleImageProvider({
         config,
         model: "gpt-image-1",
-        profile: { sizing, maxReferenceImages: 99 },
+        profile: { maxReferenceImages: 99 },
       }).capabilities.maxReferenceImages,
     ).toBe(16);
   });
 
   /**
-   * `SIZING_MODES_BY_SHAPE` 是模型庫寫入時的相容性檢查所依據的表。它與 transport 真正
-   * 認得的欄位若走散，後果正是這整個機制要消滅的那一種：設定通過驗證、送出時靜默 no-op。
-   * 所以逐一送一次請求，確認每一種「宣稱支援」的講法都真的落到 request body 上。
+   * 每一個宣告出來的選項都必須真的落到 request body 上。
+   *
+   * 這是整個機制唯一會靜默失效的地方：option set 列了一個 transport 翻不出來的值，使用者
+   * 選了、存了、UI 上看起來一切正常，送出時卻什麼都沒帶。所以逐一送一次真請求。
    */
-  it("every sizing mode a transport advertises actually reaches the request body", async () => {
+  it("every choice an option set advertises actually reaches the request body", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
     const dataUrl = `data:image/png;base64,${b64}`;
-    const sizingFor = (mode: ImageSizing["mode"]): ImageSizing =>
-      mode === "size"
-        ? { mode, value: "1536x1024" }
-        : mode === "none"
-          ? { mode }
-          : { mode, resolution: "2k" };
-    /** 該 mode 應該在 body 上留下的欄位；`none` 是「三個都不該出現」。 */
-    const expectedField: Record<ImageSizing["mode"], string | undefined> = {
-      size: "size",
-      aspect_ratio: "aspect_ratio",
-      image_size: "image_config",
-      none: undefined,
-    };
+    /** 每個 option set 用哪個模型與通道才會被選中，以及它該在 body 上留下的欄位。 */
+    const cases: ReadonlyArray<{
+      setId: string;
+      model: string;
+      shape: "images" | "chat";
+      field: string;
+    }> = [
+      { setId: "gemini-chat", model: "gemini-3.1-flash-image", shape: "chat", field: "image_config" },
+      { setId: "grok-imagine", model: "grok-imagine-image-2.0", shape: "images", field: "resolution" },
+      { setId: "gpt-image", model: "gpt-image-2", shape: "images", field: "size" },
+    ];
+    // 少宣告一個 set（或多一個沒有 case 的）都要讓這條測試停下來，否則新加的那組不會被驗到。
+    expect(IMAGE_OPTION_SETS.map((set) => set.id).sort()).toEqual(
+      cases.map((item) => item.setId).sort(),
+    );
 
-    for (const [shape, modes] of Object.entries(SIZING_MODES_BY_SHAPE)) {
-      for (const mode of modes) {
-        const profile: ImageModelProfile = { sizing: sizingFor(mode) };
-        const fake = await startFake((captured) =>
-          captured.path.includes("/chat/completions")
-            ? {
-                status: 200,
-                json: { choices: [{ message: { images: [{ image_url: { url: dataUrl } }] } }] },
-              }
-            : { status: 200, json: { data: [{ b64_json: b64 }] } },
-        );
-        try {
-          const provider = new OpenAiCompatibleImageProvider({
-            config:
-              shape === "openrouter-image"
-                ? { ...fake.config, baseUrl: `${fake.config.baseUrl}/images` }
-                : fake.config,
-            // 刻意用對不上任何家族的模型名：送出什麼只能由 profile 決定。
-            model: "vendor/unrecognised-image-model",
-            apiShape: shape as "images" | "chat" | "openrouter-image",
-            profile,
-          });
-          await provider.generate(imageRequest());
-          const body = fake.requests[0]!.body as Record<string, unknown>;
-          const field = expectedField[mode];
-          if (field) expect(body[field], `${shape} / ${mode}`).toBeDefined();
-          else
-            for (const absent of ["size", "aspect_ratio", "resolution", "image_config"])
-              expect(body[absent], `${shape} / ${mode}`).toBeUndefined();
-        } finally {
-          fake.server.closeAllConnections();
-          await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+    for (const item of cases) {
+      const set = IMAGE_OPTION_SETS.find((candidate) => candidate.id === item.setId)!;
+      for (const field of set.fields) {
+        if (field.kind !== "select") continue;
+        for (const choice of field.choices) {
+          const fake = await startFake((captured) =>
+            captured.path.includes("/chat/completions")
+              ? {
+                  status: 200,
+                  json: { choices: [{ message: { images: [{ image_url: { url: dataUrl } }] } }] },
+                }
+              : { status: 200, json: { data: [{ b64_json: b64 }] } },
+          );
+          try {
+            const provider = new OpenAiCompatibleImageProvider({
+              config: fake.config,
+              model: item.model,
+              apiShape: item.shape,
+              profile: { options: { [field.id]: choice.id } },
+            });
+            await provider.generate(imageRequest());
+            const body = fake.requests[0]!.body as Record<string, unknown>;
+            expect(body[item.field], `${item.setId} / ${field.id} = ${choice.id}`).toBeDefined();
+          } finally {
+            fake.server.closeAllConnections();
+            await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+          }
         }
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("images shape without references still uses /images/generations", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");

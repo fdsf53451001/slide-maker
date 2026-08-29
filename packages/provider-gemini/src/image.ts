@@ -1,8 +1,8 @@
 import {
   aspectRatioLabel,
   buildImageGenerationContract,
+  generalImageProfileOverride,
   type ImageModelProfile,
-  type ImageSizing,
   type ResolvedImageProfile,
   resolveImageProfile,
   SafeProviderError,
@@ -31,6 +31,7 @@ import {
   rethrowAsGeminiError,
   type GeminiClientConfig,
 } from "./http.js";
+import { geminiImageOptionSet } from "./image-options.js";
 import { parseGeminiUsage } from "./usage.js";
 
 export interface GeminiImageOptions {
@@ -53,14 +54,10 @@ export const MAX_REFERENCES = 8;
  * 見 `provider-openai` 的 `defaultImageProfile()`——那是同一個決定，兩條路都要送。
  */
 /**
- * 原生端點說得出來的尺寸講法（`size`／`aspect_ratio` 是 OpenAI-compatible REST 的欄位，
- * 這裡沒有對應）。理由同 provider-openai 的 `SIZING_MODES_BY_SHAPE`：單一真相。
+ * 原生端點在沒有任何設定時送什麼。實際值由 option set 的 `resolve({})` 決定（見
+ * `image-options.ts`），這裡只給 transport 層的骨架：`none` 表示「這一層不主張任何尺寸」。
  */
-export const GEMINI_SIZING_MODES: ReadonlyArray<ImageSizing["mode"]> = ["image_size", "none"];
-
-export const DEFAULT_GEMINI_IMAGE_PROFILE: ResolvedImageProfile = {
-  sizing: { mode: "image_size", resolution: "2k" },
-};
+const TRANSPORT_DEFAULT_PROFILE: ResolvedImageProfile = { sizing: { mode: "none" } };
 
 interface InlineDataPart {
   inlineData: { mimeType: string; data: string };
@@ -155,7 +152,13 @@ export class GeminiImageProvider implements ImageProvider {
   constructor(options: GeminiImageOptions) {
     this.id = options.id ?? "gemini-image";
     this.#options = options;
-    this.#profile = resolveImageProfile(DEFAULT_GEMINI_IMAGE_PROFILE, options.profile);
+    // 兩層：transport 骨架 → 這個模型的 option set 翻出來的（`resolve({})` 就是它的預設
+    // 行為）→ entry 上與模型無關的覆寫。「沒設定」與「使用者選了」走同一條路。
+    this.#profile = resolveImageProfile(
+      TRANSPORT_DEFAULT_PROFILE,
+      geminiImageOptionSet(options.model).resolve(options.profile?.options ?? {}),
+      generalImageProfileOverride(options.profile),
+    );
     this.capabilities = {
       fullSlideGeneration: true,
       referenceImages: true,

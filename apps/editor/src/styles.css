@@ -5107,10 +5107,47 @@ header {
   letter-spacing: 0.04em;
   color: var(--text-muted);
 }
-.model-library-image-profile select,
-.model-library-image-profile input {
-  flex: 1 1 150px;
+.model-library-option-field {
+  display: flex;
+  align-items: center;
+  flex: 1 1 200px;
   min-width: 0;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.model-library-option-field > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.model-library-option-field select,
+.model-library-option-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-library-option-empty {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* 與模型無關的兩格（參考圖／prompt 上限）平常收起來，只有撞到端點限制時才會動到。 */
+.model-library-advanced {
+  flex: 0 0 auto;
+}
+.model-library-advanced > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.model-library-advanced-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 .model-library-inline-wrap {
   display: flex;

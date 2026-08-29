@@ -1,9 +1,4 @@
-import {
-  type ImageSizing,
-  type ResolvedImageProfile,
-  SafeProviderError,
-  utf8ByteLength,
-} from "@slide-maker/core";
+import { type ResolvedImageProfile, SafeProviderError, utf8ByteLength } from "@slide-maker/core";
 
 /**
  * Maintained image transports:
@@ -23,23 +18,6 @@ export const DEFAULT_IMAGES_REQUEST_SIZE = "1536x1024";
 export const MAX_IMAGES_REFERENCES = 16;
 export const MAX_CHAT_REFERENCES = 8;
 export const MAX_OPENROUTER_REFERENCES = 8;
-
-/**
- * 每條 transport 說得出來的尺寸講法。**這是單一真相**：模型庫寫入時的相容性檢查要 import
- * 這份，不可在伺服器端另抄一份——抄一份的話，新增一種 mode 只改了其中一邊就會通過驗證、
- * 然後在送出時靜默 no-op，那正是整個 profile 機制要消滅的失敗形狀。
- *
- * 內容必須與 `image-api.ts` 的 `sizingFields()`／`image-chat.ts` 的 `imageConfigFields()`
- * 真正認得的 mode 一致，`image-profile.test.ts` 逐一送出請求釘住這件事。
- */
-export const SIZING_MODES_BY_SHAPE: Record<
-  OpenAiImageApiShape,
-  ReadonlyArray<ImageSizing["mode"]>
-> = {
-  images: ["size", "aspect_ratio", "none"],
-  chat: ["image_size", "none"],
-  "openrouter-image": ["none"],
-};
 
 export const MAX_REFERENCES_BY_SHAPE: Record<OpenAiImageApiShape, number> = {
   images: MAX_IMAGES_REFERENCES,
@@ -78,48 +56,18 @@ export function assertPromptBudget(prompt: string, profile: ResolvedImageProfile
 }
 
 /**
- * 從模型名猜這是不是 Gemini 系。
+ * transport 自己的預設尺寸講法——**與模型無關**，只表達「這條路徑在沒有任何設定時送什麼」。
+ * 哪個模型該送什麼由 `image-options.ts` 的 option set 決定，那裡才是唯一看模型名的地方。
  *
- * **這個猜測只准出現在這裡**：它是「建立 provider 時算一次預設值」，結果會落進一個具名
- * 的 profile 物件、可被模型庫 entry 覆寫、而且在產物 metadata 裡看得到。送出請求的那一刻
- * 不再有任何模型名判斷——那正是拿掉的東西。
- *
- * 差別在於猜錯的後果：在這裡猜錯是「預設值不對，去 UI 改一格」；在送出時猜錯是靜默少送
- * 欄位，而那與「沒寫過這段」長得一模一樣。同一個模型在不同 gateway 上 id 寫法本來就不同
- * （`grok-imagine-image-2.0` vs `x-ai/grok-imagine-image-quality`），前綴比對只命中得了其中
- * 一種寫法，所以這裡也會漏（走 OpenRouter 形式命名的 `google/gemini-…` 就猜不中）——只是
- * 現在漏了有地方可以修。
- */
-function looksLikeGeminiFamily(model: string): boolean {
-  return /^gemini-/i.test(model);
-}
-
-/**
- * transport ＋ 模型名推導出的預設 profile。模型庫 entry 有設定時一律以 entry 為準。
- *
- * Gemini 系的 `image_size` 檔位取 `2k`，這是畫質的關鍵而非可有可無的調校：2026-07-31
- * 實測（AI Studio 原生端點與 CLIProxyAPI 的 chat translator 行為一致）不送時模型只回
- * 1376×768，`rasterToCanvasPng` 得**放大 1.40×** 才填滿 1920×1080；送 `2K` 回 2752×1536，
- * 變成**下採樣 0.70×**——放大會糊，下採樣反而銳利。端到端跑真實投影片 fixture：銳利度
- * （Laplacian 變異數）99.3 → 430.1、0.87–1.0 頻段高頻能量 0.0042% → 0.0300%，代價是
- * 耗時 +17%、token +16%（3296 → 3819）。（拿純色測試圖估會低估收益、高估成本：那組只有
- * 34.8 → 66.9，成本卻是 +60%／+36%。影像的量測一律要用有內容的 fixture。）`4k` 回
- * 5504×3072／9 MB，對這個畫布是浪費。與 `packages/provider-gemini` 是同一個決定。
- *
- * 非 Gemini 的 chat 路由與 OpenRouter 不送尺寸：那兩條沒有對應的 translator，而嚴格的
+ * images 預設送 `size`：這條 REST 路徑上絕大多數模型（gpt-image 系）都吃它，而且不送的話
+ * 端點會用自己的預設尺寸。chat 與 openrouter 預設不送：那兩條沒有共通的尺寸欄位，而嚴格的
  * OpenAI 端點可能直接拒絕未知欄位。
  */
-export function defaultImageProfile(
+export function transportDefaultProfile(
   shape: OpenAiImageApiShape,
-  model: string,
   requestSize?: string,
 ): ResolvedImageProfile {
-  if (shape === "chat")
-    return {
-      sizing: looksLikeGeminiFamily(model)
-        ? { mode: "image_size", resolution: "2k" }
-        : { mode: "none" },
-    };
-  if (shape === "openrouter-image") return { sizing: { mode: "none" } };
-  return { sizing: { mode: "size", value: requestSize ?? DEFAULT_IMAGES_REQUEST_SIZE } };
+  if (shape === "images")
+    return { sizing: { mode: "size", value: requestSize ?? DEFAULT_IMAGES_REQUEST_SIZE } };
+  return { sizing: { mode: "none" } };
 }
