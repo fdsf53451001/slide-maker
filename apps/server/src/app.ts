@@ -457,9 +457,21 @@ export async function createApp(
     editorAvailable = false;
   }
   if (editorAvailable) {
+    /*
+      `dotfiles:"allow"` 不可省：`send` 的預設是 `"ignore"`，而它檢查的是**整條絕對路徑**的
+      每一個分段，所以只要部署路徑上有任何一層是點開頭的目錄（`.claude/worktrees/…` 的
+      worktree、`~/.local/share/…`、CI 的 `.cache/…`），這兩條 SPA fallback 就會對存在的
+      index.html 丟 `NotFoundError("Not Found")`——那個訊息又正好落進錯誤中介層的
+      `/not found/i` 分支。症狀是首頁打得開（那是 `express.static` 服務的），但重新整理任何
+      子頁面都變成一段 `{"error":"NOT_FOUND"}` 的 JSON，看起來完全不像路徑問題。
+      這裡送的是伺服器自己指定的常數路徑，不是使用者輸入，允許 dotfile 沒有暴露風險。
+    */
+    const sendEditorIndex = (_request: Request, response: Response): void => {
+      response.sendFile(editorIndex, { dotfiles: "allow" });
+    };
     app.use(express.static(editorDist));
-    app.get("/", (_request, response) => response.sendFile(editorIndex));
-    app.get("/*path", (_request, response) => response.sendFile(editorIndex));
+    app.get("/", sendEditorIndex);
+    app.get("/*path", sendEditorIndex);
   } else {
     const unavailable = (_request: Request, response: Response) =>
       response.status(503).type("text/plain").send(EDITOR_BUILD_MISSING);
