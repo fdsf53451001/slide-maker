@@ -716,7 +716,10 @@ describe("OpenAiCompatibleImageProvider", () => {
       config: active.config,
       // 同一個模型在不同 gateway 上寫法不同，比對前會先剝掉 vendor 前綴。
       model: "x-ai/grok-imagine-image-2.0",
-      profile: { options: { resolution: "4k" } },
+      // 這裡要測的是尺寸欄位。這個 option set 同時宣告了 8000 bytes 的 prompt 上限（端點的
+      // 硬限制，見 image-options.ts 的實測），而本專案的合約超過它——不覆寫的話請求會在送出
+      // 前就被擋下，測不到 body。那件事由下一條測試單獨釘住。
+      profile: { options: { resolution: "1k" }, promptMaxBytes: 99_999 },
     });
     const image = await provider.generate(imageRequest());
     const body = active.requests[0]!.body as {
@@ -727,10 +730,31 @@ describe("OpenAiCompatibleImageProvider", () => {
     // 這條端點不吃 size——送它正是 2026-08-28 那次生成失敗的直接原因。
     expect(body.size).toBeUndefined();
     expect(body.aspect_ratio).toBe("16:9");
-    expect(body.resolution).toBe("4k");
+    expect(body.resolution).toBe("1k");
     // 產物 metadata 帶著實際送出的尺寸參數，之後查「這張是用什麼設定生的」才有依據。
-    expect(image.parameters.resolution).toBe("4k");
+    expect(image.parameters.resolution).toBe("1k");
     expect(image.parameters.size).toBeUndefined();
+  });
+
+  /**
+   * 2026-08-30 實測：這個端點的 prompt 硬上限是 8000，而本專案的影像合約光是規則段就 8376
+   * 字元／8412 bytes，完整 prompt 9533 字元／9921 bytes——即使簡報內容是空的也塞不下。
+   *
+   * 截斷不是解法：把完整 prompt 硬切到 8000 送出去，切點落在規則段中間，`UNTRUSTED_
+   * PRESENTATION_JSON` 之後那 1445 bytes 的簡報資料整段沒送出去，模型於是自己編了一個題目
+   * （實測拿回一張 "Hybrid Cloud Adoption" 的投影片，與餵進去的內容毫無關係）。圖畫得漂亮、
+   * 也「成功」回傳，是最難察覺的一種失效。所以這裡要的是**在送出前明確失敗**。
+   */
+  it("a Grok Imagine model refuses this project's contract prompt before sending", async () => {
+    active = await startFake(() => ({ status: 200, json: {} }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "grok-imagine-image-2.0",
+    });
+    await expect(provider.generate(imageRequest())).rejects.toMatchObject({
+      code: "OPENAI_IMAGE_PROMPT_TOO_LONG",
+    });
+    expect(active.requests).toHaveLength(0);
   });
 
   it("a Gemini chat model turns the chosen imageSize into image_config", async () => {
@@ -881,7 +905,9 @@ describe("OpenAiCompatibleImageProvider", () => {
               config: fake.config,
               model: item.model,
               apiShape: item.shape,
-              profile: { options: { [field.id]: choice.id } },
+              // prompt 上限覆寫掉：這條測的是「宣告的選項有沒有落到 body 上」，而 Grok
+              // Imagine 的 set 同時宣告了 8000 bytes 上限，會在送出前就把請求擋下。
+              profile: { options: { [field.id]: choice.id }, promptMaxBytes: 99_999 },
             });
             await provider.generate(imageRequest());
             const body = fake.requests[0]!.body as Record<string, unknown>;
