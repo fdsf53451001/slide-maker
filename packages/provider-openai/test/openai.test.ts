@@ -706,9 +706,10 @@ describe("OpenAiCompatibleImageProvider", () => {
 
   // ---- profile 驅動的參數（取代舊的模型名前綴比對）--------------------------------
   //
-  // 舊版是 `/^grok-imagine-image/i` 這種前綴比對，對走 gateway 的真實 id
-  // （`x-ai/grok-imagine-image-quality`）不匹配，整段靜默失效、失效的樣子與沒寫過完全
-  // 相同。所以這幾條刻意用**與任何家族都對不上**的模型名：送出什麼欄位只跟 profile 有關。
+  // 舊版是 `/^grok-imagine-image/i` 這種前綴比對。同一個模型在不同 gateway 上 id 寫法就
+  // 不同（`grok-imagine-image-2.0` vs `x-ai/grok-imagine-image-quality`），前綴只命中得了
+  // 其中一種，而判斷發生在送出的那一刻——猜不中就靜默少送欄位，與沒寫過長得一模一樣。
+  // 所以這幾條刻意用**與任何家族都對不上**的模型名：送出什麼欄位只跟 profile 有關。
 
   it("images shape sends aspect_ratio + resolution when the profile says so", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");

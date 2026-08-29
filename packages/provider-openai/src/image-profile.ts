@@ -82,10 +82,13 @@ export function assertPromptBudget(prompt: string, profile: ResolvedImageProfile
  *
  * **這個猜測只准出現在這裡**：它是「建立 provider 時算一次預設值」，結果會落進一個具名
  * 的 profile 物件、可被模型庫 entry 覆寫、而且在產物 metadata 裡看得到。送出請求的那一刻
- * 不再有任何模型名判斷——那正是拿掉的東西：`/^grok-imagine-image/i` 對走 gateway 的真實
- * id `x-ai/grok-imagine-image-quality` 不匹配，整段靜默失效，失效的樣子與沒寫過完全相同。
- * 同一個雷這裡也還在：走 OpenRouter 形式命名的 gemini（`google/gemini-...`）猜不中，
- * 但猜不中的後果現在是「預設值不對，去 UI 改一格」而不是「送出的請求少了關鍵欄位」。
+ * 不再有任何模型名判斷——那正是拿掉的東西。
+ *
+ * 差別在於猜錯的後果：在這裡猜錯是「預設值不對，去 UI 改一格」；在送出時猜錯是靜默少送
+ * 欄位，而那與「沒寫過這段」長得一模一樣。同一個模型在不同 gateway 上 id 寫法本來就不同
+ * （`grok-imagine-image-2.0` vs `x-ai/grok-imagine-image-quality`），前綴比對只命中得了其中
+ * 一種寫法，所以這裡也會漏（走 OpenRouter 形式命名的 `google/gemini-…` 就猜不中）——只是
+ * 現在漏了有地方可以修。
  */
 function looksLikeGeminiFamily(model: string): boolean {
   return /^gemini-/i.test(model);

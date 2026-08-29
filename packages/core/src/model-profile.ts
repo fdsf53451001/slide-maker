@@ -7,9 +7,11 @@ import { z } from "zod";
  * 但 HTTP 形狀是一樣的——同一條 `/images/generations` 路徑上，gpt-image 系要
  * `size:"1536x1024"`，xAI Grok Imagine 要 `aspect_ratio`+`resolution`，CLIProxyAPI 的
  * Gemini chat translator 要頂層 `image_config:{image_size,aspect_ratio}`。這種差異是
- * **參數**而不是**形狀**，塞回 transport 程式碼裡就只能靠模型名判斷，而模型名判斷必定
- * 會漏：`/^grok-imagine-image/i` 對走 gateway 的真實 id `x-ai/grok-imagine-image-quality`
- * 不匹配，整段靜默失效，而失效的樣子與「沒寫過這段」完全相同。
+ * **參數**而不是**形狀**，塞回 transport 程式碼裡就只能靠模型名判斷，而模型名判斷會漏：
+ * 同一個模型在不同 gateway 上的 id 寫法就不同——本機模型庫裡同時有 CLI2Proxy 上的
+ * `grok-imagine-image-2.0` 與 OpenRouter 上的 `x-ai/grok-imagine-image-quality`，前綴比對
+ * （`/^grok-imagine-image/i`）只命中得了前者。更糟的是判斷發生在**送出請求的那一刻**：
+ * 猜不中就靜默少送欄位，失效的樣子與「沒寫過這段」完全相同，沒有任何一步會失敗。
  *
  * 所以分工是：**transport 決定有哪些旋鈕（程式介面），profile 決定旋鈕轉到哪（資料）**。
  * 推導預設值時仍可以看模型名，但那只發生在**建立 provider 的那一刻**，結果是一個看得見、
