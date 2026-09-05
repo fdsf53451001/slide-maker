@@ -3,6 +3,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ModelLibrary } from "./ModelLibrary.js";
 
+async function openSection(name: string, create = false) {
+  const nav = await screen.findByRole("navigation", { name: "模型庫設定分區" });
+  const button = within(nav).getByRole("button", { name });
+  fireEvent.click(button);
+  if (create) {
+    const panel = document.getElementById(button.getAttribute("aria-controls")!)!;
+    const disclosure = panel.querySelector<HTMLDetailsElement>(".model-library-add")!;
+    if (!disclosure.open) fireEvent.click(disclosure.querySelector("summary")!);
+  }
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -50,6 +61,7 @@ describe("ModelLibrary 組合影像下拉", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型組合");
 
     // 以既有組合的名稱（value）為錨點定位到 CombinationRow——「新增組合」表單也有一個
     // aria-label 相同的空白輸入，故用 display value 區分；再取其影像下拉（三個 select 依序
@@ -158,6 +170,7 @@ describe("ModelLibrary 破壞性操作的確認", () => {
     vi.stubGlobal("confirm", confirmMock);
 
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
     // 用 class 定位而不是 display value：「本機 Proxy」在模型列的連線下拉裡也是選中的值。
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
@@ -179,6 +192,7 @@ describe("ModelLibrary 破壞性操作的確認", () => {
     vi.stubGlobal("confirm", confirmMock);
 
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const selector = ".model-library-group.cap-text .model-library-row";
     await waitFor(() => expect(container.querySelector(selector)).toBeTruthy());
     const modelRow = container.querySelector(selector) as HTMLElement;
@@ -196,6 +210,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("openai 模型缺少 model id 與連線時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單", true);
 
     const createBox = (await screen.findByRole("button", { name: "新增模型" })).closest(
       ".model-library-create",
@@ -222,6 +237,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("base URL 缺協定／留空都在該欄位就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線", true);
 
     const createBox = (await screen.findByRole("button", { name: "新增連線" })).closest(
       ".model-library-create",
@@ -258,6 +274,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("連線名稱留空時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線", true);
 
     const createBox = (await screen.findByRole("button", { name: "新增連線" })).closest(
       ".model-library-create",
@@ -276,6 +293,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("模型名稱留空時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單", true);
 
     const createBox = (await screen.findByRole("button", { name: "新增模型" })).closest(
       ".model-library-create",
@@ -294,6 +312,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
     // `CombinationsSection` 的驗證**只有**名稱檢查，所以少了這個案例它整條 validate 路徑零覆蓋。
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型組合", true);
 
     const createBox = (await screen.findByRole("button", { name: "新增組合" })).closest(
       ".model-library-create",
@@ -309,6 +328,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
     // 建立那邊早就擋了，儲存這邊卻沒有：同一個「延遲到下次生成才爆」的陷阱換一個畫面出現。
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
     );
@@ -328,6 +348,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("既有連線改成非 HTTP 完整網址時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
     );
@@ -349,6 +370,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("既有連線的逾時改成非數字時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
     );
@@ -372,6 +394,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
       connections: [{ ...base.connections[0]!, timeoutMs: 180_000 }],
     });
     const { container } = render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
     );
@@ -395,6 +418,7 @@ describe("ModelLibrary 送出前的欄位驗證", () => {
   it("系統設定的數字欄位擋掉非數字，不讓 NaN 送到伺服器", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("系統設定");
 
     fireEvent.change(await screen.findByLabelText("模型逾時"), { target: { value: "abc" } });
     fireEvent.click(screen.getByRole("button", { name: "儲存系統設定" }));
@@ -417,6 +441,7 @@ describe("ModelLibrary 影像參數", () => {
   it("渲染的是伺服器給的可調項，選了就照那個欄位 id 送出", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
 
     // 欄位與選項都來自 provider 的宣告，前端不認得「輸出尺寸」是什麼意思。
@@ -447,6 +472,7 @@ describe("ModelLibrary 影像參數", () => {
       ),
     });
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
     await waitFor(() => expect(within(row).queryByLabelText("輸出尺寸")).toBeTruthy());
 
@@ -465,6 +491,7 @@ describe("ModelLibrary 影像參數", () => {
   it("沒有已知可調項的模型不給假選項", async () => {
     stubLibraryFetch(libraryWithConnection(), {});
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
     // 列一個端點不吃的值，使用者選了只會拿到不透明的 400——所以什麼都不列。
     await waitFor(() => expect(within(row).getByText(/沒有已知的可調項/)).toBeTruthy());
@@ -500,6 +527,7 @@ describe("ModelLibrary 影像參數", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
     await waitFor(() => expect(within(row).queryByLabelText("輸出尺寸")).toBeTruthy());
 
@@ -524,6 +552,7 @@ describe("ModelLibrary 影像參數", () => {
   it("進階欄位不是數字時就地報錯，且不送出請求", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
 
     fireEvent.change(within(row).getByLabelText("參考圖上限"), { target: { value: "abc" } });
@@ -539,6 +568,7 @@ describe("ModelLibrary 影像參數", () => {
   it("並行生成數超過 32 就地報錯——jobs.ts 對超出範圍是丟例外，整批生成會在排程時就死", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     const row = await imageRow();
 
     fireEvent.change(within(row).getByLabelText("並行生成數"), { target: { value: "33" } });
@@ -561,6 +591,7 @@ describe("ModelLibrary 影像參數", () => {
   it("系統設定的影像並行數是全局預設，模型自己填了就以模型的為準", async () => {
     const fetchMock = stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("系統設定");
     await waitFor(() => expect(screen.getByLabelText("影像並行數")).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText("影像並行數"), { target: { value: "33" } });
@@ -578,6 +609,7 @@ describe("ModelLibrary 影像參數", () => {
   it("文字模型那一列沒有影像參數欄位", async () => {
     stubLibraryFetch(libraryWithConnection());
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
     // 「GPT 文字」也是組合那條文字下拉的選中值，故限定成模型列上的名稱輸入框。
     await waitFor(() => expect(screen.getAllByLabelText("模型名稱").length).toBeGreaterThan(0));
     const nameInput = screen
@@ -609,6 +641,7 @@ describe("ModelLibrary 寫入失敗只被回報一次", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線", true);
     const createBox = (await screen.findByRole("button", { name: "新增連線" })).closest(
       ".model-library-create",
     ) as HTMLElement;
@@ -656,6 +689,7 @@ describe("ModelLibrary 寫入失敗只被回報一次", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型組合", true);
     // rowError 掛在整個區塊的尾端（不在 `.model-library-create` 裡），所以錨點取 section。
     const section = (await screen.findByRole("button", { name: "新增組合" })).closest(
       ".model-library-section",
@@ -696,5 +730,74 @@ describe("ModelLibrary 載入失敗", () => {
     await waitFor(() =>
       expect(container.querySelector(".model-library-connection-row")).toBeTruthy(),
     );
+  });
+});
+
+describe("ModelLibrary 分區操作", () => {
+  it("切換分區保留新增草稿，且只呈現目前分區的操作", async () => {
+    stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
+    expect(
+      document.querySelector<HTMLDetailsElement>("#model-panel-connections .model-library-add")!
+        .open,
+    ).toBe(false);
+    await openSection("服務連線", true);
+    const create = document.querySelector(
+      "#model-panel-connections .model-library-create",
+    )! as HTMLElement;
+    fireEvent.change(within(create).getByLabelText("連線名稱"), {
+      target: { value: "尚未完成的連線" },
+    });
+    await openSection("模型組合");
+    expect(screen.queryByRole("button", { name: "新增連線" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "模型組合" })).toBeTruthy();
+    await openSection("服務連線");
+    expect((within(create).getByLabelText("連線名稱") as HTMLInputElement).value).toBe(
+      "尚未完成的連線",
+    );
+  });
+
+  it("搜尋可比對模型 ID 與連線，清除篩選後仍保留模型的未儲存修改", async () => {
+    stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
+    const imageName = screen.getByDisplayValue("GPT 影像");
+    fireEvent.change(imageName, { target: { value: "影像草稿名稱" } });
+    const search = screen.getByRole("searchbox", { name: "搜尋模型" });
+    fireEvent.change(search, { target: { value: "GPT-5" } });
+    expect(screen.getByRole("status").textContent).toBe("1 / 2 個模型");
+    expect(screen.getAllByRole("button", { name: "儲存" })).toHaveLength(1);
+    fireEvent.change(search, { target: { value: "不存在的模型" } });
+    expect(screen.getByText(/找不到符合/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "儲存" })).toBeNull();
+    fireEvent.change(search, { target: { value: "本機 Proxy" } });
+    expect(screen.getByRole("status").textContent).toBe("2 / 2 個模型");
+    fireEvent.change(search, { target: { value: "" } });
+    expect((screen.getByDisplayValue("影像草稿名稱") as HTMLInputElement).value).toBe(
+      "影像草稿名稱",
+    );
+    const row = imageName.closest(".model-library-row") as HTMLElement;
+    expect((within(row).getByRole("button", { name: "儲存" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it("未儲存的連線不可測試，避免使用者誤把舊連線的結果當成新設定", async () => {
+    const fetchMock = stubLibraryFetch(libraryWithConnection());
+    render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("服務連線");
+    const row = within(document.getElementById("model-panel-connections")!)
+      .getByDisplayValue("本機 Proxy")
+      .closest(".model-library-row") as HTMLElement;
+    await waitFor(() => expect(within(row).getByRole("button", { name: /測試連線/ })).toBeTruthy());
+    fireEvent.change(within(row).getByLabelText("Base URL"), {
+      target: { value: "https://new.example/v1" },
+    });
+    const callsBefore = fetchMock.mock.calls.length;
+    const test = within(row).getByRole("button", { name: "儲存後可測試" }) as HTMLButtonElement;
+    expect(test.disabled).toBe(true);
+    fireEvent.click(test);
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
   });
 });

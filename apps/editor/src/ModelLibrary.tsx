@@ -392,6 +392,9 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
   const [library, setLibrary] = useState<ModelLibraryData>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [section, setSection] = useState<"connections" | "models" | "combinations" | "system">(
+    "connections",
+  );
   // 連線 → 可用模型 id 清單快取（GET /models）。連線建立或選取時載入。
   const [connectionModels, setConnectionModels] = useState<Record<string, ConnectionModels>>({});
   // 每個影像模型可調什麼——由 provider 宣告、伺服器轉交。前端不自己算：算得出來的前提是
@@ -515,24 +518,98 @@ export function ModelLibrary({ onNavigate }: { onNavigate: (path: string) => voi
         帶「重新載入模型庫」的復原區塊，不是 toast。
       */}
       <div className="dashboard-content model-library-content">
-        <ConnectionsSection
-          library={library}
-          busy={busy}
-          run={run}
-          connectionModels={connectionModels}
-          onConnectionSaved={loadConnectionModels}
-          onTestConnection={loadConnectionModels}
-        />
-        <ModelsSection
-          library={library}
-          busy={busy}
-          run={run}
-          connectionModels={connectionModels}
-          onEnsureModels={loadConnectionModels}
-          imageOptionSets={imageOptionSets}
-        />
-        <CombinationsSection library={library} busy={busy} run={run} />
-        <SystemSection library={library} busy={busy} run={run} />
+        <div className="model-library-intro">
+          <div>
+            <span className="section-label">MODEL LIBRARY</span>
+            <h1>讓每個任務，用對模型。</h1>
+            <p>管理 AI 服務與模型，為你的簡報搭配合適的組合。</p>
+          </div>
+          <button className="model-library-default" onClick={() => setSection("combinations")}>
+            <span>
+              目前預設組合 <span aria-hidden="true">↗</span>
+            </span>
+            <strong>
+              {library.combinations.find((item) => item.id === library.defaultCombinationId)
+                ?.name ?? "尚未設定"}
+            </strong>
+          </button>
+        </div>
+        <div className="model-library-workspace">
+          <aside className="model-library-sidebar">
+            <nav aria-label="模型庫設定分區">
+              {(
+                [
+                  ["connections", "服務連線", "設定 API 網址與金鑰", library.connections.length],
+                  ["models", "模型清單", "選擇模型與調整參數", library.models.length],
+                  ["combinations", "模型組合", "搭配簡報使用的能力", library.combinations.length],
+                  ["system", "系統設定", "逾時與同時生成數", undefined],
+                ] as const
+              ).map(([id, title, hint, count]) => (
+                <button
+                  key={id}
+                  aria-label={title}
+                  aria-current={section === id ? "page" : undefined}
+                  aria-controls={`model-panel-${id}`}
+                  onClick={() => setSection(id)}
+                >
+                  <span className="model-library-nav-icon">{SECTION_ICONS[id]}</span>
+                  <span>
+                    <strong>{title}</strong>
+                    <small>{hint}</small>
+                  </span>
+                  {count !== undefined && <span className="model-library-nav-count">{count}</span>}
+                </button>
+              ))}
+            </nav>
+            <div className="model-library-guide">
+              <strong>第一次設定？</strong>
+              <p>依序完成三個步驟，就能在專案中選用。</p>
+              <ol>
+                <li>
+                  <button onClick={() => setSection("connections")}>新增服務連線</button>
+                  <span>告訴我們去哪裡連接 AI</span>
+                </li>
+                <li>
+                  <button onClick={() => setSection("models")}>加入需要的模型</button>
+                  <span>分別指定影像、文字與搜尋</span>
+                </li>
+                <li>
+                  <button onClick={() => setSection("combinations")}>建立模型組合</button>
+                  <span>搭配後設為預設，即可使用</span>
+                </li>
+              </ol>
+            </div>
+          </aside>
+          {/* 保持掛載：切換分區不丟掉尚未儲存的欄位或就地錯誤。 */}
+          <div className="model-library-panels">
+            <div id="model-panel-connections" hidden={section !== "connections"}>
+              <ConnectionsSection
+                library={library}
+                busy={busy}
+                run={run}
+                connectionModels={connectionModels}
+                onConnectionSaved={loadConnectionModels}
+                onTestConnection={loadConnectionModels}
+              />
+            </div>
+            <div id="model-panel-models" hidden={section !== "models"}>
+              <ModelsSection
+                library={library}
+                busy={busy}
+                run={run}
+                connectionModels={connectionModels}
+                onEnsureModels={loadConnectionModels}
+                imageOptionSets={imageOptionSets}
+              />
+            </div>
+            <div id="model-panel-combinations" hidden={section !== "combinations"}>
+              <CombinationsSection library={library} busy={busy} run={run} />
+            </div>
+            <div id="model-panel-system" hidden={section !== "system"}>
+              <SystemSection library={library} busy={busy} run={run} />
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   );
@@ -637,11 +714,103 @@ function ConnectionsSection({
   };
   return (
     <section className="dashboard-section model-library-section">
-      <SectionHeading icon="connections" label="CONNECTIONS" title="連線（HTTP 模型端點）" />
+      <SectionHeading icon="connections" label="CONNECTIONS" title="服務連線" />
       <p className="model-library-hint">
-        供 OpenAI 相容／Gemini 原生模型引用的 base URL 與 API key。協定決定請求形狀，選錯了
-        連線測試就會失敗。金鑰只寫不讀，顯示為佔位符。逾時留空則沿用系統設定的模型逾時。
+        先連接你的 AI 服務，再到「模型清單」加入模型。同一條連線可以供多個模型共用。
       </p>
+      <details
+        className="model-library-add"
+        open={library.connections.length === 0 ? true : undefined}
+      >
+        <summary>
+          建立新連線<span>展開填寫設定</span>
+        </summary>
+        <div className="model-library-create">
+          {/*
+          用 .model-library-combo-field 包住需要驗證的欄位：它是既有的直式欄位容器
+          （label 在上、控制項在下），錯誤字接在控制項下面才會落在「出問題的那個欄位旁邊」，
+          而不是飛到頁頂的 toast。
+        */}
+          <div className="model-library-combo-field">
+            <span>連線名稱</span>
+            <input
+              aria-label="連線名稱"
+              placeholder="名稱"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setFieldErrors((current) => ({ ...current, name: undefined }));
+              }}
+            />
+            {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
+          </div>
+          <label className="model-library-field">
+            <span>服務類型</span>
+            <select
+              aria-label="協定"
+              value={protocol}
+              onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
+            >
+              {PROTOCOLS.map((item) => (
+                <option key={item} value={item}>
+                  {PROTOCOL_LABEL[item]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="model-library-combo-field">
+            <span>API 網址（Base URL）</span>
+            <input
+              aria-label="Base URL"
+              placeholder={
+                protocol === "gemini"
+                  ? "https://generativelanguage.googleapis.com/v1beta"
+                  : "http://localhost:8317/v1"
+              }
+              value={baseUrl}
+              onChange={(event) => {
+                setBaseUrl(event.target.value);
+                setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+              }}
+            />
+            {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
+          </div>
+          <label className="model-library-field">
+            <span>API 金鑰</span>
+            <input
+              aria-label="API Key"
+              placeholder="API key"
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
+          </label>
+          <div className="model-library-inline-wrap">
+            <label className="model-library-inline-field">
+              <span>逾時 ms</span>
+              <input
+                aria-label="連線逾時"
+                inputMode="numeric"
+                placeholder="留空沿用系統"
+                value={timeout}
+                onChange={(event) => {
+                  setTimeoutMs(event.target.value);
+                  setFieldErrors((current) => ({ ...current, timeout: undefined }));
+                }}
+              />
+            </label>
+            {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
+          </div>
+          {/*
+          刻意**不**在名稱空白時 disabled：按不下去的按鈕不會告訴任何人少了什麼，
+          按得下去、然後在欄位旁指出缺漏才有下一步。
+        */}
+          <button className="primary" disabled={busy} onClick={create}>
+            {pending === "create" ? "新增中…" : "新增連線"}
+          </button>
+        </div>
+        {rowError && <FieldError>{rowError}</FieldError>}
+      </details>
       <div className="model-library-list">
         {library.connections.length === 0 && <p className="model-library-empty">尚無連線。</p>}
         {library.connections.map((connection) => (
@@ -658,83 +827,6 @@ function ConnectionsSection({
           />
         ))}
       </div>
-      <div className="model-library-create">
-        {/*
-          用 .model-library-combo-field 包住需要驗證的欄位：它是既有的直式欄位容器
-          （label 在上、控制項在下），錯誤字接在控制項下面才會落在「出問題的那個欄位旁邊」，
-          而不是飛到頁頂的 toast。
-        */}
-        <div className="model-library-combo-field">
-          <input
-            aria-label="連線名稱"
-            placeholder="名稱"
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              setFieldErrors((current) => ({ ...current, name: undefined }));
-            }}
-          />
-          {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
-        </div>
-        <select
-          aria-label="協定"
-          value={protocol}
-          onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
-        >
-          {PROTOCOLS.map((item) => (
-            <option key={item} value={item}>
-              {PROTOCOL_LABEL[item]}
-            </option>
-          ))}
-        </select>
-        <div className="model-library-combo-field">
-          <input
-            aria-label="Base URL"
-            placeholder={
-              protocol === "gemini"
-                ? "https://generativelanguage.googleapis.com/v1beta"
-                : "http://localhost:8317/v1"
-            }
-            value={baseUrl}
-            onChange={(event) => {
-              setBaseUrl(event.target.value);
-              setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
-            }}
-          />
-          {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
-        </div>
-        <input
-          aria-label="API Key"
-          placeholder="API key"
-          type="password"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-        />
-        <div className="model-library-inline-wrap">
-          <label className="model-library-inline-field">
-            <span>逾時 ms</span>
-            <input
-              aria-label="連線逾時"
-              inputMode="numeric"
-              placeholder="留空沿用系統"
-              value={timeout}
-              onChange={(event) => {
-                setTimeoutMs(event.target.value);
-                setFieldErrors((current) => ({ ...current, timeout: undefined }));
-              }}
-            />
-          </label>
-          {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
-        </div>
-        {/*
-          刻意**不**在名稱空白時 disabled：按不下去的按鈕不會告訴任何人少了什麼，
-          按得下去、然後在欄位旁指出缺漏才有下一步。
-        */}
-        <button className="primary" disabled={busy} onClick={create}>
-          {pending === "create" ? "新增中…" : "新增連線"}
-        </button>
-      </div>
-      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -791,41 +883,58 @@ function ConnectionRow({
         : "測試連線";
   return (
     <div className="model-library-row model-library-connection-row">
+      <div className="model-library-card-heading">
+        <strong>{connection.name}</strong>
+        <span className="model-library-tag muted">{PROTOCOL_LABEL[connection.protocol]}</span>
+        <span className="model-library-card-meta">{dependents.length} 個模型使用</span>
+      </div>
       <div className="model-library-row-fields">
-        <input
-          aria-label="連線名稱"
-          value={name}
-          onChange={(event) => {
-            setName(event.target.value);
-            setFieldErrors((current) => ({ ...current, name: undefined }));
-          }}
-        />
-        <select
-          aria-label="協定"
-          value={protocol}
-          onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
-        >
-          {PROTOCOLS.map((item) => (
-            <option key={item} value={item}>
-              {PROTOCOL_LABEL[item]}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="Base URL"
-          value={baseUrl}
-          onChange={(event) => {
-            setBaseUrl(event.target.value);
-            setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
-          }}
-        />
-        <input
-          aria-label="API Key（留空沿用）"
-          placeholder="••••••••（留空沿用）"
-          type="password"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-        />
+        <label className="model-library-field">
+          <span>連線名稱</span>
+          <input
+            aria-label="連線名稱"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setFieldErrors((current) => ({ ...current, name: undefined }));
+            }}
+          />
+        </label>
+        <label className="model-library-field">
+          <span>服務類型</span>
+          <select
+            aria-label="協定"
+            value={protocol}
+            onChange={(event) => setProtocol(event.target.value as ConnectionProtocol)}
+          >
+            {PROTOCOLS.map((item) => (
+              <option key={item} value={item}>
+                {PROTOCOL_LABEL[item]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="model-library-field">
+          <span>API 網址（Base URL）</span>
+          <input
+            aria-label="Base URL"
+            value={baseUrl}
+            onChange={(event) => {
+              setBaseUrl(event.target.value);
+              setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+            }}
+          />
+        </label>
+        <label className="model-library-field">
+          <span>API 金鑰（留空保留）</span>
+          <input
+            aria-label="API Key（留空沿用）"
+            placeholder="••••••••（留空沿用）"
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+          />
+        </label>
         <label className="model-library-inline-field">
           <span>逾時 ms</span>
           <input
@@ -848,7 +957,11 @@ function ConnectionRow({
       {fieldErrors.baseUrl && <FieldError>{fieldErrors.baseUrl}</FieldError>}
       {fieldErrors.timeout && <FieldError>{fieldErrors.timeout}</FieldError>}
       <div className="model-library-row-actions">
+        <span className={`model-library-save-state${dirty ? " dirty" : ""}`}>
+          {dirty ? "有未儲存的變更" : "已儲存"}
+        </span>
         <button
+          className="primary"
           disabled={busy || !dirty}
           onClick={() => {
             const errors = connectionFieldErrors(name, baseUrl, timeout);
@@ -872,7 +985,8 @@ function ConnectionRow({
           {pending === "save" ? "儲存中…" : "儲存"}
         </button>
         <button
-          disabled={busy || testing || status === "loading"}
+          disabled={busy || dirty || testing || status === "loading"}
+          title={dirty ? "請先儲存變更，再測試新的連線設定" : undefined}
           onClick={async () => {
             setTesting(true);
             try {
@@ -882,7 +996,7 @@ function ConnectionRow({
             }
           }}
         >
-          {testLabel}
+          {dirty ? "儲存後可測試" : testLabel}
         </button>
         {/*
           刪一整條連線原本一鍵、無確認、無 undo，而後果是**延遲的**：引用它的模型 entry
@@ -933,6 +1047,7 @@ function ModelsSection({
   onEnsureModels: (connectionId: string) => Promise<void>;
   imageOptionSets: Record<string, ImageOptionSetView>;
 }) {
+  const [query, setQuery] = useState("");
   const [name, setName] = useState("");
   const [capability, setCapability] = useState<ModelCapability>("text");
   const [providerKind, setProviderKind] = useState<ProviderKind>("openai");
@@ -997,37 +1112,207 @@ function ModelsSection({
     setImageApi("");
     setFieldErrors({});
   };
+  const matches = (entry: ModelEntry) =>
+    [
+      entry.name,
+      entry.model,
+      KIND_LABEL[entry.providerKind],
+      library.connections.find((item) => item.id === entry.connectionRef)?.name ?? "",
+    ]
+      .join(" ")
+      .toLocaleLowerCase()
+      .includes(query.trim().toLocaleLowerCase());
+  const matchCount = library.models.filter(matches).length;
   return (
     <section className="dashboard-section model-library-section">
-      <SectionHeading icon="models" label="MODELS" title="模型" />
+      <SectionHeading icon="models" label="MODELS" title="模型清單" />
       <p className="model-library-hint">
-        每個模型服務單一能力（影像／文字／搜尋）。OpenAI 相容與 Gemini 原生模型需選擇同協定的連線。
-        影像模型建好之後，該列會依它實際支援的項目顯示可調的影像參數。
+        依用途加入影像、文字或搜尋模型。影像模型的尺寸與品質，可在建立後調整。
       </p>
+      <details className="model-library-add" open={library.models.length === 0 ? true : undefined}>
+        <summary>
+          加入新模型<span>展開填寫設定</span>
+        </summary>
+        <div className="model-library-create">
+          <div className="model-library-combo-field">
+            <span>顯示名稱</span>
+            <input
+              aria-label="模型名稱"
+              placeholder="名稱"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setFieldErrors((current) => ({ ...current, name: undefined }));
+              }}
+            />
+            {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
+          </div>
+          <label className="model-library-field">
+            <span>模型用途</span>
+            <select
+              aria-label="能力"
+              value={capability}
+              onChange={(event) => setCapability(event.target.value as ModelCapability)}
+            >
+              {CAPABILITIES.map((item) => (
+                <option key={item} value={item}>
+                  {CAPABILITY_LABEL[item]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="model-library-field">
+            <span>服務類型</span>
+            <select
+              aria-label="Provider 種類"
+              value={providerKind}
+              onChange={(event) => {
+                // 換 kind 會換掉可選連線集合（協定不同），沿用舊選擇會留下跨協定的懸空 ref。
+                setProviderKind(event.target.value as ProviderKind);
+                setConnectionRef("");
+                // 必填條件跟著 kind 走（codex 不需要連線與 model id），舊的錯誤字留著會變成假警報。
+                setFieldErrors({});
+              }}
+            >
+              {KINDS.map((item) => (
+                <option key={item} value={item}>
+                  {KIND_LABEL[item]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="model-library-combo-field">
+            <span>使用連線</span>
+            <select
+              aria-label="連線"
+              value={connectionRef}
+              disabled={!needsConnection(providerKind)}
+              onChange={(event) => {
+                const next = event.target.value;
+                setConnectionRef(next);
+                setFieldErrors((current) => ({ ...current, connectionRef: undefined }));
+                if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
+              }}
+            >
+              <option value="">（無連線）</option>
+              {connections.map((connection) => (
+                <option key={connection.id} value={connection.id}>
+                  {connection.name}
+                </option>
+              ))}
+            </select>
+            {fieldErrors.connectionRef && <FieldError>{fieldErrors.connectionRef}</FieldError>}
+          </div>
+          <div className="model-library-combo-field">
+            <span>模型 ID</span>
+            {availableModels.length > 0 ? (
+              <select
+                aria-label="模型名"
+                value={availableModels.includes(model) ? model : ""}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  // 選模型時把名稱一併帶入；只在名稱空白或仍等於上一次選的 model 時覆寫，
+                  // 不蓋掉使用者手打的名稱。
+                  if (next && (!name.trim() || name === model)) setName(next);
+                  setModel(next);
+                  setFieldErrors((current) => ({ ...current, model: undefined, name: undefined }));
+                }}
+              >
+                <option value="">選擇模型…</option>
+                {availableModels.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                aria-label="模型名"
+                placeholder={
+                  providerKind === "gemini"
+                    ? "model（如 gemini-3.1-flash-image）"
+                    : "model（如 gpt-image-2）"
+                }
+                value={model}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  setFieldErrors((current) => ({ ...current, model: undefined }));
+                }}
+              />
+            )}
+            {fieldErrors.model && <FieldError>{fieldErrors.model}</FieldError>}
+          </div>
+          {providerKind === "openai" && capability === "image" && (
+            <label className="model-library-field">
+              <span>影像 API</span>
+              <select
+                aria-label="影像 API"
+                value={imageApi}
+                onChange={(event) => setImageApi(event.target.value as OpenAiImageApi | "")}
+              >
+                <option value="">影像 API（預設 images）</option>
+                {OPENAI_IMAGE_APIS.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {/* 同「新增連線」：不靠 disabled 擋，按下去之後在缺漏的欄位旁邊講清楚缺什麼。 */}
+          <button className="primary" disabled={busy} onClick={create}>
+            {pending === "create" ? "新增中…" : "新增模型"}
+          </button>
+        </div>
+        {rowError && <FieldError>{rowError}</FieldError>}
+      </details>
+      <div className="model-library-search">
+        <label className="model-library-field">
+          <span>快速尋找模型</span>
+          <input
+            type="search"
+            aria-label="搜尋模型"
+            placeholder="搜尋名稱、模型 ID 或連線…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <span role="status">
+          {matchCount} / {library.models.length} 個模型
+        </span>
+      </div>
+      {query.trim() && matchCount === 0 && (
+        <p className="model-library-empty">找不到符合「{query}」的模型，請試試其他關鍵字。</p>
+      )}
       <div className="model-library-groups">
         {CAPABILITIES.map((cap) => {
           const rows = modelsByCapability(library, cap);
           return (
-            <div key={cap} className={`model-library-group cap-${cap}`}>
+            <div
+              key={cap}
+              className={`model-library-group cap-${cap}`}
+              hidden={!!query.trim() && !rows.some(matches)}
+            >
               <div className="model-library-group-head">
                 <span className={`model-library-tag cap-${cap}`}>{CAPABILITY_LABEL[cap]}</span>
-                <span className="model-library-group-count">{rows.length}</span>
+                <span className="model-library-group-count">{rows.filter(matches).length}</span>
               </div>
               <div className="model-library-list">
                 {rows.length === 0 ? (
                   <p className="model-library-empty">尚無{CAPABILITY_LABEL[cap]}模型。</p>
                 ) : (
                   rows.map((entry) => (
-                    <ModelRow
-                      key={entry.id}
-                      entry={entry}
-                      library={library}
-                      busy={busy}
-                      run={run}
-                      connectionModels={connectionModels}
-                      onEnsureModels={onEnsureModels}
-                      optionSet={imageOptionSets[entry.id]}
-                    />
+                    <div key={entry.id} hidden={!matches(entry)}>
+                      <ModelRow
+                        entry={entry}
+                        library={library}
+                        busy={busy}
+                        run={run}
+                        connectionModels={connectionModels}
+                        onEnsureModels={onEnsureModels}
+                        optionSet={imageOptionSets[entry.id]}
+                      />
+                    </div>
                   ))
                 )}
               </div>
@@ -1035,126 +1320,6 @@ function ModelsSection({
           );
         })}
       </div>
-      <div className="model-library-create">
-        <div className="model-library-combo-field">
-          <input
-            aria-label="模型名稱"
-            placeholder="名稱"
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              setFieldErrors((current) => ({ ...current, name: undefined }));
-            }}
-          />
-          {fieldErrors.name && <FieldError>{fieldErrors.name}</FieldError>}
-        </div>
-        <select
-          aria-label="能力"
-          value={capability}
-          onChange={(event) => setCapability(event.target.value as ModelCapability)}
-        >
-          {CAPABILITIES.map((item) => (
-            <option key={item} value={item}>
-              {CAPABILITY_LABEL[item]}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Provider 種類"
-          value={providerKind}
-          onChange={(event) => {
-            // 換 kind 會換掉可選連線集合（協定不同），沿用舊選擇會留下跨協定的懸空 ref。
-            setProviderKind(event.target.value as ProviderKind);
-            setConnectionRef("");
-            // 必填條件跟著 kind 走（codex 不需要連線與 model id），舊的錯誤字留著會變成假警報。
-            setFieldErrors({});
-          }}
-        >
-          {KINDS.map((item) => (
-            <option key={item} value={item}>
-              {KIND_LABEL[item]}
-            </option>
-          ))}
-        </select>
-        <div className="model-library-combo-field">
-          <select
-            aria-label="連線"
-            value={connectionRef}
-            disabled={!needsConnection(providerKind)}
-            onChange={(event) => {
-              const next = event.target.value;
-              setConnectionRef(next);
-              setFieldErrors((current) => ({ ...current, connectionRef: undefined }));
-              if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
-            }}
-          >
-            <option value="">（無連線）</option>
-            {connections.map((connection) => (
-              <option key={connection.id} value={connection.id}>
-                {connection.name}
-              </option>
-            ))}
-          </select>
-          {fieldErrors.connectionRef && <FieldError>{fieldErrors.connectionRef}</FieldError>}
-        </div>
-        <div className="model-library-combo-field">
-          {availableModels.length > 0 ? (
-            <select
-              aria-label="模型名"
-              value={availableModels.includes(model) ? model : ""}
-              onChange={(event) => {
-                const next = event.target.value;
-                // 選模型時把名稱一併帶入；只在名稱空白或仍等於上一次選的 model 時覆寫，
-                // 不蓋掉使用者手打的名稱。
-                if (next && (!name.trim() || name === model)) setName(next);
-                setModel(next);
-                setFieldErrors((current) => ({ ...current, model: undefined, name: undefined }));
-              }}
-            >
-              <option value="">選擇模型…</option>
-              {availableModels.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              aria-label="模型名"
-              placeholder={
-                providerKind === "gemini"
-                  ? "model（如 gemini-3.1-flash-image）"
-                  : "model（如 gpt-image-2）"
-              }
-              value={model}
-              onChange={(event) => {
-                setModel(event.target.value);
-                setFieldErrors((current) => ({ ...current, model: undefined }));
-              }}
-            />
-          )}
-          {fieldErrors.model && <FieldError>{fieldErrors.model}</FieldError>}
-        </div>
-        {providerKind === "openai" && capability === "image" && (
-          <select
-            aria-label="影像 API"
-            value={imageApi}
-            onChange={(event) => setImageApi(event.target.value as OpenAiImageApi | "")}
-          >
-            <option value="">影像 API（預設 images）</option>
-            {OPENAI_IMAGE_APIS.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        )}
-        {/* 同「新增連線」：不靠 disabled 擋，按下去之後在缺漏的欄位旁邊講清楚缺什麼。 */}
-        <button className="primary" disabled={busy} onClick={create}>
-          {pending === "create" ? "新增中…" : "新增模型"}
-        </button>
-      </div>
-      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -1207,65 +1372,92 @@ function ModelRow({
       : [];
   return (
     <div className="model-library-row">
-      <span className="model-library-tag muted">{KIND_LABEL[entry.providerKind]}</span>
-      <input aria-label="模型名稱" value={name} onChange={(event) => setName(event.target.value)} />
-      {availableModels.length > 0 ? (
-        <select
-          aria-label="model"
-          value={availableModels.includes(model) ? model : ""}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          <option value="">
-            {model && !availableModels.includes(model) ? model : "選擇模型…"}
-          </option>
-          {availableModels.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-      ) : (
+      <div className="model-library-card-heading">
+        <strong>{entry.name}</strong>
+        <span className="model-library-tag muted">{KIND_LABEL[entry.providerKind]}</span>
+        <span className="model-library-card-meta">{usedBy.length} 個組合使用</span>
+      </div>
+      <label className="model-library-field">
+        <span>顯示名稱</span>
         <input
-          aria-label="model"
-          placeholder="model"
-          value={model}
-          onChange={(event) => setModel(event.target.value)}
+          aria-label="模型名稱"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
         />
+      </label>
+      {availableModels.length > 0 ? (
+        <label className="model-library-field">
+          <span>模型 ID</span>
+          <select
+            aria-label="model"
+            value={availableModels.includes(model) ? model : ""}
+            onChange={(event) => setModel(event.target.value)}
+          >
+            <option value="">
+              {model && !availableModels.includes(model) ? model : "選擇模型…"}
+            </option>
+            {availableModels.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <label className="model-library-field">
+          <span>模型 ID</span>
+          <input
+            aria-label="model"
+            placeholder="model"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+          />
+        </label>
       )}
-      <select
-        aria-label="連線"
-        value={connectionRef}
-        disabled={!needsConnection(entry.providerKind)}
-        onChange={(event) => {
-          const next = event.target.value;
-          setConnectionRef(next);
-          if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
-        }}
-      >
-        <option value="">（無連線）</option>
-        {connections.map((connection) => (
-          <option key={connection.id} value={connection.id}>
-            {connection.name}
-          </option>
-        ))}
-      </select>
-      {entry.providerKind === "openai" && entry.capability === "image" && (
+      <label className="model-library-field">
+        <span>使用連線</span>
         <select
-          aria-label="影像 API"
-          value={imageApi}
-          onChange={(event) => setImageApi(event.target.value as OpenAiImageApi | "")}
+          aria-label="連線"
+          value={connectionRef}
+          disabled={!needsConnection(entry.providerKind)}
+          onChange={(event) => {
+            const next = event.target.value;
+            setConnectionRef(next);
+            if (next && connectionModels[next]?.status === undefined) void onEnsureModels(next);
+          }}
         >
-          <option value="">影像 API（預設 images）</option>
-          {OPENAI_IMAGE_APIS.map((item) => (
-            <option key={item} value={item}>
-              {item}
+          <option value="">（無連線）</option>
+          {connections.map((connection) => (
+            <option key={connection.id} value={connection.id}>
+              {connection.name}
             </option>
           ))}
         </select>
+      </label>
+      {entry.providerKind === "openai" && entry.capability === "image" && (
+        <label className="model-library-field">
+          <span>影像 API</span>
+          <select
+            aria-label="影像 API"
+            value={imageApi}
+            onChange={(event) => setImageApi(event.target.value as OpenAiImageApi | "")}
+          >
+            <option value="">影像 API（預設 images）</option>
+            {OPENAI_IMAGE_APIS.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
       {showImageProfile && <ImageProfileFields form={imageProfile} optionSet={optionSet} />}
       <div className="model-library-row-actions">
+        <span className={`model-library-save-state${dirty ? " dirty" : ""}`}>
+          {dirty ? "有未儲存的變更" : "已儲存"}
+        </span>
         <button
+          className="primary"
           disabled={busy || !dirty}
           onClick={() => {
             // 欄位有誤時不送出：訊息已經顯示在出問題的那一格旁邊。
@@ -1333,10 +1525,37 @@ function CombinationsSection({
   };
   return (
     <section className="dashboard-section model-library-section">
-      <SectionHeading icon="combinations" label="COMBINATIONS" title="組合" />
+      <SectionHeading icon="combinations" label="COMBINATIONS" title="模型組合" />
       <p className="model-library-hint">
-        一次挑三個模型（影像／文字／搜尋）組成具名組合，供專案綁定。標為預設者是未綁定專案的回退。
+        把影像、文字與搜尋模型搭配成一組。專案可選用不同組合，未指定時使用預設組合。
       </p>
+      <details
+        className="model-library-add"
+        open={library.combinations.length === 0 ? true : undefined}
+      >
+        <summary>
+          建立新組合<span>展開填寫設定</span>
+        </summary>
+        <div className="model-library-create">
+          <div className="model-library-combo-field">
+            <span>組合名稱</span>
+            <input
+              aria-label="組合名稱"
+              placeholder="名稱"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setNameError(undefined);
+              }}
+            />
+            {nameError && <FieldError>{nameError}</FieldError>}
+          </div>
+          <button className="primary" disabled={busy} onClick={create}>
+            {pending === "create" ? "新增中…" : "新增組合"}
+          </button>
+        </div>
+        {rowError && <FieldError>{rowError}</FieldError>}
+      </details>
       <div className="model-library-list">
         {library.combinations.length === 0 && <p className="model-library-empty">尚無組合。</p>}
         {library.combinations.map((combination) => (
@@ -1349,24 +1568,6 @@ function CombinationsSection({
           />
         ))}
       </div>
-      <div className="model-library-create">
-        <div className="model-library-combo-field">
-          <input
-            aria-label="組合名稱"
-            placeholder="名稱"
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              setNameError(undefined);
-            }}
-          />
-          {nameError && <FieldError>{nameError}</FieldError>}
-        </div>
-        <button className="primary" disabled={busy} onClick={create}>
-          {pending === "create" ? "新增中…" : "新增組合"}
-        </button>
-      </div>
-      {rowError && <FieldError>{rowError}</FieldError>}
     </section>
   );
 }
@@ -1418,13 +1619,16 @@ function CombinationRow({
     </label>
   );
   return (
-    <div className="model-library-combo">
+    <div className={`model-library-combo${isDefault ? " is-default" : ""}`}>
       <div className="model-library-combo-head">
-        <input
-          aria-label="組合名稱"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
+        <label className="model-library-field">
+          <span>組合名稱</span>
+          <input
+            aria-label="組合名稱"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
         {isDefault ? (
           <span className="model-library-tag">預設</span>
         ) : (
@@ -1444,7 +1648,11 @@ function CombinationRow({
         {capabilitySelect("search", searchRef, setSearchRef)}
       </div>
       <div className="model-library-row-actions">
+        <span className={`model-library-save-state${dirty ? " dirty" : ""}`}>
+          {dirty ? "有未儲存的變更" : "已儲存"}
+        </span>
         <button
+          className="primary"
           disabled={busy || !dirty}
           onClick={() =>
             void act("save", "儲存組合", () =>
@@ -1532,8 +1740,7 @@ function SystemSection({
     <section className="dashboard-section model-library-section">
       <SectionHeading icon="system" label="SYSTEM" title="系統設定" />
       <p className="model-library-hint">
-        影響執行而非品質的維運旋鈕。OCR
-        相關設定改動需重啟伺服器才生效。連線列若另外填了逾時、影像模型若另外填了並行數，都以那一列的為準。
+        設定等待模型回應的時間與同時生成的張數。個別連線或模型若有設定，會優先使用個別值。
       </p>
       <div className="model-library-create">
         <label className="model-library-combo-field">
