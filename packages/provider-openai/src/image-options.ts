@@ -146,6 +146,49 @@ const grokImagineOptionSet: ImageModelOptionSet = {
 const GROK_IMAGINE_PROMPT_MAX_BYTES = 8000;
 
 /**
+ * 已實測「這條通道上一個旋鈕都沒有」的模型：命中就回 undefined，**不落到下面的前綴比對**。
+ *
+ * gpt-image 2.5 系（`sunburst` 基礎版、`flare` 小模型，以及 CLI2Proxy 自己的模型清單與 400
+ * 白名單裡都列著、但不在官方模型列表上的無後綴 `gpt-image-2.5`）在**官方規格**上是這批模型
+ * 裡可調項最多的一家：`size` 吃任意 WIDTHxHEIGHT（寬高皆為 16 的倍數）、
+ * `quality` 比前代多出 `xhigh` 與 `max` 兩檔。但 2026-09-10 對 CLI2Proxy 實測（真實投影片
+ * fixture，17,804 bytes 的完整合約 prompt，銳利度＝走產品那條 `rasterToCanvasPng()` 正規化到
+ * 1920×1080 後的 Laplacian 變異數）的結果是**兩個欄位都沒有離開 gateway**：
+ *
+ * | 送什麼（每格 3 次） | 回傳尺寸 | 銳利度                   | output tokens |
+ * | ------------------- | -------- | ------------------------ | ------------- |
+ * | `size:1536x1024`    | 1672×941 | 1176.6 / 1151.8 / 1337.7 | 1158          |
+ * | `size:2048x1152`    | 1672×941 | 1127.3 / 1307.9 / 1215.0 | 1158          |
+ * | `size:2560x1440`    | 1672×941 | 1050.4 / 1203.8 / 1338.5 | 1158          |
+ * | `quality:low`       | 1672×941 | 1137.0 / 1072.2 / 1195.8 | 1158          |
+ * | `quality:max`       | 1672×941 | 1187.5 / 1261.6 / 1195.9 | 1158          |
+ * | flare，什麼都不送   | 1672×941 | 1218.2 / 1243.4 / 1230.1 | 1158          |
+ *
+ * **撐住這個結論的不是「銳利度看起來差不多」**（那是雜訊比較，六組的區間本來就整片重疊），而是
+ * **`output_tokens` 在每一次呼叫都恰好 1158、回傳尺寸每一次都恰好 1672×941**——一個真的被讀進去
+ * 的畫質檔位不可能讓計費 token 一位數都不差。耗時反而是不能用的指標：同樣送 `quality:low`，第一
+ * 批量到 44s、補測那批 85s，差別來自 gateway 當下的負載而不是參數。
+ *
+ * 1672×941＝1,573,352 px，就是這條通道背後那個 Codex image tool 的固定像素預算；**比例是由
+ * prompt 決定的，不是 `size`**——同一個模型收到不含 16:9 合約的短 prompt 回的是 1254×1254 方形。
+ * 所以連不合法的 `1920x1080`（1080 不是 16 的倍數，官方規格該回 400）都不會失敗：它根本沒被讀。
+ * 模型名本身**有**被驗證（送 `gpt-image-2.5-nonexistent` 回 400 並列出白名單），所以這不是整包
+ * 請求被丟掉，就只是這幾個欄位被 translator 略過。
+ *
+ * 因此這裡**不註冊 option set**，而不是把官方那幾檔尺寸與畫質列出來當選項：在這條通道上選了
+ * 跟沒選一樣，那是假選項——與 2026-08-30 從 Grok Imagine 移除 `4k` 同一個判準。不列的代價是
+ * 接**官方 OpenAI 端點**的人也沒有這兩格可調（那裡它們應該是有效的），但那條路徑至今沒有實測
+ * 數字，照 skill 的規矩要先跑一輪再列——屆時它需要的是「以連線區分」而不是只看模型名，因為
+ * 同一個模型 id 在兩個 gateway 上的行為就是這樣分岔的。
+ *
+ * 擋在前綴比對**之前**是必要的：`/^gpt-image/i` 會匹配到這幾個名字，於是 2.5 系會拿到 gpt-image
+ * 系那組 `size`，預設值 `1536x1024` 是 3:2。在 CLI2Proxy 上那只是個被忽略的欄位，但同一個
+ * `images` 通道接上官方端點就會**真的生效**，把 16:9 的版面照 3:2 構圖，正規化再 cover 裁掉
+ * 一圈邊緣——那正是「送一個猜的值」最難察覺的失效形狀。
+ */
+const NO_OPTION_MODELS: ReadonlyArray<RegExp> = [/^gpt-image-2\.5(?:$|[-.])/i];
+
+/**
  * 模型名 → option set。比對的是**去掉 vendor 前綴之後**的名字：同一個模型在不同 gateway 上
  * 的 id 寫法本來就不同（CLI2Proxy 的 `grok-imagine-image-2.0` vs OpenRouter 的
  * `x-ai/grok-imagine-image-quality`），只比對開頭會漏掉其中一種寫法。
@@ -174,6 +217,7 @@ export function imageOptionSet(
   // OpenRouter 的 /images 端點目前不吃任何尺寸欄位，整條通道沒有可調項。
   if (shape === "openrouter-image") return undefined;
   const bare = bareModelName(model);
+  if (NO_OPTION_MODELS.some((pattern) => pattern.test(bare))) return undefined;
   const matched = MODEL_OPTION_SETS.find((entry) => entry.pattern.test(bare))?.set;
   if (!matched) return undefined;
   const wantsChat = matched === geminiChatOptionSet;

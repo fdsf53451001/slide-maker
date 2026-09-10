@@ -73,6 +73,8 @@ function imageProfileKey(profile: ImageModelProfile | undefined): string {
 interface ImageProfileForm {
   values: ImageOptionValues;
   setValue: (id: string, value: string | number | undefined) => void;
+  /** 把整組選值拿掉。留給「這些值已經不對應任何可調項」那條路——見 {@link ImageProfileFields}。 */
+  clearValues: () => void;
   maxRefs: string;
   setMaxRefs: (value: string) => void;
   promptMax: string;
@@ -144,6 +146,7 @@ function useImageProfileForm(initial?: ImageModelProfile): ImageProfileForm {
         }
         return { ...current, [id]: value };
       }),
+    clearValues: () => setValues({}),
     maxRefs,
     setMaxRefs,
     promptMax,
@@ -209,6 +212,19 @@ function ImageProfileFields({
         optionSet.fields.map((field) => (
           <ImageOptionInput key={field.id} field={field} form={form} />
         ))
+      ) : Object.keys(form.values).length > 0 ? (
+        /*
+          舊選值卡住的那條路：換過模型或通道之後（例如 entry 改成 gpt-image 2.5 系，那條通道
+          實測沒有可調項），存下來的選值不再對應任何欄位。伺服器會擋下這種 entry 並要使用者
+          「先清掉這些設定」，但畫面上唯一會清值的控制項是 ImageOptionInput，而它正好在這個
+          分支不渲染——少了這顆按鈕，這個 entry 就連改名都存不回去，被組合引用時也刪不掉。
+        */
+        <span className="model-library-option-empty">
+          這個模型沒有已知的可調項，但還留著上一個模型的影像參數，會讓這筆設定存不回去。
+          <button type="button" className="model-library-option-clear" onClick={form.clearValues}>
+            清除影像參數
+          </button>
+        </span>
       ) : (
         // 認不出來的模型不給假選項：列一個端點不吃的值，使用者選了只會拿到不透明的 400。
         <span className="model-library-option-empty">

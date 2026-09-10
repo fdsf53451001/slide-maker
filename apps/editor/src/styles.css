@@ -5136,6 +5136,12 @@ header {
   font-size: 12px;
   color: var(--text-muted);
 }
+.model-library-option-clear {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
 /* 與模型無關的兩格（參考圖／prompt 上限）平常收起來，只有撞到端點限制時才會動到。 */
 .model-library-advanced {
   flex: 0 0 auto;

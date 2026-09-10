@@ -488,6 +488,37 @@ describe("ModelLibrary 影像參數", () => {
     expect(body.imageProfile).toBeNull();
   });
 
+  it("換到沒有可調項的模型時，留下來的舊選值清得掉", async () => {
+    // entry 存著 size，但這個模型（或這條通道）已經沒有那個欄位了——伺服器會擋下這種
+    // 設定並要人「先清掉」，而唯一會清值的控制項是選單，它在這個分支不渲染。少了這顆
+    // 按鈕，這筆 entry 連改個名字都存不回去。
+    const base = libraryWithConnection();
+    const fetchMock = stubLibraryFetch(
+      {
+        ...base,
+        models: base.models.map((entry) =>
+          entry.id === "image-1"
+            ? { ...entry, imageProfile: { options: { size: "1024x1024" } } }
+            : entry,
+        ),
+      },
+      {},
+    );
+    render(<ModelLibrary onNavigate={() => {}} />);
+    await openSection("模型清單");
+    const row = await imageRow();
+
+    await waitFor(() => expect(within(row).getByText(/還留著上一個模型的影像參數/)).toBeTruthy());
+    fireEvent.click(within(row).getByRole("button", { name: "清除影像參數" }));
+    fireEvent.click(within(row).getByRole("button", { name: "儲存" }));
+
+    await waitFor(() => expect(writeRequests(fetchMock)).toHaveLength(1));
+    const body = JSON.parse(String(writeRequests(fetchMock)[0]?.[1]?.body)) as {
+      imageProfile: unknown;
+    };
+    expect(body.imageProfile).toBeNull();
+  });
+
   it("沒有已知可調項的模型不給假選項", async () => {
     stubLibraryFetch(libraryWithConnection(), {});
     render(<ModelLibrary onNavigate={() => {}} />);

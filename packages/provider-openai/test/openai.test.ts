@@ -15,6 +15,7 @@ import {
   flattenMaskToBlack,
   maskAwareDataUrl,
   IMAGE_OPTION_SETS,
+  imageOptionSet,
 } from "../src/index.js";
 
 // ---- minimal valid PNG builder (structure only; not real pixels) --------------
@@ -920,6 +921,45 @@ describe("OpenAiCompatibleImageProvider", () => {
       }
     }
   }, 60_000);
+
+  // 2026-09-10 實測：CLI2Proxy 對 gpt-image 2.5 系把 `size` 與 `quality` 整個略過（三個合法
+  // 尺寸、一個不合法尺寸、low/max 兩個畫質檔，每格 3 次，回的都是同一個 1672×941、output
+  // token 每一次都恰好 1158）。所以這幾個模型不該落到 `/^gpt-image/i` 那組——那組的預設值
+  // `1536x1024` 是 3:2，在這裡是個被忽略的欄位，但同一條 images 通道接上官方端點就會真的
+  // 把版面改成 3:2。完整的數字與判準在 image-options.ts 的 NO_OPTION_MODELS 註解。
+  it("gpt-image 2.5 models advertise no options, while earlier gpt-image still gets its sizes", () => {
+    for (const model of [
+      "gpt-image-2.5",
+      "gpt-image-2.5-sunburst",
+      "gpt-image-2.5-flare",
+      "gpt-image-2.5-sunburst-2026-09-08",
+      "openai/gpt-image-2.5-flare",
+    ]) {
+      expect(imageOptionSet("images", model), model).toBeUndefined();
+      expect(imageOptionSet("chat", model), model).toBeUndefined();
+    }
+    expect(imageOptionSet("images", "gpt-image-2")?.id).toBe("gpt-image");
+    expect(imageOptionSet("images", "gpt-image-1.5")?.id).toBe("gpt-image");
+  });
+
+  // 上面那條測的是宣告，這條測的是**送出去的 body**：沒有 option set 就一個尺寸欄位都不送，
+  // 讓端點自己決定（比例仍由合約 prompt 承擔）。少了它，改回前綴比對只會讓上面那條紅，
+  // 而真正會傷到使用者的是這裡多出來的一個 `size`。
+  it("gpt-image 2.5 sends no sizing field at all", async () => {
+    const b64 = Buffer.from(png(1920, 1080)).toString("base64");
+    active = await startFake(() => ({ status: 200, json: { data: [{ b64_json: b64 }] } }));
+    const provider = new OpenAiCompatibleImageProvider({
+      config: active.config,
+      model: "gpt-image-2.5-sunburst",
+      apiShape: "images",
+    });
+    await provider.generate(imageRequest());
+    const body = active.requests[0]!.body as Record<string, unknown>;
+    expect(body.size).toBeUndefined();
+    expect(body.quality).toBeUndefined();
+    expect(body.aspect_ratio).toBeUndefined();
+    expect(body.resolution).toBeUndefined();
+  });
 
   it("images shape without references still uses /images/generations", async () => {
     const b64 = Buffer.from(png(1920, 1080)).toString("base64");
