@@ -395,7 +395,14 @@ export class JobRunner {
   readonly #pendingLifecycleWrites = new Set<Promise<void>>();
   readonly #shutdownKeys = new Set<string>();
   readonly #activeByProvider = new Map<string, number>();
-  readonly #pendingByProvider = new Map<string, Array<{ projectId: string; jobId: string }>>();
+  readonly #activeGenerationProjects = new Set<string>();
+  readonly #scheduleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #pendingJobs: Array<{
+    projectId: string;
+    jobId: string;
+    providerId: string;
+    sequential: boolean;
+  }> = [];
   #accepting = true;
   #shutdownPromise?: Promise<void>;
 
@@ -533,9 +540,7 @@ export class JobRunner {
       project.updatedAt = now;
     });
     this.logPhase(job);
-    setTimeout(() => {
-      this.schedule(projectId, job.id, providerId);
-    }, 0);
+    this.deferSchedule(projectId, job.id, providerId, job.operation === "generate");
     return job;
   }
 
@@ -562,7 +567,17 @@ export class JobRunner {
       queueMicrotask(() => this.logPhase(result));
       return result;
     });
-    this.#controllers.get(this.controllerKey(projectId, jobId))?.abort();
+    const key = this.controllerKey(projectId, jobId);
+    this.#controllers.get(key)?.abort();
+    const timer = this.#scheduleTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    this.#scheduleTimers.delete(key);
+    const pendingIndex = this.#pendingJobs.findIndex(
+      (pending) => pending.projectId === projectId && pending.jobId === jobId,
+    );
+    if (pendingIndex >= 0) this.#pendingJobs.splice(pendingIndex, 1);
+    // 已取消的排隊頁不應繼續擋住同專案下一頁，尤其前者等待另一個 provider 時。
+    this.drainQueue();
     return result;
   }
 
@@ -582,7 +597,7 @@ export class JobRunner {
       if (!project.jobs.some((job) => job.status === "queued" || job.status === "running"))
         continue;
       const queued = await this.repository.updateProject(project.id, (current) => {
-        const queued: Array<{ jobId: string; providerId: string }> = [];
+        const queued: Array<{ jobId: string; providerId: string; sequential: boolean }> = [];
         for (const job of current.jobs) {
           if (job.status === "running") {
             job.status = "failed";
@@ -601,68 +616,108 @@ export class JobRunner {
             // 改了這份專案。動了它，一份三週沒碰的簡報會因為當初死在 OCR 途中，在今天早上
             // 重啟後跳到主畫面最上面、還印著今天的時間。同 image-description-scheduler.ts。
           } else if (job.status === "queued")
-            queued.push({ jobId: job.id, providerId: job.providerId });
+            queued.push({
+              jobId: job.id,
+              providerId: job.providerId,
+              sequential: job.operation === "generate",
+            });
         }
         return queued;
       });
-      for (const { jobId, providerId } of queued) {
-        setTimeout(() => {
-          this.schedule(project.id, jobId, providerId);
-        }, 0);
+      for (const { jobId, providerId, sequential } of queued) {
+        this.deferSchedule(project.id, jobId, providerId, sequential);
       }
     }
   }
 
-  private schedule(projectId: string, jobId: string, providerId: string): void {
+  private deferSchedule(
+    projectId: string,
+    jobId: string,
+    providerId: string,
+    sequential: boolean,
+  ): void {
     if (!this.#accepting) return;
-    let provider: ImageProvider;
-    let limit: number;
-    try {
-      provider = this.providers.get(providerId);
-      limit = this.providerLimit(provider);
-    } catch {
-      void this.failUnsettledJob(
-        projectId,
-        jobId,
-        "Configured provider is unavailable or has invalid concurrency settings",
-      );
-      return;
-    }
-    const active = this.#activeByProvider.get(providerId) ?? 0;
-    if (active >= limit) {
-      this.#pendingByProvider.set(providerId, [
-        ...(this.#pendingByProvider.get(providerId) ?? []),
-        { projectId, jobId },
-      ]);
-      return;
-    }
-    this.#activeByProvider.set(providerId, active + 1);
     const key = this.controllerKey(projectId, jobId);
-    const task = this.run(projectId, jobId)
-      .then(
-        () => undefined,
-        async () => {
-          await this.failUnsettledJob(
-            projectId,
-            jobId,
-            "Job runner failed before generation could complete",
-          );
-        },
-      )
-      .finally(() => {
-        this.#activeTasks.delete(key);
-        this.releaseProviderSlot(providerId);
-      });
-    this.#activeTasks.set(key, task);
+    this.#scheduleTimers.set(
+      key,
+      setTimeout(() => {
+        this.#scheduleTimers.delete(key);
+        this.schedule(projectId, jobId, providerId, sequential);
+      }, 0),
+    );
+  }
+
+  private schedule(
+    projectId: string,
+    jobId: string,
+    providerId: string,
+    sequential: boolean,
+  ): void {
+    if (!this.#accepting) return;
+    this.#pendingJobs.push({ projectId, jobId, providerId, sequential });
+    this.drainQueue();
+  }
+
+  private drainQueue(): void {
+    if (!this.#accepting) return;
+    // 同一份簡報的新圖依入列順序接續，跨 provider 也不能超車。等待中的頁不佔
+    // provider slot，因此其他專案、局部編輯與抽字仍可使用剩餘併發額度。
+    const blockedProjects = new Set<string>();
+    for (let index = 0; index < this.#pendingJobs.length;) {
+      const pending = this.#pendingJobs[index]!;
+      const { projectId, jobId, providerId, sequential } = pending;
+      let provider: ImageProvider;
+      let limit: number;
+      try {
+        provider = this.providers.get(providerId);
+        limit = this.providerLimit(provider);
+      } catch {
+        void this.failUnsettledJob(
+          projectId,
+          jobId,
+          "Configured provider is unavailable or has invalid concurrency settings",
+        );
+        this.#pendingJobs.splice(index, 1);
+        continue;
+      }
+      const active = this.#activeByProvider.get(providerId) ?? 0;
+      if (
+        active >= limit ||
+        (sequential &&
+          (this.#activeGenerationProjects.has(projectId) || blockedProjects.has(projectId)))
+      ) {
+        if (sequential) blockedProjects.add(projectId);
+        index += 1;
+        continue;
+      }
+      this.#pendingJobs.splice(index, 1);
+      if (sequential) this.#activeGenerationProjects.add(projectId);
+      this.#activeByProvider.set(providerId, active + 1);
+      const key = this.controllerKey(projectId, jobId);
+      const task = this.run(projectId, jobId)
+        .then(
+          () => undefined,
+          async () => {
+            await this.failUnsettledJob(
+              projectId,
+              jobId,
+              "Job runner failed before generation could complete",
+            );
+          },
+        )
+        .finally(() => {
+          this.#activeTasks.delete(key);
+          if (sequential) this.#activeGenerationProjects.delete(projectId);
+          this.releaseProviderSlot(providerId);
+        });
+      this.#activeTasks.set(key, task);
+    }
   }
 
   private releaseProviderSlot(providerId: string): void {
     const remaining = Math.max(0, (this.#activeByProvider.get(providerId) ?? 1) - 1);
     this.#activeByProvider.set(providerId, remaining);
-    const queue = this.#pendingByProvider.get(providerId);
-    const next = queue?.shift();
-    if (queue?.length === 0) this.#pendingByProvider.delete(providerId);
-    if (next && this.#accepting) this.schedule(next.projectId, next.jobId, providerId);
+    this.drainQueue();
   }
 
   private providerLimit(provider: ImageProvider): number {
@@ -785,7 +840,9 @@ export class JobRunner {
   }
 
   private async performShutdown(graceMs: number, now: string): Promise<void> {
-    this.#pendingByProvider.clear();
+    for (const timer of this.#scheduleTimers.values()) clearTimeout(timer);
+    this.#scheduleTimers.clear();
+    this.#pendingJobs.length = 0;
     for (const project of await this.repository.listProjects()) {
       /*
        * 沒有排隊／進行中工作的專案整份跳過——這個迴圈唯一的作用就是終止那些工作。
@@ -988,10 +1045,8 @@ export class JobRunner {
       // 範本）。`multipleReferenceImages: false` 同理——只有在其餘參考圖是空的時候，範本才
       // 塞得進那唯一的名額。
       //
-      // 已知限制（刻意接受）：影像 provider 的 maxConcurrency 是 2，批次生成時最前面**兩**頁
-      // 同時開跑，兩頁都還沒有任何已完成的前頁可用，所以都拿不到範本。要讓每一頁都有範本，
-      // 只需要序列化**第一個** job（之後照樣兩兩併行），代價是整批多等一頁的時間、而不是
-      // 翻倍——實作先不動，等使用者實測效果再決定值不值得。
+      // 同專案 generate 由排程器逐頁接續，上一頁的版本落地後才啟動下一頁，因此這裡
+      // 讀得到剛完成的前頁。失敗／取消的頁沿用上方的往前查找，不阻塞整批。
       const deckFrame: DeckFrameChoice =
         job.operation === "generate"
           ? await chooseDeckFrame(

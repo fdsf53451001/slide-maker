@@ -113,8 +113,12 @@ describe("MVP end-to-end local workflow", () => {
     const jobs = await json<GenerationJob[]>(`/api/projects/${project.id}/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ providerId: "mock-image" }),
+      body: JSON.stringify({
+        providerId: "mock-image",
+        slideIds: [...project.slides].reverse().map((slide) => slide.id),
+      }),
     });
+    expect(jobs.map((job) => job.slideId)).toEqual(project.slides.map((slide) => slide.id));
     expect(jobs).toHaveLength(confirmedSlideCount);
     const deadline = Date.now() + 4_000;
     do {

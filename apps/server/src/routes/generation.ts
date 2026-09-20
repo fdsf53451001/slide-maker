@@ -115,9 +115,14 @@ export function registerDeckGenerationRoutes(app: Express, ctx: AppContext): voi
     await refreshStyleForGeneration(projectId, providerId);
     const project = await repository.loadProject(projectId);
     if (!project) throw new Error("Project not found");
-    const targets = slideIds ?? project.slides.map((slide) => slide.id);
-    if (!targets.length || targets.some((id) => !project.slides.some((slide) => slide.id === id)))
+    const selected = slideIds ?? project.slides.map((slide) => slide.id);
+    if (!selected.length || selected.some((id) => !project.slides.some((slide) => slide.id === id)))
       throw new Error("INVALID_SLIDE_SELECTION");
+    // 子集合也依簡報頁序入列，不能讓呼叫端傳入的反序清單破壞前頁接續。
+    const targets = project.slides
+      .filter((slide) => selected.includes(slide.id))
+      .sort((left, right) => left.order - right.order)
+      .map((slide) => slide.id);
     await repository.updateProject(projectId, (current) => {
       current.workflowStage = "editing";
       current.updatedAt = new Date().toISOString();
