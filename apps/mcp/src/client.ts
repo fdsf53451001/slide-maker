@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { link, mkdir, stat, unlink } from "node:fs/promises";
+import { constants, createWriteStream } from "node:fs";
+import { link, mkdir, open, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -43,6 +43,7 @@ export interface SlideMakerClientOptions {
   auth?: AuthProvider;
   timeoutMs?: number;
   exportRoot?: string;
+  sourceRoot?: string;
 }
 
 export class SlideMakerApiError extends Error {
@@ -50,6 +51,7 @@ export class SlideMakerApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly failures?: Array<{ url: string; reason: string }>,
   ) {
     super(message);
     this.name = "SlideMakerApiError";
@@ -71,12 +73,14 @@ export class SlideMakerClient {
   private readonly auth: AuthProvider;
   private readonly timeoutMs: number;
   private readonly exportRoot: string;
+  private readonly sourceRoot: string;
 
   constructor(options: SlideMakerClientOptions) {
     this.auth = options.auth ?? new NoAuthProvider();
     this.baseUrl = normalizedBaseUrl(options.baseUrl, this.auth.sendsCredentials);
     this.timeoutMs = options.timeoutMs ?? 300_000;
     this.exportRoot = resolve(options.exportRoot ?? resolve(process.cwd(), "slide-maker-exports"));
+    this.sourceRoot = resolve(options.sourceRoot ?? resolve(process.cwd(), "slide-maker-sources"));
   }
 
   async get<T>(path: string): Promise<T> {
@@ -89,6 +93,51 @@ export class SlideMakerClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+  }
+
+  async patch<T>(path: string, body: unknown): Promise<T> {
+    return this.requestJson<T>(path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async uploadSource<T>(
+    path: string,
+    fileName: string,
+    mediaType: string,
+  ): Promise<{ response: T; bytes: number }> {
+    if (
+      !fileName ||
+      fileName === "." ||
+      fileName === ".." ||
+      fileName.includes("/") ||
+      fileName.includes("\\")
+    )
+      throw new Error("fileName 只能是素材目錄內的單一檔名");
+    const absolutePath = resolve(this.sourceRoot, fileName);
+    // O_NONBLOCK 讓 FIFO／device 不會在 fstat 前卡住；regular file 的讀取行為不受影響。
+    const handle = await open(
+      absolutePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    let bytes: Buffer;
+    try {
+      const file = await handle.stat();
+      if (!file.isFile()) throw new Error("素材必須是一般檔案，不能是 symlink");
+      if (file.size > 100 * 1024 * 1024) throw new Error("素材超過 100MB 上限");
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+    const response = await this.requestJson<T>(path, {
+      method: "POST",
+      headers: { "Content-Type": mediaType },
+      // Node fetch 接受 Buffer；轉成 Uint8Array.from() 會讓合法的 100MB 檔案再複製一份。
+      body: bytes as unknown as BodyInit,
+    });
+    return { response, bytes: bytes.byteLength };
   }
 
   async exportToFile(path: string, outputPath: string): Promise<{ path: string; bytes: number }> {
@@ -150,14 +199,38 @@ export class SlideMakerClient {
     const fallback = `Slide Maker API 回傳 HTTP ${response.status}`;
     let code = "HTTP_ERROR";
     let message = fallback;
+    let failures: Array<{ url: string; reason: string }> | undefined;
     try {
-      const body = (await response.json()) as { error?: unknown; message?: unknown };
+      const body = (await response.json()) as {
+        error?: unknown;
+        message?: unknown;
+        failures?: unknown;
+      };
       if (typeof body.error === "string") code = body.error;
       if (typeof body.message === "string") message = body.message;
       else if (typeof body.error === "string") message = body.error;
+      failures = Array.isArray(body.failures)
+        ? body.failures.flatMap((item) => {
+            if (
+              !item ||
+              typeof item !== "object" ||
+              !("url" in item) ||
+              !("reason" in item) ||
+              typeof item.url !== "string" ||
+              typeof item.reason !== "string"
+            )
+              return [];
+            return [{ url: item.url, reason: item.reason }];
+          })
+        : undefined;
     } catch {
       // 非 JSON 的代理層錯誤（例如 IAP HTML）只回狀態，不把整頁內容送進模型。
     }
-    throw new SlideMakerApiError(response.status, code, message);
+    throw new SlideMakerApiError(
+      response.status,
+      code,
+      message,
+      failures?.length ? failures : undefined,
+    );
   }
 }

@@ -1,6 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_TIMEOUT_MS,
@@ -11,6 +13,7 @@ import {
 } from "../src/client.js";
 
 afterEach(() => vi.unstubAllGlobals());
+const execFileAsync = promisify(execFile);
 
 describe("SlideMakerClient", () => {
   it("拒絕 Node 無法正確排程的 timeout", () => {
@@ -75,7 +78,15 @@ describe("SlideMakerClient", () => {
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
-          JSON.stringify({ error: "TEXT_MODEL_NOT_FOUND", message: "請先設定文字模型" }),
+          JSON.stringify({
+            error: "TEXT_MODEL_NOT_FOUND",
+            message: "請先設定文字模型",
+            failures: [
+              { url: "https://example.com", reason: "WEB_SOURCE_TIMEOUT" },
+              { url: 123, reason: "invalid and must be dropped" },
+            ],
+            internal: "不可向 MCP 洩漏的任意欄位",
+          }),
           {
             status: 409,
             headers: { "Content-Type": "application/json" },
@@ -91,7 +102,50 @@ describe("SlideMakerClient", () => {
       status: 409,
       code: "TEXT_MODEL_NOT_FOUND",
       message: "請先設定文字模型",
+      failures: [{ url: "https://example.com", reason: "WEB_SOURCE_TIMEOUT" }],
     });
+  });
+
+  it("只從素材根目錄上傳一般檔案", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "slide-maker-mcp-sources-"));
+    await writeFile(join(directory, "brief.md"), "# MCP");
+    await symlink(join(directory, "brief.md"), join(directory, "linked.md"));
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "project-1" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SlideMakerClient({
+      baseUrl: "http://127.0.0.1:4173",
+      sourceRoot: directory,
+    });
+
+    await expect(
+      client.uploadSource("/api/projects/p1/sources?name=brief.md", "brief.md", "text/markdown"),
+    ).resolves.toEqual({ response: { id: "project-1" }, bytes: 5 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:4173/api/projects/p1/sources?name=brief.md",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "text/markdown" },
+        body: Buffer.from("# MCP"),
+      }),
+    );
+    await expect(
+      client.uploadSource("/api/projects/p1/sources", "../brief.md", "text/markdown"),
+    ).rejects.toThrow(/單一檔名/);
+    await expect(
+      client.uploadSource("/api/projects/p1/sources", "linked.md", "text/markdown"),
+    ).rejects.toThrow();
+    if (process.platform !== "win32") {
+      await execFileAsync("mkfifo", [join(directory, "pipe")]);
+      await expect(
+        client.uploadSource("/api/projects/p1/sources", "pipe", "application/octet-stream"),
+      ).rejects.toThrow(/一般檔案/);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("串流回應可寫入指定匯出檔", async () => {

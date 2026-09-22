@@ -16,6 +16,9 @@ const client = new SlideMakerClient({
   ...(process.env.SLIDE_MAKER_MCP_EXPORT_ROOT
     ? { exportRoot: process.env.SLIDE_MAKER_MCP_EXPORT_ROOT }
     : {}),
+  ...(process.env.SLIDE_MAKER_MCP_SOURCE_ROOT
+    ? { sourceRoot: process.env.SLIDE_MAKER_MCP_SOURCE_ROOT }
+    : {}),
 });
 
 void serveStdio(() => createServer(client));

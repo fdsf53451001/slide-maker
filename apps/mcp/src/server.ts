@@ -37,15 +37,84 @@ interface Project {
     currentVersionId?: string;
     versions: unknown[];
   }>;
-  sources: Array<{ id: string; name: string; mediaType: string; status: string }>;
+  styleSnapshot: StylePreset;
+  sources: Source[];
   jobs: Job[];
   createdAt: string;
   updatedAt: string;
 }
 
+interface StylePreset {
+  id: string;
+  version: number;
+  name: string;
+  description: string;
+  system: boolean;
+  density: "low" | "medium" | "high";
+  referenceImages: unknown[];
+  updatedAt: string;
+}
+
+interface Source {
+  id: string;
+  name: string;
+  mediaType: string;
+  usage:
+    | "content"
+    | "outline-reference"
+    | "visual-reference"
+    | "style-reference"
+    | "direct-asset"
+    | "exclude-from-generation";
+  allowModelAccess: boolean;
+  status: "pending" | "parsing" | "indexed" | "failed";
+  sizeBytes: number;
+  metadata?: Record<string, string>;
+  createdAt: string;
+  updatedAt?: string;
+  error?: string;
+}
+
 const exportFormat = z.enum(["pptx", "pdf", "png.zip", "slide-project", "outline.md"]);
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
+const sourceUsageSchema = z.enum([
+  "content",
+  "outline-reference",
+  "visual-reference",
+  "style-reference",
+  "direct-asset",
+  "exclude-from-generation",
+]);
 const pathId = (id: string) => encodeURIComponent(id);
+
+function styleSummary(style: StylePreset) {
+  return {
+    id: style.id,
+    version: style.version,
+    name: style.name,
+    description: style.description,
+    system: style.system,
+    density: style.density,
+    referenceImageCount: style.referenceImages.length,
+    updatedAt: style.updatedAt,
+  };
+}
+
+function sourceSummary(source: Source) {
+  return {
+    id: source.id,
+    name: source.name,
+    mediaType: source.mediaType,
+    usage: source.usage,
+    allowModelAccess: source.allowModelAccess,
+    status: source.status,
+    sizeBytes: source.sizeBytes,
+    ...(source.metadata?.url ? { url: source.metadata.url } : {}),
+    ...(source.error ? { error: source.error } : {}),
+    createdAt: source.createdAt,
+    ...(source.updatedAt ? { updatedAt: source.updatedAt } : {}),
+  };
+}
 
 function projectSummary(project: Project) {
   return {
@@ -56,6 +125,11 @@ function projectSummary(project: Project) {
     slideCount: project.slides.length,
     generatedSlideCount: project.slides.filter((slide) => slide.currentVersionId).length,
     sourceCount: project.sources.length,
+    style: {
+      id: project.styleSnapshot.id,
+      version: project.styleSnapshot.version,
+      name: project.styleSnapshot.name,
+    },
     activeJobCount: project.jobs.filter(
       (job) => job.status === "queued" || job.status === "running",
     ).length,
@@ -80,7 +154,7 @@ function projectDetail(project: Project) {
         generated: Boolean(slide.currentVersionId),
         versionCount: slide.versions.length,
       })),
-    sources: project.sources,
+    sources: project.sources.map(sourceSummary),
   };
 }
 
@@ -99,7 +173,12 @@ function toolError(error: unknown) {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({ status: error.status, error: error.code, message: error.message }),
+          text: JSON.stringify({
+            status: error.status,
+            error: error.code,
+            message: error.message,
+            ...(error.failures ? { failures: error.failures } : {}),
+          }),
         },
       ],
     };
@@ -120,7 +199,7 @@ export function createServer(client: SlideMakerClient): McpServer {
     { name: "slide-maker", version: "0.1.0" },
     {
       instructions:
-        "先用 list_projects 或 create_project 取得 projectId。產生大綱後才可生成整份簡報；生成是非同步的，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
+        "先用 list_projects 或 create_project 取得 projectId。模型使用 Slide Maker 的預設組合；可在產生大綱前套用風格並加入素材。產生大綱後才可生成整份簡報；生成是非同步的，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
     },
   );
 
@@ -180,6 +259,160 @@ export function createServer(client: SlideMakerClient): McpServer {
   );
 
   server.registerTool(
+    "list_styles",
+    {
+      title: "列出風格庫",
+      description: "列出 Slide Maker 風格庫中可套用的風格與版本摘要。",
+      inputSchema: z.object({}),
+    },
+    () =>
+      safely(async () =>
+        textResult((await client.get<StylePreset[]>("/api/styles")).map(styleSummary)),
+      ),
+  );
+
+  server.registerTool(
+    "apply_style",
+    {
+      title: "套用風格",
+      description: "將風格庫中的指定風格版本套用到簡報專案。未指定版本時使用最新版。",
+      inputSchema: z.object({
+        projectId: idSchema,
+        styleId: idSchema,
+        version: z.number().int().positive().optional(),
+      }),
+    },
+    ({ projectId, styleId, version }) =>
+      safely(async () => {
+        const project = await client.post<Project>(`/api/projects/${pathId(projectId)}/style`, {
+          styleId,
+          ...(version === undefined ? {} : { version }),
+        });
+        return textResult(projectSummary(project));
+      }),
+  );
+
+  server.registerTool(
+    "list_sources",
+    {
+      title: "列出素材庫",
+      description: "列出專案的來源素材、用途、AI 讀取授權與處理狀態。",
+      inputSchema: z.object({ projectId: idSchema }),
+    },
+    ({ projectId }) =>
+      safely(async () =>
+        textResult(
+          (await client.get<Source[]>(`/api/projects/${pathId(projectId)}/sources`)).map(
+            sourceSummary,
+          ),
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "upload_source",
+    {
+      title: "上傳本機素材",
+      description:
+        "從 SLIDE_MAKER_MCP_SOURCE_ROOT 指定的素材目錄上傳單一檔案。視覺參考圖若允許 AI 讀取，可能在背景呼叫預設文字模型並消耗配額。",
+      inputSchema: z.object({
+        projectId: idSchema,
+        fileName: z.string().trim().min(1).max(255).describe("素材目錄內的單一檔名"),
+        mediaType: z.string().trim().min(1).max(120),
+        usage: sourceUsageSchema.default("content"),
+        allowModelAccess: z.boolean().default(true),
+      }),
+    },
+    ({ projectId, fileName, mediaType, usage, allowModelAccess }) =>
+      safely(async () => {
+        const query = new URLSearchParams({
+          name: fileName,
+          mediaType,
+          usage,
+          allowModelAccess: String(allowModelAccess),
+        });
+        const { response: project, bytes } = await client.uploadSource<Project>(
+          `/api/projects/${pathId(projectId)}/sources?${query.toString()}`,
+          fileName,
+          mediaType,
+        );
+        // 上傳端點固定把新來源 append 到尾端；由後往前找可避開同名、同毫秒的舊來源。
+        const uploaded = project.sources
+          .slice()
+          .reverse()
+          .find((source) => source.name === fileName);
+        return textResult({
+          project: projectSummary(project),
+          bytes,
+          ...(uploaded ? { source: sourceSummary(uploaded) } : {}),
+        });
+      }),
+  );
+
+  server.registerTool(
+    "add_url_sources",
+    {
+      title: "加入網址素材",
+      description: "擷取一到十個公開網址的正文，加入專案素材庫，並逐筆回報失敗原因。",
+      inputSchema: z.object({
+        projectId: idSchema,
+        urls: z.array(z.url()).min(1).max(10),
+      }),
+    },
+    ({ projectId, urls }) =>
+      safely(async () => {
+        const result = await client.post<{ project: Project; failures: unknown[] }>(
+          `/api/projects/${pathId(projectId)}/url-sources`,
+          { urls },
+        );
+        return textResult({ project: projectSummary(result.project), failures: result.failures });
+      }),
+  );
+
+  server.registerTool(
+    "update_source",
+    {
+      title: "更新素材設定",
+      description:
+        "更新專案素材的名稱、用途或 AI 讀取授權。describeImage=true 會為符合條件的視覺參考圖呼叫預設文字模型補做內容描述並消耗配額。",
+      inputSchema: z
+        .object({
+          projectId: idSchema,
+          sourceId: idSchema,
+          name: z.string().trim().min(1).max(255).optional(),
+          usage: sourceUsageSchema.optional(),
+          allowModelAccess: z.boolean().optional(),
+          describeImage: z.boolean().default(false),
+        })
+        .refine(
+          ({ name, usage, allowModelAccess, describeImage }) =>
+            name !== undefined ||
+            usage !== undefined ||
+            allowModelAccess !== undefined ||
+            describeImage,
+          { message: "至少提供一個要更新的欄位" },
+        ),
+    },
+    ({ projectId, sourceId, name, usage, allowModelAccess, describeImage }) =>
+      safely(async () => {
+        const project = await client.patch<Project>(
+          `/api/projects/${pathId(projectId)}/sources/${pathId(sourceId)}`,
+          {
+            ...(name === undefined ? {} : { name }),
+            ...(usage === undefined ? {} : { usage }),
+            ...(allowModelAccess === undefined ? {} : { allowModelAccess }),
+            ...(describeImage ? { describeImage: true } : {}),
+          },
+        );
+        const source = project.sources.find((item) => item.id === sourceId);
+        return textResult({
+          project: projectSummary(project),
+          ...(source ? { source: sourceSummary(source) } : {}),
+        });
+      }),
+  );
+
+  server.registerTool(
     "generate_outline",
     {
       title: "產生簡報大綱",
@@ -208,7 +441,6 @@ export function createServer(client: SlideMakerClient): McpServer {
       inputSchema: z.object({
         projectId: idSchema,
         slideIds: z.array(idSchema).min(1).optional(),
-        providerId: z.string().min(1).optional(),
         acceptUnknownReadiness: z.boolean().default(false),
       }),
     },
