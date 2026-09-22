@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "pnpm --filter @slide-maker/core build && pnpm --filter @slide-maker/provider-mock build && pnpm --filter @slide-maker/provider-openai build && pnpm --filter @slide-maker/provider-gemini build && pnpm --filter @slide-maker/editor build && NODE_OPTIONS=--conditions=development pnpm --filter @slide-maker/server dev",
     "dev:web": "pnpm --filter @slide-maker/editor dev",
+    "dev:mcp": "pnpm --filter @slide-maker/mcp dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
