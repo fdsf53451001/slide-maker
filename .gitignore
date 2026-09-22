@@ -51,3 +51,6 @@ docker/cliproxy/logs/
 .cli-switch/
 .kiro/
 .serena/
+
+# cli-switch managed entries (per-CLI private fixtures)
+.claude/

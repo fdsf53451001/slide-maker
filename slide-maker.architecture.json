@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Slide Maker",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "generate",
+        "label": "Generate a slide",
+        "focus": ["author", "editor", "api", "jobs", "image", "store"],
+        "note": "Editor posts to Express; the job runner calls an image model and writes a PNG version."
+      },
+      {
+        "id": "outline",
+        "label": "Outline and text",
+        "focus": ["api", "jobs", "text", "store"],
+        "note": "Structured text models produce outlines; results land in project.json."
+      },
+      {
+        "id": "sources",
+        "label": "Extract and capture",
+        "focus": ["api", "jobs", "ocr", "web", "store"],
+        "note": "extract-text uses OCR and inpaint; pasted URLs go through Jina Reader."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "author",
+      "type": "external",
+      "label": "Author",
+      "sublabel": "Browser",
+      "pos": [40, 300],
+      "size": [120, 60]
+    },
+    {
+      "id": "editor",
+      "type": "frontend",
+      "label": "Editor",
+      "sublabel": "React 19 + Vite",
+      "pos": [250, 300],
+      "size": [140, 60],
+      "brand": "react"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Express API",
+      "sublabel": "apps/server :4173",
+      "pos": [480, 300],
+      "size": [150, 60]
+    },
+    {
+      "id": "jobs",
+      "type": "backend",
+      "label": "Job runner",
+      "sublabel": "generate · extract",
+      "pos": [720, 300],
+      "size": [150, 60]
+    },
+    {
+      "id": "image",
+      "type": "cloud",
+      "label": "Image models",
+      "sublabel": "OpenAI · Gemini",
+      "pos": [960, 300],
+      "size": [150, 60]
+    },
+    {
+      "id": "text",
+      "type": "cloud",
+      "label": "Text models",
+      "sublabel": "structured JSON",
+      "pos": [720, 120],
+      "size": [150, 60]
+    },
+    {
+      "id": "web",
+      "type": "external",
+      "label": "Jina Reader",
+      "sublabel": "URL capture",
+      "pos": [480, 120],
+      "size": [150, 60]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Project store",
+      "sublabel": "SLIDE_MAKER_DATA_ROOT",
+      "pos": [480, 480],
+      "size": [150, 60]
+    },
+    {
+      "id": "ocr",
+      "type": "backend",
+      "label": "OCR + inpaint",
+      "sublabel": "PaddleOCR",
+      "pos": [720, 480],
+      "size": [150, 60]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "slide-maker workspace",
+      "wraps": ["editor", "api", "jobs", "store", "ocr"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "open-editor",
+      "from": "author",
+      "to": "editor",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "editor-api",
+      "from": "editor",
+      "to": "api",
+      "label": "REST /api",
+      "variant": "emphasis"
+    },
+    { "id": "api-jobs", "from": "api", "to": "jobs", "label": "enqueue", "variant": "emphasis" },
+    {
+      "id": "jobs-image",
+      "from": "jobs",
+      "to": "image",
+      "label": "generate PNG",
+      "variant": "emphasis"
+    },
+    {
+      "id": "jobs-text",
+      "from": "jobs",
+      "to": "text",
+      "label": "outline JSON",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "api-web",
+      "from": "api",
+      "to": "web",
+      "label": "capture URL",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "api-store",
+      "from": "api",
+      "to": "store",
+      "label": "project.json",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "jobs-ocr",
+      "from": "jobs",
+      "to": "ocr",
+      "label": "extract-text",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    { "id": "ocr-store", "from": "ocr", "to": "store", "label": "text layer" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Client",
+      "items": ["Editor SPA in apps/editor", "All writes go through Express REST"]
+    },
+    {
+      "dot": "emerald",
+      "title": "Generation",
+      "items": [
+        "In-process job runner",
+        "Image models return canvas PNG",
+        "Text models return structured JSON"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Sources",
+      "items": [
+        "Filesystem project.json and assets",
+        "PaddleOCR plus local inpaint",
+        "Jina Reader only for pasted URLs"
+      ]
+    }
+  ]
+}
