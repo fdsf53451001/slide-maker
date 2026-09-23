@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SlideMakerClient } from "../src/client.js";
+import { SlideMakerApiError, SlideMakerClient } from "../src/client.js";
 import { createServer } from "../src/server.js";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -66,6 +66,7 @@ describe("Slide Maker MCP server", () => {
       "add_url_sources",
       "update_source",
       "generate_outline",
+      "get_outline_status",
       "generate_deck",
       "get_generation_status",
       "export_presentation",
@@ -80,6 +81,120 @@ describe("Slide Maker MCP server", () => {
     });
     expect(rejected.isError).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("大綱任務立即回傳、同專案去重，完成與失敗均可查詢", async () => {
+    const project = {
+      id: "project-1",
+      name: "測試",
+      workflowStage: "requirements",
+      brief: { topic: "測試" },
+      slides: [] as Array<{ id: string }>,
+      styleSnapshot: { id: "default", version: 1, name: "預設" },
+      sources: [],
+      jobs: [],
+      updatedAt: "2026-09-23T00:00:00.000Z",
+    };
+    const api = new SlideMakerClient({ baseUrl: "http://127.0.0.1:4173" });
+    let currentProject = project;
+    vi.spyOn(api, "get").mockImplementation(async () => currentProject);
+    let complete!: (value: typeof project) => void;
+    const pending = new Promise<typeof project>((resolve) => {
+      complete = resolve;
+    });
+    const post = vi.spyOn(api, "postOutline").mockReturnValueOnce(pending);
+    const server = createServer(api);
+    const client = new Client({ name: "outline-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const first = await client.callTool({
+      name: "generate_outline",
+      arguments: { projectId: "project-1" },
+    });
+    expect(first.structuredContent).toMatchObject({
+      result: { projectId: "project-1", status: "running" },
+    });
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    expect(post).toHaveBeenCalledTimes(1);
+    complete({ ...project, slides: [{ id: "slide-1" }] });
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({
+        result: { status: "completed", slideCount: 1 },
+      });
+    });
+
+    post.mockRejectedValueOnce(new SlideMakerApiError(409, "TEXT_MODEL_NOT_FOUND", "模型未設定"));
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({
+        result: { status: "failed", error: { code: "TEXT_MODEL_NOT_FOUND", status: 409 } },
+      });
+    });
+    expect(post).toHaveBeenCalledTimes(2);
+
+    post.mockRejectedValueOnce(new SlideMakerApiError(504, "MCP_REQUEST_TIMEOUT", "等待逾時"));
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({ result: { status: "unknown" } });
+    });
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    expect(post).toHaveBeenCalledTimes(3);
+    currentProject = { ...project, slides: [{ id: "slide-late" }] };
+    const late = await client.callTool({
+      name: "get_outline_status",
+      arguments: { projectId: "project-1" },
+    });
+    expect(late.structuredContent).toMatchObject({
+      result: { status: "completed", slideCount: 1 },
+    });
+
+    await client.close();
+    await server.close();
+  });
+
+  it("MCP 重啟後不把舊大綱誤認為本輪完成", async () => {
+    const api = new SlideMakerClient({ baseUrl: "http://127.0.0.1:4173" });
+    vi.spyOn(api, "get").mockResolvedValue({
+      id: "project-1",
+      name: "測試",
+      workflowStage: "settings",
+      brief: { topic: "測試" },
+      slides: [{ id: "old-slide" }],
+      styleSnapshot: { id: "default", version: 1, name: "預設" },
+      sources: [],
+      jobs: [],
+      updatedAt: "2026-09-23T00:00:00.000Z",
+    });
+    const server = createServer(api);
+    const client = new Client({ name: "restart-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const status = await client.callTool({
+      name: "get_outline_status",
+      arguments: { projectId: "project-1" },
+    });
+    expect(status.structuredContent).toMatchObject({
+      result: { status: "unknown", hasOutline: true, slideCount: 1 },
+    });
 
     await client.close();
     await server.close();

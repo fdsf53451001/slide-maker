@@ -7,11 +7,15 @@ import { pipeline } from "node:stream/promises";
 
 export const MAX_TIMEOUT_MS = 2_147_483_647;
 
-export function parseTimeoutMs(value: string | undefined, fallback = 300_000): number {
+export function parseTimeoutMs(
+  value: string | undefined,
+  fallback = 300_000,
+  name = "SLIDE_MAKER_MCP_TIMEOUT_MS",
+): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_TIMEOUT_MS)
-    throw new Error(`SLIDE_MAKER_MCP_TIMEOUT_MS 必須是 1 到 ${MAX_TIMEOUT_MS} 的整數`);
+    throw new Error(`${name} 必須是 1 到 ${MAX_TIMEOUT_MS} 的整數`);
   return parsed;
 }
 
@@ -44,6 +48,7 @@ export interface SlideMakerClientOptions {
   timeoutMs?: number;
   exportRoot?: string;
   sourceRoot?: string;
+  outlineTimeoutMs?: number;
 }
 
 export class SlideMakerApiError extends Error {
@@ -74,6 +79,7 @@ export class SlideMakerClient {
   private readonly timeoutMs: number;
   private readonly exportRoot: string;
   private readonly sourceRoot: string;
+  private readonly outlineTimeoutMs: number;
 
   constructor(options: SlideMakerClientOptions) {
     this.auth = options.auth ?? new NoAuthProvider();
@@ -81,6 +87,7 @@ export class SlideMakerClient {
     this.timeoutMs = options.timeoutMs ?? 300_000;
     this.exportRoot = resolve(options.exportRoot ?? resolve(process.cwd(), "slide-maker-exports"));
     this.sourceRoot = resolve(options.sourceRoot ?? resolve(process.cwd(), "slide-maker-sources"));
+    this.outlineTimeoutMs = options.outlineTimeoutMs ?? 60 * 60_000;
   }
 
   async get<T>(path: string): Promise<T> {
@@ -93,6 +100,18 @@ export class SlideMakerClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+  }
+
+  async postOutline<T>(path: string, body: unknown): Promise<T> {
+    return this.requestJson<T>(
+      path,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      this.outlineTimeoutMs,
+    );
   }
 
   async patch<T>(path: string, body: unknown): Promise<T> {
@@ -182,18 +201,37 @@ export class SlideMakerClient {
     }
   }
 
-  private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
-    const response = await this.request(path, init);
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    const response = await this.request(path, init, timeoutMs);
     return (await response.json()) as T;
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  private async request(
+    path: string,
+    init: RequestInit,
+    timeoutMs = this.timeoutMs,
+  ): Promise<Response> {
     const authHeaders = await this.auth.headers();
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: { ...init.headers, ...authHeaders },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: { ...init.headers, ...authHeaders },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "TimeoutError")
+        throw new SlideMakerApiError(
+          504,
+          "MCP_REQUEST_TIMEOUT",
+          `Slide Maker API 超過 ${timeoutMs} 毫秒未完成。`,
+        );
+      throw error;
+    }
     if (response.ok) return response;
 
     const fallback = `Slide Maker API 回傳 HTTP ${response.status}`;

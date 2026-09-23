@@ -49,6 +49,29 @@ describe("SlideMakerClient", () => {
     );
   });
 
+  it("大綱請求使用獨立的較長逾時預算", async () => {
+    const timeout = AbortSignal.timeout;
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => timeout(ms));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () =>
+        new Response(JSON.stringify({ id: "project-1" }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const client = new SlideMakerClient({
+      baseUrl: "http://127.0.0.1:4173",
+      timeoutMs: 300_000,
+      outlineTimeoutMs: 3_600_000,
+    });
+
+    await client.get("/api/projects/project-1");
+    await client.postOutline("/api/projects/project-1/outline", { replace: false });
+    expect(timeoutSpy.mock.calls.map(([ms]) => ms)).toEqual([300_000, 3_600_000]);
+    timeoutSpy.mockRestore();
+  });
+
   it("bearer token 只允許 HTTPS 或 loopback", () => {
     expect(
       () =>

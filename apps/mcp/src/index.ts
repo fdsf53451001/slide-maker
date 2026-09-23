@@ -13,6 +13,11 @@ const client = new SlideMakerClient({
   baseUrl: process.env.SLIDE_MAKER_MCP_BASE_URL ?? "http://127.0.0.1:4173",
   auth: bearerToken ? new StaticBearerAuthProvider(bearerToken) : new NoAuthProvider(),
   timeoutMs: parseTimeoutMs(process.env.SLIDE_MAKER_MCP_TIMEOUT_MS),
+  outlineTimeoutMs: parseTimeoutMs(
+    process.env.SLIDE_MAKER_MCP_OUTLINE_TIMEOUT_MS,
+    60 * 60_000,
+    "SLIDE_MAKER_MCP_OUTLINE_TIMEOUT_MS",
+  ),
   ...(process.env.SLIDE_MAKER_MCP_EXPORT_ROOT
     ? { exportRoot: process.env.SLIDE_MAKER_MCP_EXPORT_ROOT }
     : {}),

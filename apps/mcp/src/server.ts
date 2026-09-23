@@ -75,6 +75,15 @@ interface Source {
   error?: string;
 }
 
+interface OutlineTask {
+  projectId: string;
+  status: "running" | "completed" | "failed" | "unknown";
+  startedAt: string;
+  finishedAt?: string;
+  slideCount?: number;
+  error?: { code: string; message: string; status?: number };
+}
+
 const exportFormat = z.enum(["pptx", "pdf", "png.zip", "slide-project", "outline.md"]);
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 const sourceUsageSchema = z.enum([
@@ -195,11 +204,13 @@ async function safely<T>(operation: () => Promise<T>) {
 }
 
 export function createServer(client: SlideMakerClient): McpServer {
+  const outlineTasks = new Map<string, OutlineTask>();
+  const outlineBaselines = new Map<string, string>();
   const server = new McpServer(
     { name: "slide-maker", version: "0.1.0" },
     {
       instructions:
-        "先用 list_projects 或 create_project 取得 projectId。模型使用 Slide Maker 的預設組合；可在產生大綱前套用風格並加入素材。產生大綱後才可生成整份簡報；生成是非同步的，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
+        "先用 list_projects 或 create_project 取得 projectId。模型使用 Slide Maker 的預設組合；可在產生大綱前套用風格並加入素材。generate_outline 會立即回傳任務狀態，請用 get_outline_status 等待完成，然後用 get_project 讀取大綱。生成圖片也非同步，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
     },
   );
 
@@ -417,20 +428,92 @@ export function createServer(client: SlideMakerClient): McpServer {
     {
       title: "產生簡報大綱",
       description:
-        "依專案需求與來源產生整份大綱。replace=true 會覆蓋現有大綱；已有生成圖片時仍可能被伺服器拒絕。",
+        "開始在背景產生整份大綱，立即回傳狀態；請用 get_outline_status 查詢。相同專案執行中或結果尚無法確認時不會重複送出。replace=true 會覆蓋現有大綱；已有生成圖片時仍可能被伺服器拒絕。",
       inputSchema: z.object({
         projectId: idSchema,
         replace: z.boolean().default(false),
       }),
     },
     ({ projectId, replace }) =>
-      safely(async () =>
-        textResult(
-          projectDetail(
-            await client.post<Project>(`/api/projects/${pathId(projectId)}/outline`, { replace }),
-          ),
-        ),
-      ),
+      safely(async () => {
+        const existing = outlineTasks.get(projectId);
+        if (existing?.status === "running" || existing?.status === "unknown")
+          return textResult(existing);
+        // 先確認專案存在，避免為無效 id 建立一個永遠失敗的背景任務。
+        const project = await client.get<Project>(`/api/projects/${pathId(projectId)}`);
+        const concurrent = outlineTasks.get(projectId);
+        if (concurrent?.status === "running" || concurrent?.status === "unknown")
+          return textResult(concurrent);
+        const task: OutlineTask = {
+          projectId,
+          status: "running",
+          startedAt: new Date().toISOString(),
+        };
+        outlineTasks.set(projectId, task);
+        outlineBaselines.set(projectId, JSON.stringify(project.slides.map((slide) => slide.id)));
+        void client
+          .postOutline<Project>(`/api/projects/${pathId(projectId)}/outline`, { replace })
+          .then((project) => {
+            task.status = "completed";
+            task.slideCount = project.slides.length;
+            task.finishedAt = new Date().toISOString();
+          })
+          .catch((error: unknown) => {
+            task.status =
+              error instanceof SlideMakerApiError
+                ? error.code === "MCP_REQUEST_TIMEOUT" || error.status === 504
+                  ? "unknown"
+                  : "failed"
+                : "unknown";
+            task.finishedAt = new Date().toISOString();
+            task.error =
+              error instanceof SlideMakerApiError
+                ? { code: error.code, message: error.message, status: error.status }
+                : error instanceof Error && error.name === "TimeoutError"
+                  ? { code: "MCP_REQUEST_TIMEOUT", message: "大綱請求等待逾時。" }
+                  : { code: "MCP_REQUEST_FAILED", message: "大綱請求失敗，請檢查伺服器紀錄。" };
+          });
+        return textResult(task);
+      }),
+  );
+
+  server.registerTool(
+    "get_outline_status",
+    {
+      title: "查詢大綱進度",
+      description: "查詢目前 MCP 程序送出的大綱任務；完成後使用 get_project 讀取內容。",
+      inputSchema: z.object({ projectId: idSchema }),
+    },
+    ({ projectId }) =>
+      safely(async () => {
+        const task = outlineTasks.get(projectId);
+        if (task) {
+          if (task.status === "unknown") {
+            try {
+              const project = await client.get<Project>(`/api/projects/${pathId(projectId)}`);
+              const currentIds = JSON.stringify(project.slides.map((slide) => slide.id));
+              if (project.slides.length > 0 && currentIds !== outlineBaselines.get(projectId)) {
+                task.status = "completed";
+                task.slideCount = project.slides.length;
+                delete task.error;
+              }
+            } catch {
+              // 保留原始失敗原因；查詢專案暫時失敗不能覆蓋它。
+            }
+          }
+          return textResult(task);
+        }
+        const project = await client.get<Project>(`/api/projects/${pathId(projectId)}`);
+        return textResult({
+          projectId,
+          status: "unknown",
+          hasOutline: project.slides.length > 0,
+          slideCount: project.slides.length,
+          message:
+            "MCP 程序沒有這次大綱任務的紀錄；現有投影片可能屬於先前版本，請用 get_project 確認內容。",
+          project: projectSummary(project),
+        });
+      }),
   );
 
   server.registerTool(
