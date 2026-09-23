@@ -208,7 +208,9 @@ async function safely<T>(operation: () => Promise<T>) {
 
 export function createServer(client: SlideMakerClient): McpServer {
   const outlineTasks = new Map<string, OutlineTask>();
-  const outlineBaselines = new Map<string, string>();
+  // baseline 綁在任務物件上而非 projectId：get_outline_status 的 await 期間若有 retry 換掉任務，
+  // 手上的舊任務仍要拿它自己那一輪的 baseline 比對。
+  const outlineBaselines = new WeakMap<OutlineTask, string>();
   const server = new McpServer(
     { name: "slide-maker", version: "0.1.0" },
     {
@@ -457,7 +459,7 @@ export function createServer(client: SlideMakerClient): McpServer {
           startedAt: new Date().toISOString(),
         };
         outlineTasks.set(projectId, task);
-        outlineBaselines.set(projectId, JSON.stringify(project.slides.map((slide) => slide.id)));
+        outlineBaselines.set(task, JSON.stringify(project.slides.map((slide) => slide.id)));
         void client
           .postOutline<Project>(`/api/projects/${pathId(projectId)}/outline`, { replace })
           .then((project) => {
@@ -499,7 +501,7 @@ export function createServer(client: SlideMakerClient): McpServer {
             try {
               const project = await client.get<Project>(`/api/projects/${pathId(projectId)}`);
               const currentIds = JSON.stringify(project.slides.map((slide) => slide.id));
-              if (project.slides.length > 0 && currentIds !== outlineBaselines.get(projectId)) {
+              if (project.slides.length > 0 && currentIds !== outlineBaselines.get(task)) {
                 task.status = "completed";
                 task.slideCount = project.slides.length;
                 delete task.error;

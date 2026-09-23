@@ -63,14 +63,9 @@ export class SlideMakerApiError extends Error {
   }
 }
 
-// 這幾種錯誤發生在連線建立之前，請求必然沒有送達伺服器；ECONNRESET 等中途斷線則不在此列。
-const CONNECT_FAILURE_CODES = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-]);
+// 只收語意上必然發生在連線建立之前的錯誤：請求確定沒有送達伺服器。EHOSTUNREACH／ENETUNREACH
+// 刻意不列——長請求中途換網路或 VPN 斷線時，既有 socket 也可能回這兩個碼，那時可能已送達。
+const CONNECT_FAILURE_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
 
 function connectFailureCode(error: unknown): string | undefined {
   const cause = error instanceof Error ? (error.cause as unknown) : undefined;
