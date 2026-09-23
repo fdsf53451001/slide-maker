@@ -168,10 +168,13 @@ function projectDetail(project: Project) {
 }
 
 function textResult(value: unknown) {
+  const text = JSON.stringify(value, null, 2);
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text }],
     // MCP structuredContent 的根節點必須是 object；陣列與純量統一放在 result。
-    structuredContent: { result: value },
+    // 從同一份字串解回來而非直接放 value：大綱任務物件會被背景 promise 改寫，放參照會讓
+    // 稍後才序列化的 structuredContent 與 text 描述不同時刻的狀態。
+    structuredContent: { result: JSON.parse(text) as unknown },
   };
 }
 
@@ -428,21 +431,25 @@ export function createServer(client: SlideMakerClient): McpServer {
     {
       title: "產生簡報大綱",
       description:
-        "開始在背景產生整份大綱，立即回傳狀態；請用 get_outline_status 查詢。相同專案執行中或結果尚無法確認時不會重複送出。replace=true 會覆蓋現有大綱；已有生成圖片時仍可能被伺服器拒絕。",
+        "開始在背景產生整份大綱，立即回傳狀態；請用 get_outline_status 查詢。相同專案執行中或結果尚無法確認（unknown）時不會重複送出；若 get_project 確認 unknown 那次沒有寫入大綱，可帶 retryUnknown=true 再送一次（會再消耗一次配額）。replace=true 會覆蓋現有大綱；已有生成圖片時仍可能被伺服器拒絕。",
       inputSchema: z.object({
         projectId: idSchema,
         replace: z.boolean().default(false),
+        retryUnknown: z
+          .boolean()
+          .default(false)
+          .describe("上一輪狀態為 unknown 且已確認大綱未更新時，才設為 true 重新送出"),
       }),
     },
-    ({ projectId, replace }) =>
+    ({ projectId, replace, retryUnknown }) =>
       safely(async () => {
         const existing = outlineTasks.get(projectId);
-        if (existing?.status === "running" || existing?.status === "unknown")
+        if (existing?.status === "running" || (existing?.status === "unknown" && !retryUnknown))
           return textResult(existing);
         // 先確認專案存在，避免為無效 id 建立一個永遠失敗的背景任務。
         const project = await client.get<Project>(`/api/projects/${pathId(projectId)}`);
         const concurrent = outlineTasks.get(projectId);
-        if (concurrent?.status === "running" || concurrent?.status === "unknown")
+        if (concurrent?.status === "running" || (concurrent?.status === "unknown" && !retryUnknown))
           return textResult(concurrent);
         const task: OutlineTask = {
           projectId,

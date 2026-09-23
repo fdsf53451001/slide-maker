@@ -63,6 +63,30 @@ export class SlideMakerApiError extends Error {
   }
 }
 
+// 這幾種錯誤發生在連線建立之前，請求必然沒有送達伺服器；ECONNRESET 等中途斷線則不在此列。
+const CONNECT_FAILURE_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+]);
+
+function connectFailureCode(error: unknown): string | undefined {
+  const cause = error instanceof Error ? (error.cause as unknown) : undefined;
+  if (!cause || typeof cause !== "object") return undefined;
+  // localhost 同時解析到 ::1 與 127.0.0.1 時，Node 會包成 AggregateError，逐一的錯誤放在 errors。
+  const nested = "errors" in cause && Array.isArray(cause.errors) ? cause.errors : [];
+  for (const candidate of [cause, ...nested]) {
+    const code =
+      candidate && typeof candidate === "object" && "code" in candidate
+        ? candidate.code
+        : undefined;
+    if (typeof code === "string" && CONNECT_FAILURE_CODES.has(code)) return code;
+  }
+  return undefined;
+}
+
 function normalizedBaseUrl(value: string, sendsCredentials: boolean): string {
   const url = new URL(value);
   if (url.protocol !== "http:" && url.protocol !== "https:")
@@ -229,6 +253,13 @@ export class SlideMakerClient {
           504,
           "MCP_REQUEST_TIMEOUT",
           `Slide Maker API 超過 ${timeoutMs} 毫秒未完成。`,
+        );
+      const connectCode = connectFailureCode(error);
+      if (connectCode)
+        throw new SlideMakerApiError(
+          503,
+          "MCP_CONNECTION_FAILED",
+          `無法連線到 Slide Maker API（${connectCode}），請確認 Slide Maker 已啟動且 SLIDE_MAKER_MCP_BASE_URL 正確。`,
         );
       throw error;
     }

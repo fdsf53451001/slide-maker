@@ -165,6 +165,52 @@ describe("Slide Maker MCP server", () => {
       result: { status: "completed", slideCount: 1 },
     });
 
+    // unknown 之後伺服器其實失敗了：大綱沒變，只有明確帶 retryUnknown 才會再送一次。
+    currentProject = project;
+    post.mockRejectedValueOnce(new SlideMakerApiError(504, "MCP_REQUEST_TIMEOUT", "等待逾時"));
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({ result: { status: "unknown" } });
+    });
+    expect(post).toHaveBeenCalledTimes(4);
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    expect(post).toHaveBeenCalledTimes(4);
+    post.mockResolvedValueOnce({ ...project, slides: [{ id: "slide-retry" }] });
+    const retried = await client.callTool({
+      name: "generate_outline",
+      arguments: { projectId: "project-1", retryUnknown: true },
+    });
+    expect(retried.structuredContent).toMatchObject({ result: { status: "running" } });
+    expect(post).toHaveBeenCalledTimes(5);
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({
+        result: { status: "completed", slideCount: 1 },
+      });
+    });
+
+    // 連線根本沒建立：確定沒送達，判 failed 而不是 unknown，之後可直接重送。
+    post.mockRejectedValueOnce(
+      new SlideMakerApiError(503, "MCP_CONNECTION_FAILED", "無法連線到 Slide Maker API"),
+    );
+    await client.callTool({ name: "generate_outline", arguments: { projectId: "project-1" } });
+    await vi.waitFor(async () => {
+      const status = await client.callTool({
+        name: "get_outline_status",
+        arguments: { projectId: "project-1" },
+      });
+      expect(status.structuredContent).toMatchObject({
+        result: { status: "failed", error: { code: "MCP_CONNECTION_FAILED" } },
+      });
+    });
+
     await client.close();
     await server.close();
   });

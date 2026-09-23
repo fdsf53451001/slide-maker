@@ -54,7 +54,9 @@ MCP host 使用以下 command／args 啟動本地 server：
 讀取時，Slide Maker 可能在背景呼叫預設文字模型分析圖片內容。
 
 `generate_outline` 會立即回傳 `running`，可用 `get_outline_status` 輪詢；完成後以 `get_project`
-讀取大綱。連線逾時後狀態為 `unknown`，以免把伺服器稍後寫入的結果誤判成失敗並重複送出。
+讀取大綱。連線逾時或中途斷線後狀態為 `unknown`，以免把伺服器稍後寫入的結果誤判成失敗並重複送出；
+若用 `get_project` 確認那次沒有寫入大綱，可帶 `retryUnknown: true` 再送一次（會再消耗一次配額）。
+連線根本沒建立（例如 Slide Maker 未啟動）時則確定沒有送達，狀態為 `failed`、錯誤碼 `MCP_CONNECTION_FAILED`。
 任務狀態保存在目前的 MCP 程序記憶體中；若 MCP 程序重啟，狀態一律為 `unknown`，即使
 `hasOutline` 為 true，現有投影片也可能屬於先前版本。請用 `get_project` 確認內容。
 

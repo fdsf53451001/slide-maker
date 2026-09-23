@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -54,10 +55,11 @@ describe("SlideMakerClient", () => {
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => timeout(ms));
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation(async () =>
-        new Response(JSON.stringify({ id: "project-1" }), {
-          headers: { "Content-Type": "application/json" },
-        }),
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ id: "project-1" }), {
+            headers: { "Content-Type": "application/json" },
+          }),
       ),
     );
     const client = new SlideMakerClient({
@@ -210,5 +212,34 @@ describe("SlideMakerClient", () => {
       client.exportToFile("/api/projects/p1/export/pptx", join(directory, "absolute.pptx")),
     ).rejects.toThrow(/相對路徑/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("連線被拒時回具名錯誤，其他例外原樣拋出", async () => {
+    // 用真的已關閉的 port，取得 Node fetch 實際的錯誤形狀，而不是自己捏一個 cause。
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const probe = createServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        probe.close(() =>
+          typeof address === "object" && address
+            ? resolvePort(address.port)
+            : reject(new Error("no port")),
+        );
+      });
+    });
+    const refused = await new SlideMakerClient({ baseUrl: `http://127.0.0.1:${port}` })
+      .get("/api/projects")
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(SlideMakerApiError);
+    expect(refused).toMatchObject({ status: 503, code: "MCP_CONNECTION_FAILED" });
+    expect((refused as Error).message).toMatch(/ECONNREFUSED/);
+
+    const reset = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(reset));
+    await expect(
+      new SlideMakerClient({ baseUrl: "http://127.0.0.1:4173" }).get("/api/projects"),
+    ).rejects.toBe(reset);
   });
 });
