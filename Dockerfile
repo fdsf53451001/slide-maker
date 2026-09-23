@@ -18,6 +18,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/server/package.json apps/server/
 COPY apps/editor/package.json apps/editor/
+COPY apps/mcp/package.json apps/mcp/
 COPY packages/core/package.json packages/core/
 COPY packages/provider-mock/package.json packages/provider-mock/
 COPY packages/provider-openai/package.json packages/provider-openai/

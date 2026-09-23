@@ -54,3 +54,7 @@ docker/cliproxy/logs/
 
 # cli-switch managed entries (per-CLI private fixtures)
 .claude/
+
+# MCP 預設的本機匯出／素材目錄（apps/mcp 以 cwd 為基準）
+slide-maker-exports/
+slide-maker-sources/
