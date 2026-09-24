@@ -229,6 +229,16 @@ export class SlideMakerClient {
     return (await response.json()) as T;
   }
 
+  private authRejected(status: number, reason: string): SlideMakerApiError {
+    return new SlideMakerApiError(
+      status,
+      "MCP_AUTH_REJECTED",
+      this.auth.sendsCredentials
+        ? `Slide Maker 前方的驗證層拒絕了這個請求（${reason}）。請確認 service account 有這個服務的 IAP 存取權（roles/iap.httpsResourceAccessor），以及 SLIDE_MAKER_MCP_IAP_AUDIENCE 與 SLIDE_MAKER_MCP_BASE_URL 相符。`
+        : `Slide Maker 前方的驗證層拒絕了這個請求（${reason}），但目前沒有設定任何驗證資訊。連 Cloud Run IAP 需設定 SLIDE_MAKER_MCP_SA_KEY_FILE。`,
+    );
+  }
+
   private async request(
     path: string,
     init: RequestInit,
@@ -257,6 +267,11 @@ export class SlideMakerClient {
           `無法連線到 Slide Maker API（${connectCode}），請確認 Slide Maker 已啟動且 SLIDE_MAKER_MCP_BASE_URL 正確。`,
         );
       throw error;
+    }
+    // IAP 對沒帶憑證的請求回 302 導向 Google 登入頁，fetch 會跟過去拿回一頁 200 的 HTML。
+    if (response.redirected && new URL(response.url).origin !== new URL(this.baseUrl).origin) {
+      await response.body?.cancel();
+      throw this.authRejected(401, "被導向登入頁");
     }
     if (response.ok) return response;
 
@@ -289,6 +304,8 @@ export class SlideMakerClient {
         : undefined;
     } catch {
       // 非 JSON 的代理層錯誤（例如 IAP HTML）只回狀態，不把整頁內容送進模型。
+      if (response.status === 401 || response.status === 403)
+        throw this.authRejected(response.status, `HTTP ${response.status}`);
     }
     throw new SlideMakerApiError(
       response.status,
