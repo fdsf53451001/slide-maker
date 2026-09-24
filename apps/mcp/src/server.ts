@@ -215,7 +215,7 @@ export function createServer(client: SlideMakerClient): McpServer {
     { name: "slide-maker", version: "0.1.0" },
     {
       instructions:
-        "先用 list_projects 或 create_project 取得 projectId。模型使用 Slide Maker 的預設組合；可在產生大綱前套用風格並加入素材。generate_outline 會立即回傳任務狀態，請用 get_outline_status 等待完成，然後用 get_project 讀取大綱。生成圖片也非同步，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
+        "先用 list_projects 或 create_project 取得 projectId。模型使用 Slide Maker 的預設組合。產生大綱前必須先讓使用者決定風格：用 list_styles 列出風格庫，把每個風格的名稱與說明整理成選項給使用者挑，其中 AI 自由設計（id ai-free-design）代表不套固定風格、由 AI 依內容自行設計；等使用者回答後才呼叫 apply_style，不可自行替使用者挑選或略過這一步。使用者已經指定風格、或說交給 AI 決定時才可不問（後者套用 ai-free-design）。也可在產生大綱前加入素材。generate_outline 會立即回傳任務狀態，請用 get_outline_status 等待完成，然後用 get_project 讀取大綱。生成圖片也非同步，請用 get_generation_status 追蹤。匯出前確認所有需要的頁面均已完成。",
     },
   );
 
@@ -236,7 +236,8 @@ export function createServer(client: SlideMakerClient): McpServer {
     "create_project",
     {
       title: "建立簡報專案",
-      description: "依主題和簡報需求建立一個新的 Slide Maker 專案。",
+      description:
+        "依主題和簡報需求建立一個新的 Slide Maker 專案。新專案預設為 AI 自由設計；建立後、產生大綱前，請用 list_styles 讓使用者選擇風格。",
       inputSchema: z.object({
         topic: z.string().trim().min(1).max(500).describe("簡報主題"),
         name: z.string().trim().min(1).max(200).optional().describe("專案名稱"),
@@ -278,7 +279,8 @@ export function createServer(client: SlideMakerClient): McpServer {
     "list_styles",
     {
       title: "列出風格庫",
-      description: "列出 Slide Maker 風格庫中可套用的風格與版本摘要。",
+      description:
+        "列出 Slide Maker 風格庫中可套用的風格與版本摘要。拿到結果後請把各風格的名稱與說明整理成選項，詢問使用者要套用哪一個，並明確列出「AI 自由設計」（id ai-free-design：不套固定風格，由 AI 依主題與內容自行設計）；在使用者回答之前不要呼叫 apply_style。",
       inputSchema: z.object({}),
     },
     () =>
@@ -291,7 +293,8 @@ export function createServer(client: SlideMakerClient): McpServer {
     "apply_style",
     {
       title: "套用風格",
-      description: "將風格庫中的指定風格版本套用到簡報專案。未指定版本時使用最新版。",
+      description:
+        "將風格庫中的指定風格版本套用到簡報專案。未指定版本時使用最新版。只套用使用者選定的風格；使用者要 AI 自由設計時傳 styleId ai-free-design。",
       inputSchema: z.object({
         projectId: idSchema,
         styleId: idSchema,

@@ -71,6 +71,11 @@ describe("Slide Maker MCP server", () => {
       "get_generation_status",
       "export_presentation",
     ]);
+    // 風格要由使用者挑：少了這幾句，host 的模型看完清單會直接略過或自己挑一個。
+    expect(client.getInstructions()).toMatch(/必須先讓使用者決定風格[\s\S]*ai-free-design/);
+    const describe = (name: string) => tools.tools.find((tool) => tool.name === name)?.description;
+    expect(describe("list_styles")).toMatch(/詢問使用者[\s\S]*ai-free-design/);
+    expect(describe("apply_style")).toMatch(/只套用使用者選定的風格/);
     const result = await client.callTool({ name: "list_projects", arguments: {} });
     expect(result.structuredContent).toMatchObject({
       result: [{ id: "project-1", name: "MCP 簡報", topic: "MCP", slideCount: 0 }],
