@@ -36,6 +36,108 @@ MCP host 使用以下 command／args 啟動本地 server：
 正式使用可先執行 `pnpm build`，再把 command 改為 `node`、args 改為
 `["/absolute/path/to/slide-maker/apps/mcp/dist/index.js"]`。
 
+## 在別台電腦安裝（連雲端版）
+
+MCP 在每台電腦上以 stdio 執行，只需要 Node.js 20 以上與 git；不必安裝整個 monorepo，也不必啟動本機 Slide Maker。
+以下以 macOS／Linux 為例，並假設部署端已依「連線到 Cloud Run（IAP）」建立好 MCP 專用的 service account。
+
+先把自己部署的值填進變數，後面的指令都會用到：
+
+```sh
+REPO_URL=https://github.com/<owner>/slide-maker.git        # 你的 repo 或 fork
+SLIDE_MAKER_URL=https://<service>.run.app                  # Cloud Run 服務網址
+GCP_PROJECT=<gcp-project-id>
+MCP_SA=<sa-name>@${GCP_PROJECT}.iam.gserviceaccount.com   # 只有 IAP 存取權的 SA
+```
+
+**1. 取得程式碼並只建置 MCP**（約 110 個套件，1 分鐘內完成）
+
+```sh
+git clone "$REPO_URL" ~/slide-maker
+cd ~/slide-maker
+npx pnpm@10.13.1 install --filter @slide-maker/mcp --frozen-lockfile
+npx pnpm@10.13.1 --filter @slide-maker/mcp build
+```
+
+**2. 為這台電腦建立專用金鑰**（在已登入 gcloud、有權限的電腦上執行）
+
+每台電腦各用一把金鑰，遺失時才能只撤銷那一把。產生後以安全管道（例如 AirDrop）傳到新電腦，
+不要經過聊天軟體、email 或雲端硬碟。
+
+```sh
+gcloud iam service-accounts keys create ./mcp-sa-<電腦名稱>.json \
+  --iam-account="$MCP_SA" --project "$GCP_PROJECT"
+```
+
+在新電腦上放到固定位置並收緊權限：
+
+```sh
+mkdir -p ~/.config/slide-maker
+mv ~/Downloads/mcp-sa-<電腦名稱>.json ~/.config/slide-maker/mcp-sa.json
+chmod 600 ~/.config/slide-maker/mcp-sa.json
+```
+
+**3. 驗證連線**（成功會印出「連線成功：共 N 個專案」；金鑰路徑必須是絕對路徑）
+
+```sh
+SLIDE_MAKER_MCP_BASE_URL="$SLIDE_MAKER_URL" \
+SLIDE_MAKER_MCP_SA_KEY_FILE="$HOME/.config/slide-maker/mcp-sa.json" \
+node ~/slide-maker/apps/mcp/dist/check.js
+```
+
+**4. 設定 AI 工具**（設定檔不會展開 `~` 與變數：`/Users/you` 換成實際家目錄，`https://<service>.run.app` 換成服務網址）
+
+opencode（`~/.config/opencode/opencode.json` 的 `mcp`）：
+
+```json
+"slide-maker-cloud": {
+  "type": "local",
+  "command": ["node", "/Users/you/slide-maker/apps/mcp/dist/index.js"],
+  "enabled": true,
+  "environment": {
+    "SLIDE_MAKER_MCP_BASE_URL": "https://<service>.run.app",
+    "SLIDE_MAKER_MCP_SA_KEY_FILE": "/Users/you/.config/slide-maker/mcp-sa.json"
+  }
+}
+```
+
+Claude Code（在 shell 執行，變數會先展開）：
+
+```sh
+claude mcp add slide-maker-cloud --scope user \
+  -e SLIDE_MAKER_MCP_BASE_URL="$SLIDE_MAKER_URL" \
+  -e SLIDE_MAKER_MCP_SA_KEY_FILE="$HOME/.config/slide-maker/mcp-sa.json" \
+  -- node "$HOME/slide-maker/apps/mcp/dist/index.js"
+```
+
+Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.slide-maker-cloud]
+command = "node"
+args = ["/Users/you/slide-maker/apps/mcp/dist/index.js"]
+env = { SLIDE_MAKER_MCP_BASE_URL = "https://<service>.run.app", SLIDE_MAKER_MCP_SA_KEY_FILE = "/Users/you/.config/slide-maker/mcp-sa.json" }
+```
+
+設定後重開 AI 工具。上傳素材讀取、匯出檔案寫入的資料夾預設相對於 AI 工具當下的工作目錄；要固定位置可再加
+`SLIDE_MAKER_MCP_SOURCE_ROOT`／`SLIDE_MAKER_MCP_EXPORT_ROOT`（絕對路徑）。
+
+**更新**：MCP 的工具清單寫死在程式碼裡，雲端新增的功能要更新後才用得到；雲端 API 有不相容的改動時，
+舊版 MCP 可能直接出錯。遇到工具報錯或想用新功能時：
+
+```sh
+cd ~/slide-maker && git pull
+npx pnpm@10.13.1 install --filter @slide-maker/mcp --frozen-lockfile
+npx pnpm@10.13.1 --filter @slide-maker/mcp build
+```
+
+**撤銷某台電腦**：金鑰 ID 可在 console 的服務帳戶「金鑰」分頁或下列指令查到。
+
+```sh
+gcloud iam service-accounts keys list --iam-account="$MCP_SA"
+gcloud iam service-accounts keys delete <KEY_ID> --iam-account="$MCP_SA"
+```
+
 ## 設定
 
 | 環境變數                             | 預設值                  | 用途                                    |
