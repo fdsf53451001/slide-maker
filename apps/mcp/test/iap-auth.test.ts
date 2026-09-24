@@ -117,6 +117,21 @@ describe("ServiceAccountJwtAuthProvider", () => {
 });
 
 describe("authFromEnv", () => {
+  it("沒有設定時不送憑證，只設 bearer token 時沿用靜態 token", async () => {
+    const none = await authFromEnv({}, "http://127.0.0.1:4173");
+    expect(none.sendsCredentials).toBe(false);
+    expect(await none.headers()).toEqual({});
+    const bearer = await authFromEnv({ SLIDE_MAKER_MCP_BEARER_TOKEN: " t " }, "https://a.example");
+    expect(bearer.sendsCredentials).toBe(true);
+    expect(await bearer.headers()).toEqual({ Authorization: "Bearer t" });
+  });
+
+  it("SA key 路徑必須是絕對路徑", async () => {
+    await expect(
+      authFromEnv({ SLIDE_MAKER_MCP_SA_KEY_FILE: "key.json" }, "https://a.example"),
+    ).rejects.toThrow(/絕對路徑/);
+  });
+
   it("SA key 與靜態 token 只能擇一", async () => {
     await expect(
       authFromEnv(
@@ -172,6 +187,25 @@ describe("IAP 拒絕", () => {
     expect(error).toBeInstanceOf(SlideMakerApiError);
     expect((error as SlideMakerApiError).code).toBe("MCP_AUTH_REJECTED");
     expect((error as SlideMakerApiError).message).not.toContain("<html>");
+  });
+
+  it("被導向其他網域的登入頁（IAP 對無憑證請求的 302）也回報 MCP_AUTH_REJECTED", async () => {
+    const login = new Response("<!doctype html><html>Sign in</html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+    Object.defineProperty(login, "redirected", { value: true });
+    Object.defineProperty(login, "url", {
+      value: "https://accounts.google.com/o/oauth2/v2/auth?x=1",
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(login));
+    const client = new SlideMakerClient({ baseUrl: "https://slides.example.run.app" });
+    const error = (await client
+      .get("/api/projects")
+      .catch((e: unknown) => e)) as SlideMakerApiError;
+    expect(error).toBeInstanceOf(SlideMakerApiError);
+    expect(error.code).toBe("MCP_AUTH_REJECTED");
+    expect(error.message).toMatch(/SLIDE_MAKER_MCP_SA_KEY_FILE/);
   });
 
   it("伺服器自己回的 JSON 403 維持原本的錯誤碼", async () => {

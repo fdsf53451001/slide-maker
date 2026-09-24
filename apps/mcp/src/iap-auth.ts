@@ -1,5 +1,6 @@
 import { createPrivateKey, sign, type KeyObject } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import type { AuthProvider } from "./client.js";
 
 // IAP 對 service account 自簽 JWT 的上限是 1 小時；提早 5 分鐘換新，
@@ -47,6 +48,8 @@ export function parseServiceAccountKey(text: string): ServiceAccountKey {
 }
 
 export async function loadServiceAccountKey(path: string): Promise<ServiceAccountKey> {
+  // 相對路徑會以 pnpm --filter 實際的 cwd（apps/mcp）為基準，得到一個看似隨機的 ENOENT。
+  if (!isAbsolute(path)) throw new Error("SLIDE_MAKER_MCP_SA_KEY_FILE 必須是絕對路徑");
   const info = await stat(path);
   if (!info.isFile()) throw new Error("SLIDE_MAKER_MCP_SA_KEY_FILE 必須指向一般檔案");
   if (process.platform !== "win32" && (info.mode & 0o077) !== 0)

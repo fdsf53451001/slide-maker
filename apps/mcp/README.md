@@ -72,7 +72,7 @@ Token Creator 或 OAuth client。
 1. 建立專用 SA，只在 IAP 上授予 `roles/iap.httpsResourceAccessor`（不要給專案層級角色）。
 2. 建立該 SA 的 JSON key，放在 repo 之外並 `chmod 600`。任何拿到這個檔案的人都能以該 SA
    通過 IAP，請定期輪替。組織若啟用 `iam.disableServiceAccountKeyCreation` 則無法建立。
-3. 先不經 MCP host 驗證設定（key 路徑必須是絕對路徑）：
+3. 先不經 MCP host 驗證設定（key 路徑必須是絕對路徑，否則啟動即失敗）：
 
 ```sh
 SLIDE_MAKER_MCP_BASE_URL=https://<service>.run.app \
