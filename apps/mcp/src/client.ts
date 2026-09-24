@@ -289,6 +289,12 @@ export class SlideMakerClient {
         : undefined;
     } catch {
       // 非 JSON 的代理層錯誤（例如 IAP HTML）只回狀態，不把整頁內容送進模型。
+      if (response.status === 401 || response.status === 403) {
+        code = "MCP_AUTH_REJECTED";
+        message = this.auth.sendsCredentials
+          ? `Slide Maker 前方的驗證層拒絕了這個請求（HTTP ${response.status}）。請確認 service account 有這個服務的 IAP 存取權（roles/iap.httpsResourceAccessor），以及 SLIDE_MAKER_MCP_IAP_AUDIENCE 與 SLIDE_MAKER_MCP_BASE_URL 相符。`
+          : `Slide Maker 前方的驗證層拒絕了這個請求（HTTP ${response.status}），但目前沒有設定任何驗證資訊。連 Cloud Run IAP 需設定 SLIDE_MAKER_MCP_SA_KEY_FILE。`;
+      }
     }
     throw new SlideMakerApiError(
       response.status,

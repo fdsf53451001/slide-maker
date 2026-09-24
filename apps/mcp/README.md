@@ -44,6 +44,8 @@ MCP host 使用以下 command／args 啟動本地 server：
 | `SLIDE_MAKER_MCP_TIMEOUT_MS`         | `300000`                | 單次 API 呼叫逾時毫秒數                 |
 | `SLIDE_MAKER_MCP_OUTLINE_TIMEOUT_MS` | `3600000`               | 大綱背景請求的等待上限（毫秒）          |
 | `SLIDE_MAKER_MCP_BEARER_TOKEN`       | 未設定                  | 選用的靜態 bearer token；本機模式不需要 |
+| `SLIDE_MAKER_MCP_SA_KEY_FILE`        | 未設定                  | 連 Cloud Run IAP 用的 SA JSON key 路徑  |
+| `SLIDE_MAKER_MCP_IAP_AUDIENCE`       | `<base URL origin>/*`   | IAP JWT 的 `aud`，通常不必設定          |
 | `SLIDE_MAKER_MCP_EXPORT_ROOT`        | `slide-maker-exports`   | 匯出工具唯一可寫入的根目錄              |
 | `SLIDE_MAKER_MCP_SOURCE_ROOT`        | `slide-maker-sources`   | 上傳工具唯一可讀取的素材目錄            |
 
@@ -60,5 +62,27 @@ MCP host 使用以下 command／args 啟動本地 server：
 任務狀態保存在目前的 MCP 程序記憶體中；若 MCP 程序重啟，狀態一律為 `unknown`，即使
 `hasOutline` 為 true，現有投影片也可能屬於先前版本。請用 `get_project` 確認內容。
 
-目前的 bearer token 介面是之後串接 Cloud Run IAP 的接點。IAP 需要 OAuth token 取得與更新，
-不應把 client secret 或使用者 token 寫進工具參數。
+## 連線到 Cloud Run（IAP）
+
+MCP 仍在本機以 stdio 執行，只是把 API 請求改送到雲端；雲端資料集與本機是分開的兩份。
+驗證走 service account 自簽 JWT：MCP 以本機的 SA key 簽出 IAP 接受的 JWT（有效 1 小時、
+到期前 5 分鐘自動換新），不呼叫任何 Google API，所以不需要 `gcloud auth login`、
+Token Creator 或 OAuth client。
+
+1. 建立專用 SA，只在 IAP 上授予 `roles/iap.httpsResourceAccessor`（不要給專案層級角色）。
+2. 建立該 SA 的 JSON key，放在 repo 之外並 `chmod 600`。任何拿到這個檔案的人都能以該 SA
+   通過 IAP，請定期輪替。組織若啟用 `iam.disableServiceAccountKeyCreation` 則無法建立。
+3. 先不經 MCP host 驗證設定（key 路徑必須是絕對路徑）：
+
+```sh
+SLIDE_MAKER_MCP_BASE_URL=https://<service>.run.app \
+SLIDE_MAKER_MCP_SA_KEY_FILE=/absolute/path/to/key.json \
+pnpm --filter @slide-maker/mcp check-connection
+```
+
+4. 成功後把同樣兩個環境變數放進 MCP host 設定的 `env`。
+
+`SLIDE_MAKER_MCP_BEARER_TOKEN` 與 `SLIDE_MAKER_MCP_SA_KEY_FILE` 只能擇一。IAP 拒絕時
+（非 JSON 的 401/403）工具回報 `MCP_AUTH_REJECTED`；最常見原因是 SA 沒有 IAP 存取權，
+或 audience 與實際呼叫的網址不符——Cloud Run 有兩種網址，`aud` 由 `SLIDE_MAKER_MCP_BASE_URL`
+推導，換網址時不需另外改。
